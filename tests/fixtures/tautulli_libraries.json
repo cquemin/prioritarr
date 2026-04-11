@@ -1,0 +1,25 @@
+{
+  "response": {
+    "result": "success",
+    "data": [
+      {
+        "section_id": 1,
+        "section_name": "TV Shows",
+        "section_type": "show",
+        "count": 149
+      },
+      {
+        "section_id": 2,
+        "section_name": "Anime",
+        "section_type": "show",
+        "count": 42
+      },
+      {
+        "section_id": 3,
+        "section_name": "Movies",
+        "section_type": "movie",
+        "count": 820
+      }
+    ]
+  }
+}
