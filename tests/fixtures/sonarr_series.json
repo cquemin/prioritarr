@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "title": "Attack on Titan",
+    "tvdbId": 267440,
+    "monitored": true,
+    "statistics": {
+      "seasonCount": 4,
+      "episodeCount": 87,
+      "episodeFileCount": 87,
+      "percentOfEpisodes": 100.0
+    }
+  },
+  {
+    "id": 2,
+    "title": "Demon Slayer",
+    "tvdbId": 365946,
+    "monitored": true,
+    "statistics": {
+      "seasonCount": 3,
+      "episodeCount": 44,
+      "episodeFileCount": 40,
+      "percentOfEpisodes": 90.9
+    }
+  }
+]

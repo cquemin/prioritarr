@@ -1,0 +1,29 @@
+[
+  {
+    "id": 101,
+    "seriesId": 1,
+    "seasonNumber": 1,
+    "episodeNumber": 1,
+    "airDateUtc": "2013-04-07T00:00:00Z",
+    "monitored": true,
+    "hasFile": true
+  },
+  {
+    "id": 102,
+    "seriesId": 1,
+    "seasonNumber": 1,
+    "episodeNumber": 2,
+    "airDateUtc": "2013-04-14T00:00:00Z",
+    "monitored": true,
+    "hasFile": true
+  },
+  {
+    "id": 103,
+    "seriesId": 1,
+    "seasonNumber": 1,
+    "episodeNumber": 3,
+    "airDateUtc": "2013-04-21T00:00:00Z",
+    "monitored": true,
+    "hasFile": false
+  }
+]

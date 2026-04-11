@@ -1,0 +1,37 @@
+{
+  "page": 1,
+  "pageSize": 1000,
+  "totalRecords": 2,
+  "records": [
+    {
+      "id": 201,
+      "seriesId": 1,
+      "seasonNumber": 1,
+      "episodeNumber": 3,
+      "airDateUtc": "2013-04-21T00:00:00Z",
+      "monitored": true,
+      "hasFile": false,
+      "series": {
+        "id": 1,
+        "title": "Attack on Titan",
+        "tvdbId": 267440,
+        "monitored": true
+      }
+    },
+    {
+      "id": 202,
+      "seriesId": 2,
+      "seasonNumber": 2,
+      "episodeNumber": 5,
+      "airDateUtc": "2021-10-17T00:00:00Z",
+      "monitored": true,
+      "hasFile": false,
+      "series": {
+        "id": 2,
+        "title": "Demon Slayer",
+        "tvdbId": 365946,
+        "monitored": true
+      }
+    }
+  ]
+}

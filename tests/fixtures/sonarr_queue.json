@@ -1,0 +1,24 @@
+{
+  "page": 1,
+  "pageSize": 1000,
+  "totalRecords": 1,
+  "records": [
+    {
+      "id": 301,
+      "seriesId": 2,
+      "episodeId": 103,
+      "seasonNumber": 2,
+      "episodeNumber": 5,
+      "downloadId": "ABC123DEF456",
+      "downloadClient": "qBittorrent",
+      "status": "downloading",
+      "trackedDownloadStatus": "ok",
+      "series": {
+        "id": 2,
+        "title": "Demon Slayer",
+        "tvdbId": 365946,
+        "monitored": true
+      }
+    }
+  ]
+}
