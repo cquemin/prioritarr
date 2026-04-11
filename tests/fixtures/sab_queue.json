@@ -1,0 +1,23 @@
+{
+  "queue": {
+    "status": "Downloading",
+    "slots": [
+      {
+        "nzo_id": "SABnzbd_nzo_abc123",
+        "filename": "Attack.on.Titan.S01E03.1080p.WEB-DL",
+        "status": "Downloading",
+        "priority": "Force",
+        "index": 0,
+        "cat": "anime"
+      },
+      {
+        "nzo_id": "SABnzbd_nzo_def456",
+        "filename": "Demon.Slayer.S02E05.1080p.WEB-DL",
+        "status": "Queued",
+        "priority": "Normal",
+        "index": 1,
+        "cat": "anime"
+      }
+    ]
+  }
+}
