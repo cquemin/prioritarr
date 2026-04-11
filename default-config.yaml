@@ -1,0 +1,25 @@
+priority_thresholds:
+  p1_watch_pct_min: 0.90
+  p1_days_since_watch_max: 14
+  p1_days_since_release_max: 7
+  p1_hiatus_gap_days: 14
+  p1_hiatus_release_window_days: 28
+  p2_days_since_watch_max: 60
+  p3_unwatched_max: 3
+  p3_days_since_watch_max: 60
+  p4_min_watched: 1
+
+intervals:
+  reconcile_minutes: 15
+  backfill_sweep_hours: 2
+  cutoff_sweep_hours: 24
+  backfill_max_searches_per_sweep: 10
+  backfill_delay_between_searches_seconds: 30
+  cutoff_max_searches_per_sweep: 5
+
+cache:
+  priority_ttl_minutes: 60
+
+audit:
+  retention_days: 90
+  webhook_dedupe_hours: 24
