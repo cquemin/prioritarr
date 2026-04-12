@@ -51,27 +51,41 @@ def run_backfill_sweep(ctx: SweepContext) -> int:
     """
     missing = ctx.sonarr.get_wanted_missing()
     if not missing:
+        logger.info("[backfill] no missing episodes found")
         return 0
 
     order = build_sweep_order(missing, ctx.priority_fn)
-    searched = 0
+    logger.info("[backfill] %d missing episodes across %d series (max %d searches this sweep)", len(missing), len(order), ctx.max_searches)
 
+    # Log the priority breakdown
+    by_priority: dict[int, int] = {}
     for entry in order:
-        if searched >= ctx.max_searches or ctx.interrupted:
+        by_priority[entry["priority"]] = by_priority.get(entry["priority"], 0) + 1
+    logger.info("[backfill] priority breakdown: %s", ", ".join(f"P{p}={c}" for p, c in sorted(by_priority.items())))
+
+    searched = 0
+    for entry in order:
+        if searched >= ctx.max_searches:
+            logger.info("[backfill] hit max searches (%d), remaining deferred to next sweep", ctx.max_searches)
+            break
+        if ctx.interrupted:
+            logger.info("[backfill] interrupted by webhook event, pausing sweep")
             break
         sid = entry["series_id"]
         if ctx.dry_run:
-            logger.info("DRY RUN: would search series %d (%s)", sid, entry["label"])
+            logger.info("[backfill] DRY RUN: would search series %d (%s)", sid, entry["label"])
         else:
             try:
                 ctx.sonarr.trigger_series_search(sid)
+                logger.info("[backfill] triggered search: series %d (%s)", sid, entry["label"])
             except Exception:
-                logger.exception("Failed search for series %d", sid)
+                logger.exception("[backfill] search failed for series %d, backing off", sid)
                 break
             if ctx.delay_seconds > 0:
                 time.sleep(ctx.delay_seconds)
         searched += 1
 
+    logger.info("[backfill] sweep complete: %d/%d series searched", searched, len(order))
     return searched
 
 
@@ -82,9 +96,11 @@ def run_cutoff_sweep(ctx: SweepContext) -> int:
     """
     cutoff = ctx.sonarr.get_wanted_cutoff()
     if not cutoff:
+        logger.info("[cutoff] no cutoff-unmet episodes found")
         return 0
 
     order = build_sweep_order(cutoff, ctx.priority_fn)
+    logger.info("[cutoff] %d cutoff-unmet episodes across %d series (max %d)", len(cutoff), len(order), ctx.max_searches)
     searched = 0
 
     for entry in order:
@@ -92,14 +108,17 @@ def run_cutoff_sweep(ctx: SweepContext) -> int:
             break
         sid = entry["series_id"]
         if ctx.dry_run:
-            logger.info("DRY RUN: would cutoff-search series %d", sid)
+            logger.info("[cutoff] DRY RUN: would cutoff-search series %d (%s)", sid, entry["label"])
         else:
             try:
                 ctx.sonarr.trigger_cutoff_search(sid)
+                logger.info("[cutoff] triggered search: series %d (%s)", sid, entry["label"])
             except Exception:
+                logger.exception("[cutoff] search failed for series %d, backing off", sid)
                 break
             if ctx.delay_seconds > 0:
                 time.sleep(ctx.delay_seconds)
         searched += 1
 
+    logger.info("[cutoff] sweep complete: %d/%d series searched", searched, len(order))
     return searched

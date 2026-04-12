@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from prioritarr.database import Database
+
+logger = logging.getLogger(__name__)
 
 CLIENT_MAP: dict[str, str] = {
     "qbittorrent": "qbit",
@@ -77,7 +80,12 @@ def handle_ongrab(
     key = _event_key(event)
 
     if not db.try_insert_dedupe(key, now):
+        logger.debug("[grab] deduplicated event for '%s' ep%s", event.series_title, event.episode_ids)
         return False
+
+    logger.info("[grab] %s -> P%d via %s/%s (episodes: %s)%s",
+                event.series_title, priority, event.download_client, event.download_id[:12],
+                event.episode_ids, " [DRY RUN]" if dry_run else "")
 
     if not dry_run:
         db.upsert_managed_download(

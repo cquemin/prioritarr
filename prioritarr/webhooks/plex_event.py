@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from prioritarr.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -27,6 +30,7 @@ def parse_tautulli_watched(data: dict) -> WatchedEvent:
 
 def handle_watched(sonarr_series_id: int, db: Database) -> None:
     """Invalidate the priority cache for the given series and log the action."""
+    logger.info("[watched] cache invalidated for series %d (Plex episode finished)", sonarr_series_id)
     db.invalidate_priority_cache(sonarr_series_id)
     db.append_audit(
         action="cache_invalidated",

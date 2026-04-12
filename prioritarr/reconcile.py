@@ -41,6 +41,7 @@ def reconcile_client(ctx: ReconcileContext) -> None:
         id_field = "nzo_id"
 
     current_ids: set[str] = set()
+    logger.debug("[%s] reconcile: %d items in client queue", ctx.client_name, len(queue_items))
 
     for item in queue_items:
         client_id = item[id_field]
@@ -51,10 +52,12 @@ def reconcile_client(ctx: ReconcileContext) -> None:
             # Orphan — try to identify via Sonarr queue
             sonarr_info = ctx.sonarr_queue_lookup.get(client_id)
             if sonarr_info is None:
+                logger.debug("[%s] orphan %s not in Sonarr queue, skipping", ctx.client_name, client_id[:12])
                 continue
             series_id = sonarr_info["seriesId"]
             episode_id = sonarr_info.get("episodeId", 0)
             result = ctx.priority_fn(series_id)
+            logger.info("[%s] adopted orphan %s -> series %d, assigned P%d", ctx.client_name, client_id[:12], series_id, result.priority)
             ctx.db.upsert_managed_download(
                 client=ctx.client_name,
                 client_id=client_id,
@@ -79,6 +82,7 @@ def reconcile_client(ctx: ReconcileContext) -> None:
             result = ctx.priority_fn(series_id)
             old_priority = row["current_priority"]
             if result.priority != old_priority:
+                logger.info("[%s] priority changed %s: P%d -> P%d (%s)", ctx.client_name, client_id[:12], old_priority, result.priority, result.reason)
                 ctx.db.upsert_managed_download(
                     client=ctx.client_name,
                     client_id=client_id,
@@ -106,9 +110,14 @@ def reconcile_client(ctx: ReconcileContext) -> None:
 
     # Clean up finished downloads
     managed = ctx.db.list_managed_downloads(client=ctx.client_name)
+    cleaned = 0
     for row in managed:
         if row["client_id"] not in current_ids:
+            logger.info("[%s] cleaned up finished download %s (series %d)", ctx.client_name, row["client_id"][:12], row["series_id"])
             ctx.db.delete_managed_download(ctx.client_name, row["client_id"])
+            cleaned += 1
+    if cleaned:
+        logger.info("[%s] reconcile complete: cleaned %d finished downloads", ctx.client_name, cleaned)
 
 
 def _apply_qbit_enforcement(ctx: ReconcileContext, queue_items: list) -> None:
@@ -127,20 +136,25 @@ def _apply_qbit_enforcement(ctx: ReconcileContext, queue_items: list) -> None:
             "paused_by_us": bool(row["paused_by_us"]),
         }
     actions = compute_qbit_pause_actions(downloads)
+    if actions:
+        logger.info("[qbit] enforcement: %d actions to apply", len(actions))
     for action in actions:
         if action.action == "pause":
+            logger.info("[qbit] PAUSE %s (P%d torrent, higher priority active)", action.hash[:12], downloads[action.hash]["priority"])
             ctx.client.pause([action.hash])
             ctx.db.execute(
                 "UPDATE managed_downloads SET paused_by_us = 1 WHERE client = 'qbit' AND client_id = ?",
                 (action.hash,),
             )
         elif action.action == "resume":
+            logger.info("[qbit] RESUME %s (no longer needs to be paused)", action.hash[:12])
             ctx.client.resume([action.hash])
             ctx.db.execute(
                 "UPDATE managed_downloads SET paused_by_us = 0 WHERE client = 'qbit' AND client_id = ?",
                 (action.hash,),
             )
         elif action.action == "top_priority":
+            logger.info("[qbit] TOP_PRIORITY %s (P1 item)", action.hash[:12])
             ctx.client.top_priority([action.hash])
         ctx.db.append_audit(
             action=action.action,
@@ -154,6 +168,8 @@ def _apply_sab_enforcement(ctx: ReconcileContext) -> None:
     managed = ctx.db.list_managed_downloads(client="sab")
     for row in managed:
         sab_priority = compute_sab_priority(row["current_priority"])
+        sab_names = {2: "Force", 1: "High", 0: "Normal", -1: "Low"}
+        logger.info("[sab] SET_PRIORITY %s -> %s (P%d)", row["client_id"][:12], sab_names.get(sab_priority, str(sab_priority)), row["current_priority"])
         ctx.client.set_priority(row["client_id"], sab_priority)
         ctx.db.append_audit(
             action="priority_set",
