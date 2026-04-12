@@ -6,7 +6,7 @@ import httpx
 class TautulliClient:
     """Thin synchronous wrapper around the Tautulli v2 REST API."""
 
-    def __init__(self, base_url: str, api_key: str, timeout: float = 30.0) -> None:
+    def __init__(self, base_url: str, api_key: str, timeout: float = 120.0) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._client = httpx.Client(timeout=timeout)

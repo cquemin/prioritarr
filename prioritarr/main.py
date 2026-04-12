@@ -56,6 +56,11 @@ def _setup_logging(level: str) -> None:
         format='{"ts":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}',
         stream=sys.stdout,
     )
+    # Silence noisy third-party loggers even in DEBUG mode
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.INFO)
+    logging.getLogger("apscheduler.scheduler").setLevel(logging.INFO)
+    logging.getLogger("apscheduler.executors").setLevel(logging.INFO)
 
 
 # ---------------------------------------------------------------------------
@@ -439,11 +444,9 @@ async def lifespan(application: FastAPI):  # type: ignore[type-arg]
     )
     sab = SABClient(settings.sab_url, settings.sab_api_key)
 
-    # 4. Initial mapping refresh
-    try:
-        _refresh_mappings()
-    except Exception:
-        logger.exception("lifespan: initial _refresh_mappings failed")
+    # 4. Skip blocking mapping refresh at startup — let the scheduler handle it
+    # immediately after start. This avoids a 60s timeout blocking the lifespan.
+    logger.info("Deferring initial mapping refresh to scheduler (runs within 30s)")
 
     # 5. Start scheduler
     scheduler = BackgroundScheduler()
@@ -473,6 +476,14 @@ async def lifespan(application: FastAPI):  # type: ignore[type-arg]
         "interval",
         hours=1,
         id="refresh_mappings",
+    )
+    # Run initial mapping refresh 10s after start (non-blocking)
+    scheduler.add_job(
+        _job_refresh_mappings,
+        "date",
+        run_date=datetime.now(timezone.utc) + timedelta(seconds=10),
+        id="initial_refresh",
+        misfire_grace_time=120,  # still run even if "missed" by up to 2 min
     )
 
     scheduler.start()
