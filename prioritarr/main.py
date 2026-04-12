@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import redis
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -38,6 +41,10 @@ qbit: QBitClient
 sab: SABClient
 scheduler: BackgroundScheduler
 sweep_ctx: SweepContext | None = None
+redis_client: redis.Redis | None = None
+
+REDIS_MAPPING_KEY = "prioritarr:plex_to_series"   # hash: plex_rating_key -> series_id
+REDIS_MAPPING_TTL = 7 * 24 * 3600                 # 7 days
 
 _tvdb_to_series: dict[int, int] = {}         # tvdb_id -> sonarr series_id
 _title_to_plex_key: dict[str, str] = {}      # normalized_title -> plex_rating_key
@@ -82,12 +89,66 @@ def _find_plex_key_for_series(title: str) -> str | None:
     return _title_to_plex_key.get(_normalise_title(title))
 
 
-def _refresh_mappings() -> None:
-    """Rebuild Plex↔Sonarr title-based mappings.
+def _extract_folder_name(path: str) -> str:
+    """Extract the last meaningful folder component from a path."""
+    # /storage/media/video/anime/Attack on Titan -> attack on titan
+    return os.path.basename(path.rstrip("/")).strip().lower()
 
-    1. Fetch all Sonarr series → build _tvdb_to_series + sonarr_titles.
-    2. Fetch Tautulli show libraries → for each library fetch media info →
-       build _title_to_plex_key + _plex_key_to_series_id.
+
+def _extract_tvdb_from_guids(guids: list) -> int | None:
+    """Extract TVDB ID from Plex/Tautulli GUIDs list."""
+    for guid in guids:
+        g = str(guid)
+        # Plex new agent: "tvdb://267440"
+        if "tvdb://" in g:
+            match = re.search(r"tvdb://(\d+)", g)
+            if match:
+                return int(match.group(1))
+        # Plex old agent: "com.plexapp.agents.thetvdb://267440"
+        if "thetvdb://" in g:
+            match = re.search(r"thetvdb://(\d+)", g)
+            if match:
+                return int(match.group(1))
+    return None
+
+
+def _load_cached_mappings() -> dict[str, int]:
+    """Load plex_key -> series_id mapping from Redis. Returns empty dict on failure."""
+    if redis_client is None:
+        return {}
+    try:
+        cached = redis_client.hgetall(REDIS_MAPPING_KEY)
+        return {k.decode(): int(v) for k, v in cached.items()} if cached else {}
+    except Exception:
+        logger.warning("Redis: failed to load cached mappings")
+        return {}
+
+
+def _save_cached_mappings(mapping: dict[str, int]) -> None:
+    """Save plex_key -> series_id mapping to Redis."""
+    if redis_client is None or not mapping:
+        return
+    try:
+        pipe = redis_client.pipeline()
+        pipe.delete(REDIS_MAPPING_KEY)
+        pipe.hset(REDIS_MAPPING_KEY, mapping={k: str(v) for k, v in mapping.items()})
+        pipe.expire(REDIS_MAPPING_KEY, REDIS_MAPPING_TTL)
+        pipe.execute()
+        logger.debug("Redis: saved %d mappings", len(mapping))
+    except Exception:
+        logger.warning("Redis: failed to save cached mappings")
+
+
+def _refresh_mappings() -> None:
+    """Rebuild Plex↔Sonarr mappings using 3-step matching + Redis cache.
+
+    Steps per Plex show (in order, first match wins):
+    1. TVDB ID — via Tautulli get_metadata GUIDs → Sonarr tvdbId (unambiguous)
+    2. Path    — Sonarr series folder name → Plex file location folder name
+    3. Title   — normalised title comparison (current fallback)
+
+    Redis caches the final plex_key→series_id map so only NEW shows need
+    the expensive get_metadata calls on subsequent refreshes.
     """
     global _tvdb_to_series, _title_to_plex_key, _plex_key_to_series_id, _TAUTULLI_AVAILABLE
 
@@ -99,17 +160,21 @@ def _refresh_mappings() -> None:
         return
 
     new_tvdb: dict[int, int] = {}
-    sonarr_titles: dict[str, int] = {}  # normalised_title -> series_id
+    sonarr_titles: dict[str, int] = {}
+    sonarr_folders: dict[str, int] = {}  # normalized folder name -> series_id
 
     for s in all_series:
         sid = s.get("id")
         tvdb_id = s.get("tvdbId")
         title = s.get("title", "")
+        path = s.get("path", "")
         if sid is None:
             continue
         if tvdb_id:
             new_tvdb[tvdb_id] = sid
         sonarr_titles[_normalise_title(title)] = sid
+        if path:
+            sonarr_folders[_extract_folder_name(path)] = sid
 
     _tvdb_to_series = new_tvdb
 
@@ -121,8 +186,12 @@ def _refresh_mappings() -> None:
         _TAUTULLI_AVAILABLE = False
         return
 
+    # Load existing Redis cache — shows already matched skip the 3-step process
+    cached = _load_cached_mappings()
+
     new_title_to_key: dict[str, str] = {}
     new_key_to_sid: dict[str, int] = {}
+    stats = {"cached": 0, "tvdb": 0, "path": 0, "title": 0, "unmatched": 0}
 
     for lib in libraries:
         section_id = lib.get("section_id")
@@ -131,32 +200,86 @@ def _refresh_mappings() -> None:
         try:
             media_items = tautulli.get_library_media_info(int(section_id))
         except Exception:
-            logger.exception(
-                "_refresh_mappings: failed to fetch library media info for section %s",
-                section_id,
-            )
+            logger.exception("_refresh_mappings: failed to get media for section %s", section_id)
             continue
 
         for item in media_items:
             plex_key = str(item.get("rating_key", ""))
             plex_title = item.get("title", "")
-            norm = _normalise_title(plex_title)
             if not plex_key:
                 continue
+
+            norm = _normalise_title(plex_title)
             new_title_to_key[norm] = plex_key
-            # Match against known Sonarr series
-            sid = sonarr_titles.get(norm)
-            if sid is not None:
-                new_key_to_sid[plex_key] = sid
+
+            # Check Redis cache first
+            if plex_key in cached:
+                sid = cached[plex_key]
+                # Verify the series still exists in Sonarr
+                if sid in new_tvdb.values() or sid in sonarr_titles.values():
+                    new_key_to_sid[plex_key] = sid
+                    stats["cached"] += 1
+                    continue
+
+            # Step 1: TVDB ID match via get_metadata
+            matched = False
+            try:
+                metadata = tautulli.get_metadata(plex_key)
+                guids = metadata.get("guids", []) if isinstance(metadata, dict) else []
+                tvdb_id = _extract_tvdb_from_guids(guids)
+                if tvdb_id and tvdb_id in new_tvdb:
+                    new_key_to_sid[plex_key] = new_tvdb[tvdb_id]
+                    stats["tvdb"] += 1
+                    matched = True
+
+                # Step 2: Path match (from metadata file info)
+                if not matched and isinstance(metadata, dict):
+                    media_info = metadata.get("media_info", [])
+                    for mi in media_info if isinstance(media_info, list) else []:
+                        parts = mi.get("parts", [])
+                        for part in parts if isinstance(parts, list) else []:
+                            file_path = part.get("file", "")
+                            if file_path:
+                                # Extract series folder: /anime/Attack on Titan/Season 01/ep.mkv
+                                # Split path, find component before "Season XX"
+                                parts_list = file_path.replace("\\", "/").split("/")
+                                for i, p in enumerate(parts_list):
+                                    if p.lower().startswith("season") and i > 0:
+                                        folder = parts_list[i - 1].strip().lower()
+                                        sid = sonarr_folders.get(folder)
+                                        if sid is not None:
+                                            new_key_to_sid[plex_key] = sid
+                                            stats["path"] += 1
+                                            matched = True
+                                        break
+                            if matched:
+                                break
+                        if matched:
+                            break
+            except Exception:
+                logger.debug("_refresh_mappings: get_metadata failed for %s (%s)", plex_key, plex_title)
+
+            # Step 3: Title match (fallback)
+            if not matched:
+                sid = sonarr_titles.get(norm)
+                if sid is not None:
+                    new_key_to_sid[plex_key] = sid
+                    stats["title"] += 1
+                else:
+                    stats["unmatched"] += 1
 
     _title_to_plex_key = new_title_to_key
     _plex_key_to_series_id = new_key_to_sid
     _TAUTULLI_AVAILABLE = True
+
+    # Save to Redis
+    _save_cached_mappings(new_key_to_sid)
+
     logger.info(
-        "_refresh_mappings: %d tvdb, %d plex keys, %d matched",
-        len(_tvdb_to_series),
-        len(_title_to_plex_key),
-        len(_plex_key_to_series_id),
+        "_refresh_mappings: %d sonarr series, %d plex shows, %d matched "
+        "(cached=%d, tvdb=%d, path=%d, title=%d, unmatched=%d)",
+        len(all_series), len(new_title_to_key), len(new_key_to_sid),
+        stats["cached"], stats["tvdb"], stats["path"], stats["title"], stats["unmatched"],
     )
 
 
@@ -424,7 +547,7 @@ def _job_refresh_mappings() -> None:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):  # type: ignore[type-arg]
-    global settings, db, sonarr, tautulli, qbit, sab, scheduler
+    global settings, db, sonarr, tautulli, qbit, sab, scheduler, redis_client
 
     # 1. Load settings
     settings = load_settings_from_env()
@@ -443,6 +566,19 @@ async def lifespan(application: FastAPI):  # type: ignore[type-arg]
         password=settings.qbit_password or "",
     )
     sab = SABClient(settings.sab_url, settings.sab_api_key)
+
+    # 3b. Redis (optional — graceful if unavailable)
+    if settings.redis_url:
+        try:
+            redis_client = redis.from_url(settings.redis_url, decode_responses=False)
+            redis_client.ping()
+            logger.info("Redis connected at %s", settings.redis_url.split("@")[-1])
+        except Exception:
+            logger.warning("Redis unavailable — mapping cache disabled")
+            redis_client = None
+    else:
+        redis_client = None
+        logger.info("No REDIS_URL configured — mapping cache disabled")
 
     # 4. Skip blocking mapping refresh at startup — let the scheduler handle it
     # immediately after start. This avoids a 60s timeout blocking the lifespan.

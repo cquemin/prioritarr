@@ -100,6 +100,7 @@ class Settings:
     # Optional connection fields
     qbit_username: str | None = None
     qbit_password: str | None = None
+    redis_url: str | None = None
 
     # Behaviour flags
     dry_run: bool = True
@@ -177,6 +178,7 @@ def load_settings_from_env() -> Settings:
         sab_api_key=_env_required("SAB_API_KEY"),
         qbit_username=_env("QBIT_USERNAME"),
         qbit_password=_env("QBIT_PASSWORD"),
+        redis_url=_env("REDIS_URL"),
         dry_run=dry_run,
         log_level=_env("LOG_LEVEL", "INFO"),  # type: ignore[arg-type]
         config_path=config_path,
