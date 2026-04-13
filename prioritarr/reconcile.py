@@ -50,7 +50,8 @@ def reconcile_client(ctx: ReconcileContext) -> None:
 
         if row is None:
             # Orphan — try to identify via Sonarr queue
-            sonarr_info = ctx.sonarr_queue_lookup.get(client_id)
+            # Normalise to lowercase for matching (Sonarr uses uppercase, qBit lowercase)
+            sonarr_info = ctx.sonarr_queue_lookup.get(client_id.lower())
             if sonarr_info is None:
                 logger.debug("[%s] orphan %s not in Sonarr queue, skipping", ctx.client_name, client_id[:12])
                 continue

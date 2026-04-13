@@ -562,11 +562,12 @@ def _job_reconcile() -> None:
         return
 
     # Build download_id → {seriesId, episodeId} lookup
+    # Normalise to lowercase — Sonarr returns uppercase hashes, qBit returns lowercase
     sonarr_queue_lookup: dict[str, dict] = {}
     for item in queue_items:
         dl_id = item.get("downloadId", "")
         if dl_id:
-            sonarr_queue_lookup[dl_id] = {
+            sonarr_queue_lookup[dl_id.lower()] = {
                 "seriesId": item.get("seriesId", 0),
                 "episodeId": item.get("episodeId", 0),
             }
@@ -701,18 +702,21 @@ async def lifespan(application: FastAPI):  # type: ignore[type-arg]
         "interval",
         minutes=ivl.reconcile_minutes,
         id="reconcile",
+        misfire_grace_time=300,  # tolerate up to 5 min delay
     )
     scheduler.add_job(
         _job_backfill_sweep,
         "interval",
         hours=ivl.backfill_sweep_hours,
         id="backfill_sweep",
+        misfire_grace_time=600,
     )
     scheduler.add_job(
         _job_cutoff_sweep,
         "interval",
         hours=ivl.cutoff_sweep_hours,
         id="cutoff_sweep",
+        misfire_grace_time=600,
     )
     scheduler.add_job(
         _job_refresh_mappings,
@@ -762,20 +766,26 @@ async def health() -> JSONResponse:
 
 @app.get("/ready")
 async def ready() -> JSONResponse:
-    """Readiness check — probes all dependencies."""
+    """Readiness check — lightweight connectivity probes only.
+
+    Uses cheap system/status endpoints instead of full data queries to avoid
+    blocking worker threads (sonarr.get_all_series takes 90s+ with 400+ series).
+    """
     dep_status: dict[str, str] = {}
 
-    for name, client, method in (
-        ("sonarr", sonarr, lambda: sonarr.get_all_series()),
-        ("tautulli", tautulli, lambda: tautulli.get_show_libraries()),
-        ("qbit", qbit, lambda: qbit.get_torrents()),
-        ("sab", sab, lambda: sab.get_queue()),
-    ):
+    # Lightweight checks — each should return in <2 seconds
+    checks: list[tuple[str, callable]] = [
+        ("sonarr", lambda: sonarr._get("/api/v3/system/status")),
+        ("tautulli", lambda: tautulli._call("arnold")),  # fast test command
+        ("qbit", lambda: qbit._request("GET", "/api/v2/app/version")),
+        ("sab", lambda: sab._call("version")),
+    ]
+    for name, check_fn in checks:
         try:
-            method()
+            check_fn()
             dep_status[name] = "ok"
-        except Exception as exc:
-            dep_status[name] = f"unreachable: {exc}"
+        except Exception:
+            dep_status[name] = "unreachable"
 
     result = check_readiness(db, dep_status)
     status_code = 200 if result["status"] == "ok" else 503
@@ -841,7 +851,7 @@ def _trigger_qbit_reconcile(download_id: str) -> None:
     for item in queue_items:
         dl_id = item.get("downloadId", "")
         if dl_id:
-            sonarr_queue_lookup[dl_id] = {
+            sonarr_queue_lookup[dl_id.lower()] = {
                 "seriesId": item.get("seriesId", 0),
                 "episodeId": item.get("episodeId", 0),
             }
