@@ -101,6 +101,8 @@ class Settings:
     qbit_username: str | None = None
     qbit_password: str | None = None
     redis_url: str | None = None
+    plex_url: str | None = None
+    plex_token: str | None = None
 
     # Behaviour flags
     dry_run: bool = True
@@ -179,6 +181,8 @@ def load_settings_from_env() -> Settings:
         qbit_username=_env("QBIT_USERNAME"),
         qbit_password=_env("QBIT_PASSWORD"),
         redis_url=_env("REDIS_URL"),
+        plex_url=_env("PLEX_URL"),
+        plex_token=_env("PLEX_TOKEN"),
         dry_run=dry_run,
         log_level=_env("LOG_LEVEL", "INFO"),  # type: ignore[arg-type]
         config_path=config_path,

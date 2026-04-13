@@ -13,6 +13,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from prioritarr.clients.plex import PlexClient
 from prioritarr.clients.qbittorrent import QBitClient
 from prioritarr.clients.sabnzbd import SABClient, PRIORITY_MAP
 from prioritarr.clients.sonarr import SonarrClient
@@ -39,6 +40,7 @@ sonarr: SonarrClient
 tautulli: TautulliClient
 qbit: QBitClient
 sab: SABClient
+plex: PlexClient | None = None
 scheduler: BackgroundScheduler
 sweep_ctx: SweepContext | None = None
 redis_client: redis.Redis | None = None
@@ -339,38 +341,135 @@ def _build_series_snapshot(series_id: int) -> SeriesSnapshot | None:
         if len(missing_episodes) >= 2:
             previous_episode_release_date = missing_episodes[-2]
 
-    # Plex / Tautulli side
-    plex_key = _find_plex_key_for_series(title)
+    # Plex / Tautulli side — look up watch history
+    # Try multiple strategies: current plex key first, then ALL known keys for
+    # this title (covers old rating keys from before a Plex URL change).
     watched_count = 0
     last_watched_at: datetime | None = None
 
-    if plex_key:
-        try:
-            history = tautulli.get_history(grandparent_rating_key=plex_key, media_type="episode")
-        except Exception:
-            logger.exception(
-                "_build_series_snapshot: Tautulli history failed for series %d", series_id
+    plex_key = _find_plex_key_for_series(title)
+    history: list[dict] = []
+
+    try:
+        # Strategy 1: query by current plex rating key
+        if plex_key:
+            history = tautulli.get_history(
+                grandparent_rating_key=plex_key, media_type="episode", length=500
             )
-            return None  # Tautulli unreachable → caller handles P3 fallback
+        # Strategy 2: if no results (stale rating keys), fetch recent global
+        # history and filter by title match. Handles Plex URL/server changes
+        # where old history has different rating keys.
+        if not history:
+            all_recent = tautulli.get_history(media_type="episode", length=2000)
+            norm_title = _normalise_title(title)
+            history = [
+                e for e in all_recent
+                if _normalise_title(e.get("grandparent_title", "")) == norm_title
+            ]
+            if history:
+                logger.debug(
+                    "_build_series_snapshot: found %d history entries for '%s' via title fallback",
+                    len(history), title,
+                )
+    except Exception:
+        logger.exception(
+            "_build_series_snapshot: Tautulli history failed for series %d", series_id
+        )
+        return None  # Tautulli unreachable → caller handles P3 fallback
 
-        watched_keys: set[str] = set()
-        latest_ts: datetime | None = None
+    # Count watched episodes by season+episode number (not by rating key,
+    # which can differ across Plex server changes)
+    watched_se: set[tuple[int, int]] = set()
+    latest_ts: datetime | None = None
 
-        for entry in history:
-            rk = str(entry.get("rating_key", ""))
-            if rk:
-                watched_keys.add(rk)
-            ts_raw = entry.get("date")
-            if ts_raw:
-                try:
-                    ts_val = datetime.fromtimestamp(int(ts_raw), tz=timezone.utc)
-                    if latest_ts is None or ts_val > latest_ts:
-                        latest_ts = ts_val
-                except (ValueError, TypeError):
-                    pass
+    for entry in history:
+        season = entry.get("parent_media_index")
+        episode = entry.get("media_index")
+        if season is not None and episode is not None:
+            watched_se.add((int(season), int(episode)))
+        ts_raw = entry.get("date")
+        if ts_raw:
+            try:
+                ts_val = datetime.fromtimestamp(int(ts_raw), tz=timezone.utc)
+                if latest_ts is None or ts_val > latest_ts:
+                    latest_ts = ts_val
+            except (ValueError, TypeError):
+                pass
 
-        watched_count = len(watched_keys)
-        last_watched_at = latest_ts
+    # Match against Sonarr's monitored aired episodes
+    for ep in episodes:
+        if not ep.get("monitored"):
+            continue
+        se = (ep.get("seasonNumber"), ep.get("episodeNumber"))
+        if se in watched_se:
+            watched_count += 1
+
+    # If Tautulli has ANY history for this show but none of the *monitored*
+    # episodes overlap (e.g. anime: watched S1, Sonarr monitors S2+), ensure
+    # watched_count >= 1 so the priority tree knows the user has engagement
+    # with this series (P4 partial backfill, not P5 never-started).
+    if watched_count == 0 and watched_se:
+        watched_count = 1
+        logger.debug(
+            "_build_series_snapshot: '%s' has %d watched episodes in Tautulli but "
+            "none overlap with monitored episodes — counting as 1 for engagement",
+            title, len(watched_se),
+        )
+
+    # Plex direct fallback — when Tautulli history is stale or incomplete,
+    # query Plex directly for current episode watch status. Plex always knows
+    # the real viewCount / lastViewedAt even when Tautulli was offline.
+    if plex is not None and plex_key:
+        try:
+            plex_episodes = plex.get_show_episodes_watch_status(plex_key)
+            if plex_episodes:
+                plex_watched_se: set[tuple[int, int]] = set()
+                plex_latest: datetime | None = None
+                for pe in plex_episodes:
+                    if pe["watched"]:
+                        plex_watched_se.add((pe["season"], pe["episode"]))
+                        lva = pe.get("last_viewed_at")
+                        if lva:
+                            ts = datetime.fromtimestamp(lva, tz=timezone.utc)
+                            if plex_latest is None or ts > plex_latest:
+                                plex_latest = ts
+
+                # Count against monitored episodes
+                plex_watched_count = 0
+                for ep in episodes:
+                    if not ep.get("monitored"):
+                        continue
+                    se = (ep.get("seasonNumber"), ep.get("episodeNumber"))
+                    if se in plex_watched_se:
+                        plex_watched_count += 1
+
+                # Engagement: any watched episode in Plex counts
+                if plex_watched_count == 0 and plex_watched_se:
+                    plex_watched_count = 1
+
+                # Use Plex data if it's richer than Tautulli
+                if plex_watched_count > watched_count:
+                    logger.info(
+                        "_build_series_snapshot: '%s' Plex direct has more data "
+                        "(plex=%d vs tautulli=%d watched), using Plex",
+                        title, plex_watched_count, watched_count,
+                    )
+                    watched_count = plex_watched_count
+                if plex_latest and (latest_ts is None or plex_latest > latest_ts):
+                    logger.info(
+                        "_build_series_snapshot: '%s' Plex has newer watch date "
+                        "(plex=%s vs tautulli=%s)",
+                        title,
+                        plex_latest.date() if plex_latest else "none",
+                        latest_ts.date() if latest_ts else "none",
+                    )
+                    latest_ts = plex_latest
+        except Exception:
+            logger.debug(
+                "_build_series_snapshot: Plex direct fallback failed for '%s'", title
+            )
+
+    last_watched_at = latest_ts
 
     return SeriesSnapshot(
         series_id=series_id,
@@ -547,7 +646,7 @@ def _job_refresh_mappings() -> None:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):  # type: ignore[type-arg]
-    global settings, db, sonarr, tautulli, qbit, sab, scheduler, redis_client
+    global settings, db, sonarr, tautulli, plex, qbit, sab, scheduler, redis_client
 
     # 1. Load settings
     settings = load_settings_from_env()
@@ -567,7 +666,15 @@ async def lifespan(application: FastAPI):  # type: ignore[type-arg]
     )
     sab = SABClient(settings.sab_url, settings.sab_api_key)
 
-    # 3b. Redis (optional — graceful if unavailable)
+    # 3b. Plex direct client (optional — used as fallback when Tautulli history is stale)
+    if settings.plex_url and settings.plex_token:
+        plex = PlexClient(settings.plex_url, settings.plex_token)
+        logger.info("Plex direct client configured at %s", settings.plex_url)
+    else:
+        plex = None
+        logger.info("No PLEX_URL/PLEX_TOKEN — Plex direct fallback disabled")
+
+    # 3c. Redis (optional — graceful if unavailable)
     if settings.redis_url:
         try:
             redis_client = redis.from_url(settings.redis_url, decode_responses=False)
