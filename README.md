@@ -68,16 +68,13 @@ Prioritarr takes over Sonarr's missing-episode search scheduling. Every 2 hours,
 - Tautulli (can restore from existing config or fresh install)
 - Redis (optional, for mapping cache)
 
-### 1. Build and configure
+### 1. Configure
 
 ```bash
-# Clone
-git clone https://github.com/cquemin/prioritarr.git
-cd prioritarr
-
-# Copy default config to your Docker config directory
+# Create config directory and download default config
 mkdir -p /path/to/docker/config/prioritarr
-cp default-config.yaml /path/to/docker/config/prioritarr/prioritarr.yaml
+curl -o /path/to/docker/config/prioritarr/prioritarr.yaml \
+  https://raw.githubusercontent.com/cquemin/prioritarr/main/default-config.yaml
 ```
 
 ### 2. Docker Compose
@@ -86,9 +83,7 @@ Add to your `docker-compose.yml`:
 
 ```yaml
 prioritarr:
-  build:
-    context: ./prioritarr
-    dockerfile: Dockerfile
+  image: ghcr.io/cquemin/prioritarr:latest
   container_name: prioritarr
   volumes:
     - /path/to/docker/config/prioritarr:/config
