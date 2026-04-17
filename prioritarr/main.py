@@ -850,7 +850,27 @@ async def ready() -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/sonarr/on-grab")
+@app.post(
+    "/api/sonarr/on-grab",
+    summary="Sonarr OnGrab webhook receiver",
+    description="Always returns HTTP 200. Response shape depends on outcome.",
+    responses={
+        200: {
+            "description": "Webhook accepted",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "oneOf": [
+                            {"$ref": "#/components/schemas/OnGrabIgnored"},
+                            {"$ref": "#/components/schemas/OnGrabProcessed"},
+                            {"$ref": "#/components/schemas/OnGrabDuplicate"},
+                        ]
+                    }
+                }
+            },
+        },
+    },
+)
 async def sonarr_on_grab(request: Request) -> JSONResponse:
     """Handle Sonarr OnGrab webhook."""
     payload: dict[str, Any] = await request.json()
@@ -920,7 +940,31 @@ def _trigger_qbit_reconcile(download_id: str) -> None:
     reconcile_client(ctx)
 
 
-@app.post("/api/plex-event")
+@app.post(
+    "/api/plex-event",
+    summary="Tautulli watched notification",
+    description=(
+        "Accepts Tautulli's 'watched' notification. Always returns HTTP 200. "
+        "Triggers a synchronous mapping refresh if the plex_key is unknown "
+        "(legacy quirk #5). Returns 'ok' when the priority cache was invalidated "
+        "for a known series, 'unmatched' otherwise."
+    ),
+    responses={
+        200: {
+            "description": "Webhook accepted (one of two shapes).",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "oneOf": [
+                            {"$ref": "#/components/schemas/PlexEventOk"},
+                            {"$ref": "#/components/schemas/PlexEventUnmatched"},
+                        ]
+                    }
+                }
+            },
+        },
+    },
+)
 async def plex_event(request: Request) -> JSONResponse:
     """Handle Tautulli watched webhook."""
     payload: dict[str, Any] = await request.json()

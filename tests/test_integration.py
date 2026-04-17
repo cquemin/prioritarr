@@ -213,3 +213,23 @@ class TestSonarrOnGrabEndpoint:
         body = resp.json()
         assert body["status"] == "ignored"
         assert body["eventType"] == "Test"
+
+
+def test_sonarr_on_grab_openapi_declares_union_response(client):
+    tc, _ = client
+    spec = tc.get("/openapi.json").json()
+    post_grab = spec["paths"]["/api/sonarr/on-grab"]["post"]
+    ok_schema = post_grab["responses"]["200"]["content"]["application/json"]["schema"]
+    as_str = str(ok_schema)
+    assert any(
+        name in as_str for name in ("OnGrabIgnored", "OnGrabProcessed", "OnGrabDuplicate")
+    )
+
+
+def test_plex_event_openapi_declares_union_response(client):
+    tc, _ = client
+    spec = tc.get("/openapi.json").json()
+    post_plex = spec["paths"]["/api/plex-event"]["post"]
+    ok_schema = post_plex["responses"]["200"]["content"]["application/json"]["schema"]
+    as_str = str(ok_schema)
+    assert "PlexEventUnmatched" in as_str or "PlexEventOk" in as_str
