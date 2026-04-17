@@ -786,6 +786,18 @@ def _custom_openapi():
 app.openapi = _custom_openapi
 
 
+# Gate: test-mode endpoints only mounted when PRIORITARR_TEST_MODE=true.
+# Read env directly here — `settings` is populated later in lifespan, but routes
+# must be registered at app-construction time.
+if os.environ.get("PRIORITARR_TEST_MODE", "").lower() in ("true", "1", "yes"):
+    from prioritarr.testing_api import router as _testing_router
+    app.include_router(_testing_router)
+    logger.warning(
+        "PRIORITARR_TEST_MODE is enabled — test-mode endpoints mounted at "
+        "/api/v1/_testing/*. Never enable this in production."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Health endpoints
 # ---------------------------------------------------------------------------

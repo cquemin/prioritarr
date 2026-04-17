@@ -107,6 +107,7 @@ class Settings:
     # Behaviour flags
     dry_run: bool = True
     log_level: str = "INFO"
+    test_mode: bool = False
 
     # Path to user-supplied YAML config (overlay on top of defaults)
     config_path: str | None = None
@@ -170,6 +171,9 @@ def load_settings_from_env() -> Settings:
     dry_run_raw = _env("DRY_RUN", "true").lower()  # type: ignore[union-attr]
     dry_run = dry_run_raw not in ("false", "0", "no")
 
+    test_mode_raw = _env("TEST_MODE", "false").lower()  # type: ignore[union-attr]
+    test_mode = test_mode_raw in ("true", "1", "yes")
+
     return Settings(
         sonarr_url=_env_required("SONARR_URL"),
         sonarr_api_key=_env_required("SONARR_API_KEY"),
@@ -185,6 +189,7 @@ def load_settings_from_env() -> Settings:
         plex_token=_env("PLEX_TOKEN"),
         dry_run=dry_run,
         log_level=_env("LOG_LEVEL", "INFO"),  # type: ignore[arg-type]
+        test_mode=test_mode,
         config_path=config_path,
         priority_thresholds=thresholds,
         intervals=intervals,
