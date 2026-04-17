@@ -11,3 +11,8 @@ test:
 
 run:
 	uvicorn prioritarr.main:app --host 0.0.0.0 --port 8000 --reload
+
+.PHONY: openapi
+openapi:
+	@python scripts/generate_openapi.py > openapi.json
+	@echo "Wrote openapi.json ($$(wc -c < openapi.json) bytes)"

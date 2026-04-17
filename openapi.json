@@ -1,0 +1,354 @@
+{
+  "components": {
+    "schemas": {
+      "DependencyStatus": {
+        "enum": [
+          "ok",
+          "unreachable"
+        ],
+        "title": "DependencyStatus",
+        "type": "string"
+      },
+      "HealthOk": {
+        "examples": [
+          {
+            "status": "ok"
+          }
+        ],
+        "properties": {
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "description": "Always 'ok' when healthy.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "HealthOk",
+        "type": "object"
+      },
+      "HealthUnhealthy": {
+        "examples": [
+          {
+            "reason": "heartbeat_stale: 342s > 300s",
+            "status": "unhealthy"
+          }
+        ],
+        "properties": {
+          "reason": {
+            "description": "Human-readable diagnostic. Free-form text.",
+            "title": "Reason",
+            "type": "string"
+          },
+          "status": {
+            "const": "unhealthy",
+            "default": "unhealthy",
+            "description": "Always 'unhealthy'.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "HealthUnhealthy",
+        "type": "object"
+      },
+      "OnGrabDuplicate": {
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "priority": {
+            "maximum": 5,
+            "minimum": 1,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "status": {
+            "const": "duplicate",
+            "default": "duplicate",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "priority",
+          "label"
+        ],
+        "title": "OnGrabDuplicate",
+        "type": "object"
+      },
+      "OnGrabIgnored": {
+        "properties": {
+          "eventType": {
+            "description": "The eventType value that was ignored, echoed verbatim.",
+            "title": "Eventtype",
+            "type": "string"
+          },
+          "status": {
+            "const": "ignored",
+            "default": "ignored",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "eventType"
+        ],
+        "title": "OnGrabIgnored",
+        "type": "object"
+      },
+      "OnGrabProcessed": {
+        "properties": {
+          "label": {
+            "description": "Human-readable label like 'P1 Live-following'.",
+            "title": "Label",
+            "type": "string"
+          },
+          "priority": {
+            "description": "Computed priority 1 (highest) through 5 (lowest).",
+            "maximum": 5,
+            "minimum": 1,
+            "title": "Priority",
+            "type": "integer"
+          },
+          "status": {
+            "const": "processed",
+            "default": "processed",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "priority",
+          "label"
+        ],
+        "title": "OnGrabProcessed",
+        "type": "object"
+      },
+      "PlexEventOk": {
+        "properties": {
+          "series_id": {
+            "description": "The Sonarr seriesId the event was applied to.",
+            "title": "Series Id",
+            "type": "integer"
+          },
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "series_id"
+        ],
+        "title": "PlexEventOk",
+        "type": "object"
+      },
+      "PlexEventUnmatched": {
+        "properties": {
+          "plex_key": {
+            "description": "The grandparent_rating_key we couldn't map.",
+            "title": "Plex Key",
+            "type": "string"
+          },
+          "status": {
+            "const": "unmatched",
+            "default": "unmatched",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plex_key"
+        ],
+        "title": "PlexEventUnmatched",
+        "type": "object"
+      },
+      "ReadyResponse": {
+        "examples": [
+          {
+            "dependencies": {
+              "qbit": "ok",
+              "sab": "ok",
+              "sonarr": "ok",
+              "tautulli": "ok"
+            },
+            "last_heartbeat": "2026-04-14T22:30:00.123456+00:00",
+            "status": "ok"
+          }
+        ],
+        "properties": {
+          "dependencies": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DependencyStatus"
+            },
+            "description": "Status of each upstream dependency.",
+            "propertyNames": {
+              "enum": [
+                "sonarr",
+                "tautulli",
+                "qbit",
+                "sab"
+              ]
+            },
+            "title": "Dependencies",
+            "type": "object"
+          },
+          "last_heartbeat": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Most recent scheduler heartbeat. ISO 8601 with +00:00 offset. Null if never run.",
+            "title": "Last Heartbeat"
+          },
+          "status": {
+            "description": "'ok' iff every dependency is 'ok', else 'degraded'.",
+            "enum": [
+              "ok",
+              "degraded"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "dependencies",
+          "last_heartbeat"
+        ],
+        "title": "ReadyResponse",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Priority-aware download queue orchestrator. See https://github.com/cquemin/prioritarr",
+    "title": "Prioritarr API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/plex-event": {
+      "post": {
+        "description": "Accepts Tautulli's 'watched' notification. Always returns HTTP 200. Triggers a synchronous mapping refresh if the plex_key is unknown (legacy quirk #5). Returns 'ok' when the priority cache was invalidated for a known series, 'unmatched' otherwise.",
+        "operationId": "plex_event_api_plex_event_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/PlexEventOk"
+                    },
+                    {
+                      "$ref": "#/components/schemas/PlexEventUnmatched"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Webhook accepted (one of two shapes)."
+          }
+        },
+        "summary": "Tautulli watched notification"
+      }
+    },
+    "/api/sonarr/on-grab": {
+      "post": {
+        "description": "Always returns HTTP 200. Response shape depends on outcome.",
+        "operationId": "sonarr_on_grab_api_sonarr_on_grab_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/OnGrabIgnored"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OnGrabProcessed"
+                    },
+                    {
+                      "$ref": "#/components/schemas/OnGrabDuplicate"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Webhook accepted"
+          }
+        },
+        "summary": "Sonarr OnGrab webhook receiver"
+      }
+    },
+    "/health": {
+      "get": {
+        "description": "Returns 200 when heartbeat fresh and state DB reachable. Returns 503 otherwise.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthOk"
+                }
+              }
+            },
+            "description": "Healthy"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthUnhealthy"
+                }
+              }
+            },
+            "description": "Unhealthy"
+          }
+        },
+        "summary": "Liveness probe"
+      }
+    },
+    "/ready": {
+      "get": {
+        "description": "Returns detailed status of each upstream dependency.",
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            },
+            "description": "All dependencies reachable"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            },
+            "description": "One or more dependencies unreachable"
+          }
+        },
+        "summary": "Readiness check with dependency status"
+      }
+    }
+  }
+}
