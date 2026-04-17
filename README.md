@@ -307,6 +307,65 @@ Sonarr OnGrab webhook -----> prioritarr <----- Tautulli Watched webhook
       (mapping cache)    (state store)
 ```
 
+## Contract Testing
+
+Prioritarr has a shared contract test suite that locks the HTTP API surface. Any backend that passes this suite is behaviorally interchangeable with the current Python implementation — enabling a transparent port to another language/stack.
+
+### Running locally against the Python backend
+
+Restart the container with `PRIORITARR_TEST_MODE=true`:
+
+```bash
+docker run -d --name prioritarr \
+  -e PRIORITARR_TEST_MODE=true \
+  -e PRIORITARR_DRY_RUN=true \
+  # ... rest of env vars ...
+  ghcr.io/cquemin/prioritarr:latest
+```
+
+Then install and run:
+
+```bash
+cd contract-tests
+pip install -r requirements.txt
+CONTRACT_TEST_BASE_URL=http://localhost:8000 pytest -v
+```
+
+### Running against mocked upstream services
+
+`contract-tests/mocks/` contains WireMock stubs — use them when a live Sonarr/Tautulli/Plex stack isn't available:
+
+```bash
+cd contract-tests/mocks
+docker compose up -d
+# Point prioritarr at http://localhost:9001..9005 and launch as above.
+```
+
+### Regenerating `openapi.json`
+
+The OpenAPI spec is committed at the repo root and verified in CI.
+
+```bash
+make openapi
+git add openapi.json && git commit -m "chore: regenerate openapi.json"
+```
+
+### `PRIORITARR_TEST_MODE` safety
+
+`PRIORITARR_TEST_MODE=true` mounts destructive endpoints at `/api/v1/_testing/*` (reset all state, force stale heartbeat, inject series mappings). **Never enable this in production.** The default is `false`.
+
+### Spec §4 response-example corrections
+
+The original spec (`docs/specs/2026-04-14-prioritarr-api-contract-v1-design.md`) shows a handful of example response bodies that don't match the live backend. The code and the contract tests are the source of truth; a follow-up will correct the spec examples. The actual responses are:
+
+| Endpoint | Case | Wire format |
+|----------|------|-------------|
+| `POST /api/sonarr/on-grab` | Non-Grab | `{"status":"ignored","eventType":"<type>"}` |
+| `POST /api/sonarr/on-grab` | Processed | `{"status":"processed","priority":N,"label":"..."}` |
+| `POST /api/sonarr/on-grab` | Duplicate | `{"status":"duplicate","priority":N,"label":"..."}` |
+| `POST /api/plex-event` | Unmatched | `{"status":"unmatched","plex_key":"<key>"}` |
+| `POST /api/plex-event` | Matched | `{"status":"ok","series_id":N}` |
+
 ## License
 
 MIT
