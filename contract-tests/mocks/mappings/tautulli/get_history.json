@@ -1,0 +1,16 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPattern": "/api/v2\\?.*cmd=get_history.*"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "response": {
+        "result": "success",
+        "data": {"data": []}
+      }
+    },
+    "headers": {"Content-Type": "application/json"}
+  }
+}

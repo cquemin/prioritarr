@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPattern": "/api/v2\\?.*cmd=arnold.*"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {"response": {"result": "success", "data": "I'll be back"}},
+    "headers": {"Content-Type": "application/json"}
+  }
+}

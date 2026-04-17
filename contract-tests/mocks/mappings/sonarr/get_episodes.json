@@ -1,0 +1,21 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPattern": "/sonarr/api/v3/episode(\\?.*)?"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": [
+      {
+        "id": 99901,
+        "seriesId": 1,
+        "seasonNumber": 1,
+        "episodeNumber": 1,
+        "airDateUtc": "2026-01-01T00:00:00Z",
+        "monitored": true,
+        "hasFile": false
+      }
+    ],
+    "headers": {"Content-Type": "application/json"}
+  }
+}

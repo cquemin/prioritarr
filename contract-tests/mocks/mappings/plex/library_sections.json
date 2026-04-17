@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPattern": "/library/sections.*"
+  },
+  "response": {
+    "status": 200,
+    "body": "<?xml version=\"1.0\" encoding=\"UTF-8\"?><MediaContainer size=\"0\"></MediaContainer>",
+    "headers": {"Content-Type": "application/xml"}
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPattern": "/api/v2/torrents/info.*"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": [],
+    "headers": {"Content-Type": "application/json"}
+  }
+}

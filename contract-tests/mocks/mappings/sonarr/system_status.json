@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPattern": "/sonarr/api/v3/system/status"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {"version": "4.0.0.0", "appName": "Sonarr"},
+    "headers": {"Content-Type": "application/json"}
+  }
+}

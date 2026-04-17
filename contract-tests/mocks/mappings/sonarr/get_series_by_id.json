@@ -1,0 +1,17 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPattern": "/sonarr/api/v3/series/\\d+"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {
+      "id": 1,
+      "title": "Contract Test Series",
+      "tvdbId": 111111,
+      "path": "/storage/media/video/anime/Contract Test Series",
+      "monitored": true
+    },
+    "headers": {"Content-Type": "application/json"}
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPattern": "/sabnzbd/api\\?.*mode=version.*"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {"version": "4.0.0"},
+    "headers": {"Content-Type": "application/json"}
+  }
+}

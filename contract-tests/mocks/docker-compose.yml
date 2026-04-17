@@ -1,0 +1,35 @@
+services:
+  mock-sonarr:
+    image: wiremock/wiremock:3.9.1
+    command: ["--port", "8080", "--verbose"]
+    ports: ["9001:8080"]
+    volumes:
+      - ./mappings/sonarr:/home/wiremock/mappings:ro
+
+  mock-tautulli:
+    image: wiremock/wiremock:3.9.1
+    command: ["--port", "8080", "--verbose"]
+    ports: ["9002:8080"]
+    volumes:
+      - ./mappings/tautulli:/home/wiremock/mappings:ro
+
+  mock-plex:
+    image: wiremock/wiremock:3.9.1
+    command: ["--port", "8080", "--verbose"]
+    ports: ["9003:8080"]
+    volumes:
+      - ./mappings/plex:/home/wiremock/mappings:ro
+
+  mock-qbit:
+    image: wiremock/wiremock:3.9.1
+    command: ["--port", "8080", "--verbose"]
+    ports: ["9004:8080"]
+    volumes:
+      - ./mappings/qbit:/home/wiremock/mappings:ro
+
+  mock-sab:
+    image: wiremock/wiremock:3.9.1
+    command: ["--port", "8080", "--verbose"]
+    ports: ["9005:8080"]
+    volumes:
+      - ./mappings/sab:/home/wiremock/mappings:ro

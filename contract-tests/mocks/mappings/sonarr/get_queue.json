@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPattern": "/sonarr/api/v3/queue(\\?.*)?"
+  },
+  "response": {
+    "status": 200,
+    "jsonBody": {"page": 1, "pageSize": 1000, "totalRecords": 0, "records": []},
+    "headers": {"Content-Type": "application/json"}
+  }
+}

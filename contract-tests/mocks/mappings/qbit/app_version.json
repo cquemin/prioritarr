@@ -1,0 +1,11 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPattern": "/api/v2/app/version"
+  },
+  "response": {
+    "status": 200,
+    "body": "v4.6.0",
+    "headers": {"Content-Type": "text/plain"}
+  }
+}
