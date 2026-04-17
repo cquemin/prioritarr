@@ -1,0 +1,9 @@
+{
+  "event": "watched",
+  "user": "contract-test",
+  "grandparent_title": "Contract Test Series",
+  "grandparent_rating_key": "CONTRACT_TEST_PLEX_KEY",
+  "parent_media_index": "1",
+  "media_index": "1",
+  "rating_key": "CONTRACT_TEST_EPISODE_KEY"
+}

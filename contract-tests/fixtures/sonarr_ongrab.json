@@ -1,0 +1,10 @@
+{
+  "eventType": "Grab",
+  "series": {"id": 1, "title": "Contract Test Series", "tvdbId": 111111},
+  "episodes": [
+    {"id": 99901, "episodeNumber": 1, "seasonNumber": 1, "airDateUtc": "2026-01-01T00:00:00Z"}
+  ],
+  "release": {"releaseTitle": "Contract.Test.Series.S01E01.1080p.WEB-DL"},
+  "downloadClient": "QBittorrent",
+  "downloadId": "CONTRACTTESTHASHABCDEF0123456789ABCDEF01"
+}
