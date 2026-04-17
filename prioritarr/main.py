@@ -809,7 +809,15 @@ async def health() -> JSONResponse:
     return JSONResponse(content=result, status_code=status_code)
 
 
-@app.get("/ready")
+@app.get(
+    "/ready",
+    summary="Readiness check with dependency status",
+    description="Returns detailed status of each upstream dependency.",
+    responses={
+        200: {"model": ReadyResponse, "description": "All dependencies reachable"},
+        503: {"model": ReadyResponse, "description": "One or more dependencies unreachable"},
+    },
+)
 async def ready() -> JSONResponse:
     """Readiness check — lightweight connectivity probes only.
 
