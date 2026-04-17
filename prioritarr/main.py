@@ -27,6 +27,15 @@ from prioritarr.reconcile import ReconcileContext, reconcile_client
 from prioritarr.sweep import SweepContext, run_backfill_sweep, run_cutoff_sweep
 from prioritarr.webhooks.plex_event import parse_tautulli_watched, handle_watched
 from prioritarr.webhooks.sonarr_grab import parse_ongrab_payload, handle_ongrab
+from prioritarr.schemas.health import HealthOk, HealthUnhealthy
+from prioritarr.schemas.ready import ReadyResponse
+from prioritarr.schemas.webhooks import (
+    OnGrabIgnored,
+    OnGrabProcessed,
+    OnGrabDuplicate,
+    PlexEventUnmatched,
+    PlexEventOk,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -746,7 +755,35 @@ async def lifespan(application: FastAPI):  # type: ignore[type-arg]
 # Application
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="prioritarr", lifespan=lifespan)
+app = FastAPI(
+    title="Prioritarr API",
+    version="0.1.0",
+    description="Priority-aware download queue orchestrator. See https://github.com/cquemin/prioritarr",
+    lifespan=lifespan,
+    license_info={"name": "MIT"},
+)
+
+
+def _custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        openapi_version=app.openapi_version,
+        description=app.description,
+        routes=app.routes,
+    )
+    components = schema.setdefault("components", {}).setdefault("schemas", {})
+    for model_cls in (OnGrabIgnored, OnGrabProcessed, OnGrabDuplicate, PlexEventUnmatched, PlexEventOk):
+        name = model_cls.__name__
+        if name not in components:
+            components[name] = model_cls.model_json_schema(ref_template="#/components/schemas/{model}")
+    app.openapi_schema = schema
+    return schema
+
+app.openapi = _custom_openapi
 
 
 # ---------------------------------------------------------------------------
@@ -754,7 +791,15 @@ app = FastAPI(title="prioritarr", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    summary="Liveness probe",
+    description="Returns 200 when heartbeat fresh and state DB reachable. Returns 503 otherwise.",
+    responses={
+        200: {"model": HealthOk, "description": "Healthy"},
+        503: {"model": HealthUnhealthy, "description": "Unhealthy"},
+    },
+)
 async def health() -> JSONResponse:
     """Liveness check — returns 200 OK or 503 Unhealthy."""
     ivl = settings.intervals
