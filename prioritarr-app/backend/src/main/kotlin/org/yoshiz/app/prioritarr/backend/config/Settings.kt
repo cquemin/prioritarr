@@ -66,6 +66,9 @@ data class Settings(
     val logLevel: String = "INFO",
     val testMode: Boolean = false,
 
+    val apiKey: String? = null,
+    val uiOrigin: String? = null,
+
     val configPath: String? = null,
 
     val priorityThresholds: PriorityThresholds = PriorityThresholds(),
@@ -155,6 +158,8 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         dryRun = dryRun,
         logLevel = env("LOG_LEVEL", "INFO") ?: "INFO",
         testMode = testMode,
+        apiKey = env("API_KEY"),
+        uiOrigin = env("UI_ORIGIN"),
         configPath = configPath,
         priorityThresholds = thresholds,
         intervals = intervals,

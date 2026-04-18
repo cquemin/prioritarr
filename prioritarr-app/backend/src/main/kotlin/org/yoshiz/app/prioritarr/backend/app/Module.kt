@@ -8,7 +8,14 @@ import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.auth.Authentication
+import io.ktor.server.auth.authenticate
 import io.ktor.server.plugins.statuspages.StatusPages
+import org.yoshiz.app.prioritarr.backend.auth.apiKey
+import org.yoshiz.app.prioritarr.backend.errors.InternalException
+import org.yoshiz.app.prioritarr.backend.errors.PrioritarrException
+import org.yoshiz.app.prioritarr.backend.errors.respondProblem
+import org.yoshiz.app.prioritarr.backend.errors.toProblem
 import io.ktor.server.request.path
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
@@ -60,14 +67,26 @@ fun Application.prioritarrModule(state: AppState) {
     install(StatusPages) {
         exception<Throwable> { call, cause ->
             val path = call.request.path()
-            when (path) {
-                "/api/sonarr/on-grab" -> {
+            when {
+                // Spec A §5.3 always-200 webhooks — never emit an error body.
+                path == "/api/sonarr/on-grab" -> {
                     logger.warn("sonarr on-grab webhook exception: ${cause.message}")
                     call.respond(OnGrabIgnored(eventType = "unknown"))
                 }
-                "/api/plex-event" -> {
+                path == "/api/plex-event" -> {
                     logger.warn("plex-event webhook exception: ${cause.message}")
                     call.respond(PlexEventUnmatched(plex_key = ""))
+                }
+                // Spec C §6 — /api/v2/* errors use RFC 7807 Problem Details.
+                cause is PrioritarrException -> {
+                    call.respondProblem(cause.toProblem(path), cause.httpStatus)
+                }
+                path.startsWith("/api/v2/") -> {
+                    logger.error("unhandled v2 exception on $path", cause)
+                    call.respondProblem(
+                        InternalException(cause.message.orEmpty()).toProblem(path),
+                        HttpStatusCode.InternalServerError,
+                    )
                 }
                 else -> call.respondText(
                     """{"detail":"${cause.message?.replace("\"", "'")}"}""",
@@ -76,6 +95,16 @@ fun Application.prioritarrModule(state: AppState) {
                 )
             }
         }
+    }
+
+    // Spec C §5 — X-Api-Key auth, applied only to /api/v2/* in routing{}.
+    install(Authentication) {
+        apiKey("api_key") {
+            expectedKey = state.settings.apiKey
+        }
+    }
+    if (state.settings.apiKey == null) {
+        logger.warn("PRIORITARR_API_KEY is not set — /api/v2/* endpoints will accept all requests.")
     }
 
     routing {
