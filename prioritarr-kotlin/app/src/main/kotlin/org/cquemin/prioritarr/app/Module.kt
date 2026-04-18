@@ -1,5 +1,7 @@
 package org.cquemin.prioritarr.app
 
+import io.ktor.client.request.get
+import kotlinx.coroutines.async
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
@@ -58,11 +60,16 @@ fun Application.prioritarrModule(state: AppState) {
     install(StatusPages) {
         exception<Throwable> { call, cause ->
             val path = call.request.path()
-            if (path == "/api/sonarr/on-grab" || path == "/api/plex-event") {
-                logger.warn("webhook handler exception on $path: ${cause.message}")
-                call.respond(OnGrabIgnored(eventType = "unknown"))
-            } else {
-                call.respondText(
+            when (path) {
+                "/api/sonarr/on-grab" -> {
+                    logger.warn("sonarr on-grab webhook exception: ${cause.message}")
+                    call.respond(OnGrabIgnored(eventType = "unknown"))
+                }
+                "/api/plex-event" -> {
+                    logger.warn("plex-event webhook exception: ${cause.message}")
+                    call.respond(PlexEventUnmatched(plex_key = ""))
+                }
+                else -> call.respondText(
                     """{"detail":"${cause.message?.replace("\"", "'")}"}""",
                     ContentType.Application.Json,
                     HttpStatusCode.InternalServerError,
@@ -142,22 +149,7 @@ fun Application.prioritarrModule(state: AppState) {
                     "/api/v1/_testing/*. Never enable this in production."
             )
             post("/api/v1/_testing/reset") {
-                state.db.q.transactionWithResult {
-                    state.db.q.pruneDedupe("9999-12-31T23:59:59+00:00")
-                    state.db.q.pruneAudit("9999-12-31T23:59:59+00:00")
-                    state.db.q.invalidatePriorityCache(-1) // no-op placeholder; real reset below
-                    1L
-                }
-                // Truncate tables via raw deletes — easier than a schema-wide reset query.
-                state.db.q.apply {
-                    // series_priority_cache
-                    // SQLDelight doesn't expose a truncate; iterate by listing ids is heavy.
-                    // Use a driver-level execute for the bulk deletes.
-                }
-                // Fallback: just reuse the prune queries which accept a future cutoff for 'delete everything'.
-                state.db.q.pruneDedupe("9999-12-31T23:59:59+00:00")
-                state.db.q.pruneAudit("9999-12-31T23:59:59+00:00")
-                // Clear in-memory mapping state via reflection-safe apply.
+                state.db.resetAllState()
                 state.mappings.clear()
                 call.respond(OkResponse())
             }
@@ -180,20 +172,43 @@ fun Application.prioritarrModule(state: AppState) {
 }
 
 /**
- * Run the four upstream reachability checks concurrently. Each one is
- * guarded — an unreachable upstream becomes DependencyStatus.UNREACHABLE,
- * not an exception.
+ * TCP-only probe client with 2s connect+read timeouts. Used by /ready
+ * to avoid inheriting the 120s timeouts of the main Sonarr/Tautulli
+ * clients. Only the fact that /some-url responds is interesting, not
+ * the body.
  */
-private suspend fun checkDependencies(state: AppState): Map<String, DependencyStatus> {
-    suspend fun probe(block: suspend () -> Unit): DependencyStatus = try {
-        block(); DependencyStatus.OK
+private val probeClient by lazy {
+    io.ktor.client.HttpClient(io.ktor.client.engine.cio.CIO) {
+        install(io.ktor.client.plugins.HttpTimeout) {
+            requestTimeoutMillis = 2_000
+            connectTimeoutMillis = 2_000
+            socketTimeoutMillis = 2_000
+        }
+        expectSuccess = false
+    }
+}
+
+/**
+ * Four upstream reachability probes in parallel, 2s max each.
+ * A probe succeeds if the upstream answers with *any* HTTP response
+ * (2xx, 3xx, 4xx all count as "reachable"). 5xx or no response →
+ * UNREACHABLE.
+ */
+private suspend fun checkDependencies(state: AppState): Map<String, DependencyStatus> = kotlinx.coroutines.coroutineScope scope@{
+    suspend fun probe(url: String): DependencyStatus = try {
+        val resp = probeClient.get(url)
+        if (resp.status.value < 500) DependencyStatus.OK else DependencyStatus.UNREACHABLE
     } catch (e: Exception) {
         DependencyStatus.UNREACHABLE
     }
-    return mapOf(
-        "sonarr" to probe { state.sonarr.getAllSeries() },
-        "tautulli" to probe { state.tautulli.getShowLibraries() },
-        "qbit" to probe { state.qbit.getTorrents() },
-        "sab" to probe { state.sab.getQueue() },
+    val sonarr = async { probe(state.settings.sonarrUrl.trimEnd('/') + "/api/v3/system/status") }
+    val tautulli = async { probe(state.settings.tautulliUrl.trimEnd('/') + "/api/v2?apikey=${state.settings.tautulliApiKey}&cmd=arnold") }
+    val qbit = async { probe(state.settings.qbitUrl.trimEnd('/') + "/api/v2/app/version") }
+    val sab = async { probe(state.settings.sabUrl.trimEnd('/') + "/sabnzbd/api?mode=version&output=json&apikey=${state.settings.sabApiKey}") }
+    mapOf(
+        "sonarr" to sonarr.await(),
+        "tautulli" to tautulli.await(),
+        "qbit" to qbit.await(),
+        "sab" to sab.await(),
     )
 }

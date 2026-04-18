@@ -159,6 +159,17 @@ class Database(dbPath: String) {
     // prune
     // ------------------------------------------------------------------
 
+    /** Test-mode only: truncate every mutable table in one transaction. */
+    fun resetAllState() {
+        db.transaction {
+            q.deleteAllManagedDownloads()
+            q.deleteAllWebhookDedupe()
+            q.deleteAllAuditLog()
+            q.deleteAllSeriesPriorityCache()
+            q.deleteAllHeartbeat()
+        }
+    }
+
     fun prune(dedupeHours: Long = 24, retentionDays: Long = 90) {
         val now = OffsetDateTime.now(ZoneOffset.UTC)
         val dedupeCutoff = now.minus(dedupeHours, ChronoUnit.HOURS).format(ISO_OFFSET)

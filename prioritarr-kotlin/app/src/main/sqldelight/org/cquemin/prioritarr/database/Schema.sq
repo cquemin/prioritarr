@@ -137,3 +137,22 @@ ON CONFLICT(id) DO UPDATE SET ts = excluded.ts;
 
 selectHeartbeat:
 SELECT ts FROM heartbeat WHERE id = 1;
+
+-- ------------------------------------------------------------------
+-- reset — used by /_testing/reset to wipe all mutable state in one go.
+-- ------------------------------------------------------------------
+
+deleteAllManagedDownloads:
+DELETE FROM managed_downloads;
+
+deleteAllWebhookDedupe:
+DELETE FROM webhook_dedupe;
+
+deleteAllAuditLog:
+DELETE FROM audit_log;
+
+deleteAllSeriesPriorityCache:
+DELETE FROM series_priority_cache;
+
+deleteAllHeartbeat:
+DELETE FROM heartbeat;
