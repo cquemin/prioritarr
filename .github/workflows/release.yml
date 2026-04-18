@@ -98,25 +98,34 @@ jobs:
             -e PRIORITARR_QBIT_URL=http://localhost:9004 \
             -e PRIORITARR_SAB_URL=http://localhost:9005/sabnzbd \
             -e PRIORITARR_SAB_API_KEY=mock \
-            -e PRIORITARR_API_KEY=ci-test-key \
             -e PRIORITARR_CONFIG_PATH=/app/default-config.yaml \
             prioritarr:test
 
       - name: Wait for prioritarr to be live
         run: timeout 120 bash -c 'until curl -fsS http://localhost:8000/openapi.json >/dev/null; do sleep 2; done'
 
-      - name: Verify committed openapi.json matches runtime
+      - name: Verify committed openapi.json matches python runtime (v1 only)
         run: |
-          # Generate the "production" spec from the image (no test mode, no mounts).
-          # The running container has PRIORITARR_TEST_MODE=true which adds the
-          # _testing router and schemas — don't compare against that, compare
-          # against what ships to production.
+          # The committed openapi.json carries /api/v2/* paths that only the
+          # kotlin backend implements (Spec C §4). Strip them before diffing
+          # so this job only asserts v1 parity for the python backend.
           docker run --rm --entrypoint python prioritarr:test scripts/generate_openapi.py > /tmp/runtime.json
           python -m json.tool --sort-keys /tmp/runtime.json > /tmp/runtime_sorted.json
-          python -m json.tool --sort-keys openapi.json > /tmp/committed.json
+          python <<'PY'
+          import json
+          spec = json.load(open("openapi.json"))
+          spec["paths"] = {p: v for p, v in spec["paths"].items() if not p.startswith("/api/v2/")}
+          comps = spec.get("components", {})
+          if "schemas" in comps:
+              for name in ("ProblemDetail", "PaginatedEnvelope", "ActionResult"):
+                  comps["schemas"].pop(name, None)
+          comps.pop("securitySchemes", None)
+          json.dump(spec, open("/tmp/committed_v1.json", "w"), sort_keys=True, indent=2)
+          PY
+          python -m json.tool --sort-keys /tmp/committed_v1.json > /tmp/committed.json
           if ! diff -u /tmp/committed.json /tmp/runtime_sorted.json; then
             echo ""
-            echo "ERROR: Committed openapi.json differs from runtime spec."
+            echo "ERROR: Committed openapi.json v1 surface differs from python runtime."
             echo "Run 'make openapi' locally and commit the updated file."
             exit 1
           fi
@@ -124,10 +133,12 @@ jobs:
       - name: Install contract-tests dependencies
         run: pip install -r contract-tests/requirements.txt
 
-      - name: Run contract tests
+      - name: Run contract tests (python — v1 only)
         env:
           CONTRACT_TEST_BASE_URL: http://localhost:8000
-          CONTRACT_TEST_API_KEY: ci-test-key
+          # CONTRACT_TEST_API_KEY intentionally unset — the python backend
+          # doesn't implement /api/v2/* and the v2 tests skip when the env
+          # var is absent.
         run: python -m pytest contract-tests/ -v
 
       - name: Dump prioritarr logs on failure
