@@ -1,0 +1,15 @@
+# Gradle + Kotlin compiler scratch
+.gradle
+.kotlin/
+build/
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+*.iws
+out/
+
+# Local env / OS cruft
+.env.local
+.DS_Store
+Thumbs.db
