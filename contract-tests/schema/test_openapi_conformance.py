@@ -12,11 +12,19 @@ from schemathesis import experimental
 from schemathesis.checks import response_schema_conformance
 
 BASE_URL = os.environ.get("CONTRACT_TEST_BASE_URL", "http://localhost:8000")
+API_KEY = os.environ.get("CONTRACT_TEST_API_KEY")
 
 # FastAPI emits OpenAPI 3.1, which Schemathesis 3.x supports behind a feature flag.
 experimental.OPEN_API_3_1.enable()
 
 schema = schemathesis.from_uri(f"{BASE_URL}/openapi.json")
+
+
+@schema.hook
+def before_call(context, case):
+    """Inject X-Api-Key on every v2 request so Schemathesis doesn't 401."""
+    if API_KEY and case.path.startswith("/api/v2/"):
+        case.headers = {**(case.headers or {}), "X-Api-Key": API_KEY}
 
 
 # Only run response_schema_conformance — the default check set includes
@@ -48,5 +56,25 @@ def test_sonarr_ongrab_conformance(case) -> None:
 
 @schema.parametrize(endpoint="/api/plex-event")
 def test_plex_event_conformance(case) -> None:
+    response = case.call()
+    case.validate_response(response, checks=_CHECKS)
+
+
+# ---- v2 conformance ----
+
+@schema.parametrize(endpoint="/api/v2/series")
+def test_v2_series_conformance(case) -> None:
+    response = case.call()
+    case.validate_response(response, checks=_CHECKS)
+
+
+@schema.parametrize(endpoint="/api/v2/settings")
+def test_v2_settings_conformance(case) -> None:
+    response = case.call()
+    case.validate_response(response, checks=_CHECKS)
+
+
+@schema.parametrize(endpoint="/api/v2/mappings")
+def test_v2_mappings_conformance(case) -> None:
     response = case.call()
     case.validate_response(response, checks=_CHECKS)
