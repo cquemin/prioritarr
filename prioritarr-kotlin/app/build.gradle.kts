@@ -66,6 +66,7 @@ sqldelight {
     databases {
         create("Db") {
             packageName.set("org.cquemin.prioritarr.database")
+            dialect(libs.sqldelight.dialect.sqlite)
         }
     }
 }

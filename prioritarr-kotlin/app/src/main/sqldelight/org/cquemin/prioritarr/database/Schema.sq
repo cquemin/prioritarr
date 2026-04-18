@@ -1,0 +1,139 @@
+-- Mirror of prioritarr/database.py _SCHEMA. DDL must stay byte-compatible —
+-- the kotlin and python backends read the same /config/state.db during
+-- shadow deploy (Spec B §Task 15).
+
+CREATE TABLE IF NOT EXISTS series_priority_cache (
+    series_id INTEGER PRIMARY KEY,
+    priority INTEGER NOT NULL,
+    watch_pct REAL,
+    days_since_watch INTEGER,
+    unwatched_pending INTEGER,
+    computed_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS managed_downloads (
+    client TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    series_id INTEGER NOT NULL,
+    episode_ids TEXT,
+    initial_priority INTEGER NOT NULL,
+    current_priority INTEGER NOT NULL,
+    paused_by_us INTEGER NOT NULL DEFAULT 0,
+    first_seen_at TEXT NOT NULL,
+    last_reconciled_at TEXT NOT NULL,
+    PRIMARY KEY (client, client_id)
+);
+
+CREATE TABLE IF NOT EXISTS webhook_dedupe (
+    event_key TEXT PRIMARY KEY,
+    received_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    action TEXT NOT NULL,
+    series_id INTEGER,
+    client TEXT,
+    client_id TEXT,
+    details TEXT
+);
+
+CREATE TABLE IF NOT EXISTS heartbeat (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    ts TEXT NOT NULL
+);
+
+-- ------------------------------------------------------------------
+-- series_priority_cache
+-- ------------------------------------------------------------------
+
+upsertPriorityCache:
+INSERT INTO series_priority_cache
+    (series_id, priority, watch_pct, days_since_watch,
+     unwatched_pending, computed_at, expires_at, reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(series_id) DO UPDATE SET
+    priority          = excluded.priority,
+    watch_pct         = excluded.watch_pct,
+    days_since_watch  = excluded.days_since_watch,
+    unwatched_pending = excluded.unwatched_pending,
+    computed_at       = excluded.computed_at,
+    expires_at        = excluded.expires_at,
+    reason            = excluded.reason;
+
+selectPriorityCache:
+SELECT * FROM series_priority_cache WHERE series_id = ?;
+
+invalidatePriorityCache:
+DELETE FROM series_priority_cache WHERE series_id = ?;
+
+-- ------------------------------------------------------------------
+-- managed_downloads
+-- ------------------------------------------------------------------
+
+upsertManagedDownload:
+INSERT INTO managed_downloads
+    (client, client_id, series_id, episode_ids,
+     initial_priority, current_priority, paused_by_us,
+     first_seen_at, last_reconciled_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(client, client_id) DO UPDATE SET
+    series_id          = excluded.series_id,
+    episode_ids        = excluded.episode_ids,
+    initial_priority   = excluded.initial_priority,
+    current_priority   = excluded.current_priority,
+    paused_by_us       = excluded.paused_by_us,
+    first_seen_at      = excluded.first_seen_at,
+    last_reconciled_at = excluded.last_reconciled_at;
+
+selectManagedDownload:
+SELECT * FROM managed_downloads WHERE client = ? AND client_id = ?;
+
+listManagedDownloads:
+SELECT * FROM managed_downloads;
+
+listManagedDownloadsByClient:
+SELECT * FROM managed_downloads WHERE client = ?;
+
+deleteManagedDownload:
+DELETE FROM managed_downloads WHERE client = ? AND client_id = ?;
+
+-- ------------------------------------------------------------------
+-- webhook_dedupe — INSERT OR IGNORE to mirror the python try/except
+-- IntegrityError dance; caller reads `changes()` to learn whether it
+-- was a new insert (1) or a duplicate (0).
+-- ------------------------------------------------------------------
+
+tryInsertDedupe:
+INSERT OR IGNORE INTO webhook_dedupe (event_key, received_at) VALUES (?, ?);
+
+dedupeChanges:
+SELECT changes();
+
+pruneDedupe:
+DELETE FROM webhook_dedupe WHERE received_at < ?;
+
+-- ------------------------------------------------------------------
+-- audit_log
+-- ------------------------------------------------------------------
+
+appendAudit:
+INSERT INTO audit_log (ts, action, series_id, client, client_id, details)
+VALUES (?, ?, ?, ?, ?, ?);
+
+pruneAudit:
+DELETE FROM audit_log WHERE ts < ?;
+
+-- ------------------------------------------------------------------
+-- heartbeat
+-- ------------------------------------------------------------------
+
+upsertHeartbeat:
+INSERT INTO heartbeat (id, ts) VALUES (1, ?)
+ON CONFLICT(id) DO UPDATE SET ts = excluded.ts;
+
+selectHeartbeat:
+SELECT ts FROM heartbeat WHERE id = 1;
