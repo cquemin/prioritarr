@@ -82,3 +82,11 @@ tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJ
     archiveVersion.set("")
     mergeServiceFiles()
 }
+
+// Copy the committed openapi.json from the repo root into the built
+// resources jar so /openapi.json can serve it byte-identical (Spec B §8.1).
+val copyOpenapiJson by tasks.registering(Copy::class) {
+    from("${rootProject.projectDir}/../openapi.json")
+    into("src/main/resources")
+}
+tasks.named("processResources") { dependsOn(copyOpenapiJson) }

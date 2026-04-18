@@ -38,6 +38,15 @@ class MappingState {
         plexKeyToSeriesId = keyToSid
         tautulliAvailable = tautulliUp
     }
+
+    /** Test-only helper: wipe all three in-memory tables. */
+    fun clear() = apply(emptyMap(), emptyMap(), emptyMap(), tautulliUp = true)
+
+    /** Test-only helper: insert a plex_key → series_id entry. */
+    @Synchronized
+    fun inject(plexKey: String, seriesId: Long) {
+        plexKeyToSeriesId = plexKeyToSeriesId + (plexKey to seriesId)
+    }
 }
 
 private val logger = LoggerFactory.getLogger("org.cquemin.prioritarr.mapping")

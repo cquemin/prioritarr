@@ -13,3 +13,4 @@ out/
 .env.local
 .DS_Store
 Thumbs.db
+src/main/resources/openapi.json
