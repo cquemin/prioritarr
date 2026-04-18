@@ -61,6 +61,28 @@ private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.
 fun Application.prioritarrModule(state: AppState) {
     install(ContentNegotiation) { json(appJson) }
 
+    // Spec C §10 — CORS for /api/v2/*. Allow localhost for dev + the
+    // configured UI origin for prod. Credentials off; API key lives in
+    // a header, not a cookie, so credentials are not needed.
+    install(io.ktor.server.plugins.cors.routing.CORS) {
+        allowHost("localhost", schemes = listOf("http", "https"))
+        allowHost("localhost:5173", schemes = listOf("http"))
+        allowHost("localhost:3000", schemes = listOf("http"))
+        state.settings.uiOrigin?.let { origin ->
+            val scheme = origin.substringBefore("://", "https")
+            val hostPort = origin.substringAfter("://")
+            allowHost(hostPort, schemes = listOf(scheme))
+        }
+        allowMethod(io.ktor.http.HttpMethod.Get)
+        allowMethod(io.ktor.http.HttpMethod.Post)
+        allowMethod(io.ktor.http.HttpMethod.Delete)
+        allowMethod(io.ktor.http.HttpMethod.Options)
+        allowHeader(io.ktor.http.HttpHeaders.ContentType)
+        allowHeader("X-Api-Key")
+        allowHeader(io.ktor.http.HttpHeaders.Authorization)
+        allowHeader("Last-Event-ID")
+    }
+
     // Spec §5.3 "always-200 webhook" shield — any unhandled exception on
     // webhook paths is downgraded to a 200 JSON body. Health/ready/testing
     // retain normal error semantics.
