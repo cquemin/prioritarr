@@ -39,8 +39,7 @@ sqldelight-dialect-sqlite = { module = "app.cash.sqldelight:sqlite-3-38-dialect"
 lettuce-core = { module = "io.lettuce:lettuce-core", version.ref = "lettuce" }
 
 # Config
-hoplite-core = { module = "com.sksamuel.hoplite:hoplite-core", version.ref = "hoplite" }
-hoplite-yaml = { module = "com.sksamuel.hoplite:hoplite-yaml", version.ref = "hoplite" }
+snakeyaml = { module = "org.yaml:snakeyaml", version = "2.3" }
 
 # Logging
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }

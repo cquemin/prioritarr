@@ -37,8 +37,7 @@ dependencies {
     implementation(libs.lettuce.core)
 
     // Config
-    implementation(libs.hoplite.core)
-    implementation(libs.hoplite.yaml)
+    implementation(libs.snakeyaml)
 
     // Logging
     implementation(libs.logback.classic)
