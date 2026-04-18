@@ -75,9 +75,14 @@ jobs:
 
       - name: Verify committed openapi.json matches runtime
         run: |
-          curl -fsS http://localhost:8000/openapi.json | python -m json.tool --sort-keys > /tmp/runtime.json
+          # Generate the "production" spec from the image (no test mode, no mounts).
+          # The running container has PRIORITARR_TEST_MODE=true which adds the
+          # _testing router and schemas — don't compare against that, compare
+          # against what ships to production.
+          docker run --rm --entrypoint python prioritarr:test scripts/generate_openapi.py > /tmp/runtime.json
+          python -m json.tool --sort-keys /tmp/runtime.json > /tmp/runtime_sorted.json
           python -m json.tool --sort-keys openapi.json > /tmp/committed.json
-          if ! diff -u /tmp/committed.json /tmp/runtime.json; then
+          if ! diff -u /tmp/committed.json /tmp/runtime_sorted.json; then
             echo ""
             echo "ERROR: Committed openapi.json differs from runtime spec."
             echo "Run 'make openapi' locally and commit the updated file."

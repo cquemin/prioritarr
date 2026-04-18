@@ -9,5 +9,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY default-config.yaml /app/default-config.yaml
 COPY prioritarr/ /app/prioritarr/
+COPY scripts/ /app/scripts/
 
 CMD ["uvicorn", "prioritarr.main:app", "--host", "0.0.0.0", "--port", "8000"]
