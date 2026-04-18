@@ -1,0 +1,39 @@
+{
+  "mappings": [
+    {
+      "request": {
+        "method": "POST",
+        "urlPattern": "/api/v2/torrents/pause"
+      },
+      "response": {"status": 200, "body": ""}
+    },
+    {
+      "request": {
+        "method": "POST",
+        "urlPattern": "/api/v2/torrents/resume"
+      },
+      "response": {"status": 200, "body": ""}
+    },
+    {
+      "request": {
+        "method": "POST",
+        "urlPattern": "/api/v2/torrents/topPrio"
+      },
+      "response": {"status": 200, "body": ""}
+    },
+    {
+      "request": {
+        "method": "POST",
+        "urlPattern": "/api/v2/torrents/bottomPrio"
+      },
+      "response": {"status": 200, "body": ""}
+    },
+    {
+      "request": {
+        "method": "POST",
+        "urlPattern": "/api/v2/auth/login"
+      },
+      "response": {"status": 200, "body": "Ok."}
+    }
+  ]
+}
