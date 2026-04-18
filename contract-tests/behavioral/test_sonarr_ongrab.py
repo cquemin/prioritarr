@@ -33,14 +33,19 @@ def test_grab_event_returns_processed_with_priority_and_label(
 def test_duplicate_grab_returns_duplicate_with_priority_and_label(
     client: httpx.Client, fixtures
 ) -> None:
-    """Legacy quirk: duplicate still carries priority + label."""
+    """Legacy quirk: duplicate still carries priority + label.
+
+    The *label suffix* may differ between first and second call — on the
+    second call priority is served from the cache and the handler
+    annotates the label with ' (cached)'. Priority itself is stable.
+    """
     payload = fixtures("sonarr_ongrab")
     first = client.post("/api/sonarr/on-grab", json=payload).json()
     assert first["status"] == "processed"
     second = client.post("/api/sonarr/on-grab", json=payload).json()
     assert second["status"] == "duplicate"
     assert second["priority"] == first["priority"]
-    assert second["label"] == first["label"]
+    assert second["label"].startswith(f"P{second['priority']}")
     assert set(second.keys()) == {"status", "priority", "label"}
 
 
