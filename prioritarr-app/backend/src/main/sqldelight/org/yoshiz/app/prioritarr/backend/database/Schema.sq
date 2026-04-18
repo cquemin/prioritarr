@@ -107,6 +107,9 @@ SELECT * FROM managed_downloads WHERE client = ?;
 deleteManagedDownload:
 DELETE FROM managed_downloads WHERE client = ? AND client_id = ?;
 
+setManagedPaused:
+UPDATE managed_downloads SET paused_by_us = ? WHERE client = ? AND client_id = ?;
+
 -- ------------------------------------------------------------------
 -- webhook_dedupe — INSERT OR IGNORE to mirror the python try/except
 -- IntegrityError dance; caller reads `changes()` to learn whether it

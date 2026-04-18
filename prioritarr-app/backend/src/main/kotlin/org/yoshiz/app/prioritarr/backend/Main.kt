@@ -94,6 +94,57 @@ fun main() {
     // SSE heartbeat event publisher (distinct from the db heartbeat above).
     org.yoshiz.app.prioritarr.backend.api.v2.startHeartbeat(state, scope.coroutineContext[Job]!!)
 
+    // Spec B §7 — four periodic background jobs mirror python's APScheduler:
+    //   refresh_mappings, reconcile (qbit + sab in one job), backfill_sweep,
+    //   cutoff_sweep. Each runs in its own coroutine under the supervisor job
+    //   so one crashing doesn't take the others down.
+    val intervals = settings.intervals
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_mappings crashed", e) }) {
+        while (isActive) {
+            try {
+                org.yoshiz.app.prioritarr.backend.mapping.refreshMappings(sonarr, tautulli, cache, mappings)
+                state.eventBus.publish("mapping-refreshed", kotlinx.serialization.json.JsonNull)
+            } catch (e: Exception) { logger.warn("refresh_mappings: {}", e.message) }
+            delay(60L * 60L * 1000L)  // hourly
+        }
+    }
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("reconcile crashed", e) }) {
+        while (isActive) {
+            try {
+                val lookup = org.yoshiz.app.prioritarr.backend.reconcile.fetchSonarrQueueLookup(sonarr)
+                org.yoshiz.app.prioritarr.backend.reconcile.reconcileQbit(qbit, db, lookup, priorityService, settings.dryRun)
+                org.yoshiz.app.prioritarr.backend.reconcile.reconcileSab(sab, db, lookup, priorityService, settings.dryRun)
+            } catch (e: Exception) { logger.warn("reconcile: {}", e.message) }
+            delay(intervals.reconcileMinutes * 60L * 1000L)
+        }
+    }
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("backfill_sweep crashed", e) }) {
+        while (isActive) {
+            try {
+                org.yoshiz.app.prioritarr.backend.sweep.runBackfillSweep(
+                    sonarr, priorityService,
+                    maxSearches = intervals.backfillMaxSearchesPerSweep,
+                    delaySeconds = intervals.backfillDelayBetweenSearchesSeconds,
+                    dryRun = settings.dryRun,
+                )
+            } catch (e: Exception) { logger.warn("backfill_sweep: {}", e.message) }
+            delay(intervals.backfillSweepHours * 60L * 60L * 1000L)
+        }
+    }
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("cutoff_sweep crashed", e) }) {
+        while (isActive) {
+            try {
+                org.yoshiz.app.prioritarr.backend.sweep.runCutoffSweep(
+                    sonarr, priorityService,
+                    maxSearches = intervals.cutoffMaxSearchesPerSweep,
+                    delaySeconds = intervals.backfillDelayBetweenSearchesSeconds,
+                    dryRun = settings.dryRun,
+                )
+            } catch (e: Exception) { logger.warn("cutoff_sweep: {}", e.message) }
+            delay(intervals.cutoffSweepHours * 60L * 60L * 1000L)
+        }
+    }
+
     embeddedServer(Netty, port = 8000, host = "0.0.0.0") {
         prioritarrModule(state)
     }.start(wait = true)
