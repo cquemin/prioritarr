@@ -20,9 +20,15 @@ experimental.OPEN_API_3_1.enable()
 schema = schemathesis.from_uri(f"{BASE_URL}/openapi.json")
 
 
-@schema.hook
+@schemathesis.hook
 def before_call(context, case):
-    """Inject X-Api-Key on every v2 request so Schemathesis doesn't 401."""
+    """Inject X-Api-Key on every v2 request so Schemathesis doesn't 401.
+
+    Must be registered on the module-level `schemathesis.hook` dispatcher
+    (GLOBAL scope). `@schema.hook` only accepts per-schema hooks, and
+    `before_call` isn't one — Schemathesis fails collection with a
+    ScopeError if we try.
+    """
     if API_KEY and case.path.startswith("/api/v2/"):
         case.headers = {**(case.headers or {}), "X-Api-Key": API_KEY}
 
