@@ -30,6 +30,26 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: pytest -v
 
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install
+        working-directory: prioritarr-app/frontend
+        run: npm ci --legacy-peer-deps
+      - name: Generate API types + drift check
+        working-directory: prioritarr-app/frontend
+        run: |
+          npm run gen:api
+          # The generated file is gitignored — but if committed in the
+          # future, add `git diff --exit-code src/api/generated.ts` here.
+      - name: Build
+        working-directory: prioritarr-app/frontend
+        run: npm run build
+
   openapi-lint:
     runs-on: ubuntu-latest
     steps:
@@ -246,7 +266,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
   build-and-push-app:
-    needs: [test, app-contract-tests]
+    needs: [test, app-contract-tests, frontend-build]
     runs-on: ubuntu-latest
     permissions:
       contents: read

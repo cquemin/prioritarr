@@ -19,6 +19,7 @@ import org.yoshiz.app.prioritarr.backend.errors.toProblem
 import io.ktor.server.request.path
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -230,6 +231,30 @@ fun Application.prioritarrModule(state: AppState) {
                 state.mappings.inject(req.plex_key, req.series_id)
                 call.respond(OkResponse())
             }
+        }
+
+        // ---- Static UI (Spec D Task 14) ----
+        // Serve the bundled React app from the /static/ resource tree.
+        // Implemented manually (no Ktor static DSL) so the SPA fallback
+        // is explicit. IMPORTANT: this block must come AFTER every
+        // /api/* route so the API wins the router race.
+        get("/{path...}") {
+            val raw = call.parameters.getAll("path")?.joinToString("/").orEmpty()
+            val path = if (raw.isEmpty() || !raw.contains('.')) "static/index.html" else "static/$raw"
+            val stream = javaClass.classLoader.getResourceAsStream(path)
+                ?: javaClass.classLoader.getResourceAsStream("static/index.html")
+                ?: return@get call.respondText("UI not bundled.", status = HttpStatusCode.NotFound)
+            val contentType = when (path.substringAfterLast('.').lowercase()) {
+                "html" -> ContentType.Text.Html
+                "js" -> ContentType.Text.JavaScript
+                "css" -> ContentType.Text.CSS
+                "json" -> ContentType.Application.Json
+                "svg" -> ContentType.Image.SVG
+                "png" -> ContentType.Image.PNG
+                "ico" -> ContentType("image", "x-icon")
+                else -> ContentType.Application.OctetStream
+            }
+            call.respondBytes(stream.readBytes(), contentType)
         }
     }
 }
