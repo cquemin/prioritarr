@@ -7,11 +7,9 @@ COPY openapi.json /openapi.json
 COPY prioritarr-app/frontend/package.json prioritarr-app/frontend/package-lock.json ./
 RUN npm ci --legacy-peer-deps
 COPY prioritarr-app/frontend/ ./
-# The codegen script expects openapi.json at ../../openapi.json; symlink
-# it into place so `npm run gen:api` works from this working dir.
-RUN mkdir -p ../.. && ln -sf /openapi.json ../../openapi.json \
- && npm run gen:api \
- && npm run build
+# The gen:api script resolves `../../openapi.json` relative to /ui, which
+# is /openapi.json — already present from the COPY above. No symlink.
+RUN npm run gen:api && npm run build
 
 # Stage 2: gradle build with the UI static assets baked into resources
 FROM gradle:8-jdk21 AS build
