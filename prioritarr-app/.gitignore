@@ -15,3 +15,4 @@ out/
 Thumbs.db
 src/main/resources/openapi.json
 backend/src/main/resources/openapi.json
+backend/src/main/resources/static/
