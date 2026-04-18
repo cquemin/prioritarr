@@ -8,8 +8,12 @@ from __future__ import annotations
 import os
 
 import schemathesis
+from schemathesis import experimental
 
 BASE_URL = os.environ.get("CONTRACT_TEST_BASE_URL", "http://localhost:8000")
+
+# FastAPI emits OpenAPI 3.1, which Schemathesis 3.x supports behind a feature flag.
+experimental.OPEN_API_3_1.enable()
 
 schema = schemathesis.from_uri(f"{BASE_URL}/openapi.json")
 
