@@ -23,6 +23,8 @@ class MappingState {
         private set
     @Volatile var lastRefreshStats: RefreshStats? = null
         internal set
+    @Volatile var lastRefreshAt: String? = null
+        internal set
 
     fun plexKeyForSeriesTitle(title: String): String? =
         titleToPlexKey[normaliseTitle(title)]
@@ -206,6 +208,7 @@ suspend fun refreshMappings(
 
     state.apply(newTvdb, newTitleToKey, newKeyToSid, tautulliUp = true)
     state.lastRefreshStats = stats
+    state.lastRefreshAt = org.yoshiz.app.prioritarr.backend.database.Database.nowIsoOffset()
     cache.save(newKeyToSid)
 
     logger.info(

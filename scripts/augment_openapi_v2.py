@@ -173,6 +173,10 @@ def main():
         summary="Plex↔Sonarr mapping snapshot",
         responses_200_schema={"type": "object", "title": "MappingSnapshot"},
     )
+    paths["/api/v2/stats"] = v2_op(
+        summary="Aggregated counters — dashboard-widget friendly",
+        responses_200_schema={"type": "object", "title": "StatsResponse"},
+    )
 
     # ---- Actions ----
     def action(summary, extra_params=None):

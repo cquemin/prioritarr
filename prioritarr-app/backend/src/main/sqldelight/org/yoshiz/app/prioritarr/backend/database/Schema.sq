@@ -70,6 +70,12 @@ SELECT * FROM series_priority_cache WHERE series_id = ?;
 invalidatePriorityCache:
 DELETE FROM series_priority_cache WHERE series_id = ?;
 
+countByPriority:
+SELECT priority, COUNT(*) AS n FROM series_priority_cache GROUP BY priority;
+
+countManagedDownloads:
+SELECT COUNT(*) AS total, SUM(paused_by_us) AS paused FROM managed_downloads;
+
 -- ------------------------------------------------------------------
 -- managed_downloads
 -- ------------------------------------------------------------------

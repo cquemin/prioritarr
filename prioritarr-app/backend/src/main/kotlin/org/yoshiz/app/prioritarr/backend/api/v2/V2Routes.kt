@@ -48,6 +48,9 @@ fun Route.v2Routes(state: AppState) {
     // ---- SSE ----
     eventsRoute(state)
 
+    // ---- Stats ----
+    statsRoute(state)
+
     // ---- Reads ----
 
     route("/series") {
