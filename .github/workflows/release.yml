@@ -30,6 +30,36 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: pytest -v
 
+  openapi-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install validator
+        run: pip install openapi-spec-validator
+      - name: Validate openapi.json
+        run: python -c "from openapi_spec_validator import validate_spec; import json; validate_spec(json.load(open('openapi.json')))"
+      - name: Every /api/v2/* operation has api_key security
+        run: |
+          python <<'PY'
+          import json, sys
+          spec = json.load(open("openapi.json"))
+          missing = []
+          for p, ops in spec["paths"].items():
+              if not p.startswith("/api/v2/"): continue
+              for method, op in ops.items():
+                  if method.startswith("x-"): continue
+                  sec = op.get("security") or []
+                  if not any("api_key" in entry for entry in sec):
+                      missing.append(f"{method.upper()} {p}")
+          if missing:
+              print("Operations missing api_key security:\n  " + "\n  ".join(missing))
+              sys.exit(1)
+          print(f"All v2 operations carry api_key security.")
+          PY
+
   contract-tests:
     needs: test
     runs-on: ubuntu-latest
