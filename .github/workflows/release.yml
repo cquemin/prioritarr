@@ -51,6 +51,7 @@ jobs:
         run: |
           docker run -d --name prioritarr \
             --network host \
+            --tmpfs /config:rw,size=64m \
             -e PRIORITARR_TEST_MODE=true \
             -e PRIORITARR_DRY_RUN=true \
             -e PRIORITARR_SONARR_URL=http://localhost:9001/sonarr \
