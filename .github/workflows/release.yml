@@ -173,7 +173,7 @@ jobs:
             --network host \
             --tmpfs /config:rw,size=64m \
             -e PRIORITARR_TEST_MODE=true \
-            -e PRIORITARR_DRY_RUN=true \
+            -e PRIORITARR_DRY_RUN=false \
             -e PRIORITARR_SONARR_URL=http://localhost:9001/sonarr \
             -e PRIORITARR_SONARR_API_KEY=mock \
             -e PRIORITARR_TAUTULLI_URL=http://localhost:9002 \
