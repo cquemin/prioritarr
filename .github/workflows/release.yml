@@ -49,6 +49,9 @@ jobs:
       - name: Build
         working-directory: prioritarr-app/frontend
         run: npm run build
+      - name: Unit tests
+        working-directory: prioritarr-app/frontend
+        run: npm test
 
   openapi-lint:
     runs-on: ubuntu-latest
@@ -220,6 +223,21 @@ jobs:
 
       - name: Install contract-tests dependencies
         run: pip install -r contract-tests/requirements.txt
+
+      - name: Install UI deps for Playwright
+        working-directory: prioritarr-app/frontend
+        run: npm ci --legacy-peer-deps
+
+      - name: Install Playwright browser
+        working-directory: prioritarr-app/frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E (UI happy path)
+        working-directory: prioritarr-app/frontend
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:8000
+          PLAYWRIGHT_API_KEY: ci-test-key
+        run: npx playwright test
 
       - name: Run contract tests (app)
         env:

@@ -25,4 +25,21 @@ html, body, #root {
 body {
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   margin: 0;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* a11y — visible focus ring on every interactive element. */
+button:focus-visible,
+input:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Kill the Chrome default tap highlight on buttons. */
+button { -webkit-tap-highlight-color: transparent; }
+
+/* Monospace for timestamps + ids so columns align. */
+.font-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Liberation Mono", monospace;
 }
