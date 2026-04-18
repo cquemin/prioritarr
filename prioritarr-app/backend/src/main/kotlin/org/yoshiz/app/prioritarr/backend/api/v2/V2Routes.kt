@@ -45,6 +45,9 @@ private fun PriorityResult.toWire() = PriorityResultWire(priority, label, reason
 private fun redactSecret(v: String?): String? = if (v.isNullOrBlank()) v else "***"
 
 fun Route.v2Routes(state: AppState) {
+    // ---- SSE ----
+    eventsRoute(state)
+
     // ---- Reads ----
 
     route("/series") {

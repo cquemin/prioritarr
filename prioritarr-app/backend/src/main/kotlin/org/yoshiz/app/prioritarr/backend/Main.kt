@@ -4,6 +4,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -89,6 +90,9 @@ fun main() {
             delay(30_000)
         }
     }
+
+    // SSE heartbeat event publisher (distinct from the db heartbeat above).
+    org.yoshiz.app.prioritarr.backend.api.v2.startHeartbeat(state, scope.coroutineContext[Job]!!)
 
     embeddedServer(Netty, port = 8000, host = "0.0.0.0") {
         prioritarrModule(state)
