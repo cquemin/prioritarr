@@ -7,6 +7,7 @@ import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
 import org.yoshiz.app.prioritarr.backend.clients.TautulliClient
 import org.yoshiz.app.prioritarr.backend.config.Settings
 import org.yoshiz.app.prioritarr.backend.database.Database
+import org.yoshiz.app.prioritarr.backend.events.EventBus
 import org.yoshiz.app.prioritarr.backend.mapping.MappingState
 import org.yoshiz.app.prioritarr.backend.priority.PriorityService
 
@@ -26,5 +27,6 @@ data class AppState(
     val sab: SABClient,
     val mappings: MappingState,
     val priorityService: PriorityService,
+    val eventBus: EventBus,
     val httpClients: List<HttpClient>,
 )

@@ -145,6 +145,27 @@ class Database(dbPath: String) {
         )
     }
 
+    /** List audit entries with optional filters, newest first. */
+    fun listAudit(
+        seriesId: Long? = null,
+        action: String? = null,
+        since: String? = null,
+        limit: Long = 10_000,
+    ): List<org.yoshiz.app.prioritarr.backend.schemas.AuditEntry> =
+        q.listAuditFiltered(seriesId, action, since, limit)
+            .executeAsList()
+            .map { row ->
+                org.yoshiz.app.prioritarr.backend.schemas.AuditEntry(
+                    id = row.id,
+                    ts = row.ts,
+                    action = row.action,
+                    seriesId = row.series_id,
+                    client = row.client,
+                    clientId = row.client_id,
+                    details = row.details?.let { Json.parseToJsonElement(it) },
+                )
+            }
+
     // ------------------------------------------------------------------
     // heartbeat
     // ------------------------------------------------------------------

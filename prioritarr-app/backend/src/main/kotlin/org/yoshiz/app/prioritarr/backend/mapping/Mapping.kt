@@ -21,6 +21,8 @@ class MappingState {
         private set
     @Volatile var tautulliAvailable: Boolean = true
         private set
+    @Volatile var lastRefreshStats: RefreshStats? = null
+        internal set
 
     fun plexKeyForSeriesTitle(title: String): String? =
         titleToPlexKey[normaliseTitle(title)]
@@ -69,6 +71,7 @@ internal fun extractTvdbFromGuids(guids: List<String>): Long? {
     return null
 }
 
+@kotlinx.serialization.Serializable
 data class RefreshStats(
     val cached: Int = 0,
     val tvdb: Int = 0,
@@ -202,6 +205,7 @@ suspend fun refreshMappings(
     }
 
     state.apply(newTvdb, newTitleToKey, newKeyToSid, tautulliUp = true)
+    state.lastRefreshStats = stats
     cache.save(newKeyToSid)
 
     logger.info(

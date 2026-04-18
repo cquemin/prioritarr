@@ -124,6 +124,14 @@ appendAudit:
 INSERT INTO audit_log (ts, action, series_id, client, client_id, details)
 VALUES (?, ?, ?, ?, ?, ?);
 
+listAuditFiltered:
+SELECT * FROM audit_log
+WHERE (:seriesId IS NULL OR series_id = :seriesId)
+  AND (:action IS NULL OR action = :action)
+  AND (:since IS NULL OR ts >= :since)
+ORDER BY ts DESC
+LIMIT :lim;
+
 pruneAudit:
 DELETE FROM audit_log WHERE ts < ?;
 

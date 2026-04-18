@@ -22,7 +22,9 @@ import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import org.yoshiz.app.prioritarr.backend.api.v2.v2Routes
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -192,6 +194,12 @@ fun Application.prioritarrModule(state: AppState) {
             }
             handleWatched(seriesId, state.db)
             call.respond(PlexEventOk(series_id = seriesId))
+        }
+
+        authenticate("api_key") {
+            route("/api/v2") {
+                v2Routes(state)
+            }
         }
 
         if (state.settings.testMode) {
