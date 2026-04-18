@@ -354,6 +354,18 @@ git add openapi.json && git commit -m "chore: regenerate openapi.json"
 
 `PRIORITARR_TEST_MODE=true` mounts destructive endpoints at `/api/v1/_testing/*` (reset all state, force stale heartbeat, inject series mappings). **Never enable this in production.** The default is `false`.
 
+### Web UI (Spec D)
+
+`ghcr.io/cquemin/prioritarr-app:latest` bundles a React-based operator console served at `/` on the same port as the API. Point a browser at the container, enter the API key you set via `PRIORITARR_API_KEY`, and you get:
+
+- **Series** — sortable list of every Sonarr series with its current priority, inline Recompute.
+- **Downloads** — every tracked managed download across qBit + SAB with pause/resume/boost/demote/untrack buttons.
+- **Audit** — filterable chronological log of every priority recompute, webhook, and cache invalidation.
+- **Settings** — runtime config (secrets redacted) + mapping refresh + log-out.
+- **Live updates** via SSE — priority recomputes, actions, and mapping refreshes show up in the list without a page reload. Small dot on the left rail flips red when the SSE stream drops.
+
+Frontend source + dev instructions in [`prioritarr-app/frontend/README.md`](prioritarr-app/frontend/README.md).
+
 ### v2 API surface (Spec C)
 
 The `prioritarr-app` (Kotlin) backend adds a `/api/v2/*` read + control API for the upcoming UI. Every v2 endpoint requires authentication via `X-Api-Key: <key>` (or `Authorization: Bearer <key>`); the key comes from `PRIORITARR_API_KEY`. If unset, auth is disabled and a startup WARN is logged — dev mode only.
