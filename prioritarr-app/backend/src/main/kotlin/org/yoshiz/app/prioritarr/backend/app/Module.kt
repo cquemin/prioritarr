@@ -170,16 +170,20 @@ fun Application.prioritarrModule(state: AppState) {
             val event = parseOnGrabPayload(payload)
             val priorityResult = state.priorityService.priorityForSeries(event.seriesId)
 
-            // Check dedupe BEFORE handleOnGrab (which also tries insert); peek via eventKey.
-            val alreadySeen = !state.db.tryInsertDedupe(eventKey(event), Instant.now().toString())
-            if (alreadySeen) {
+            // handleOnGrab handles dedupe + upsert + audit internally; the
+            // return value distinguishes processed (true) from duplicate
+            // (false). Don't peek the dedupe ourselves — the previous
+            // "peek then insert again" pattern inserted the row twice,
+            // making handleOnGrab's own dedupe check fail, short-circuit,
+            // and skip the audit write.
+            val processed = handleOnGrab(
+                event, state.db, priorityResult.priority, dryRun = state.settings.dryRun
+            )
+            if (processed) {
+                call.respond(OnGrabProcessed(priority = priorityResult.priority, label = priorityResult.label))
+            } else {
                 call.respond(OnGrabDuplicate(priority = priorityResult.priority, label = priorityResult.label))
-                return@post
             }
-            // Undo the peek-insert and let handleOnGrab do the proper write + audit.
-            state.db.q.tryInsertDedupe(eventKey(event), Instant.now().toString())
-            handleOnGrab(event, state.db, priorityResult.priority, dryRun = state.settings.dryRun)
-            call.respond(OnGrabProcessed(priority = priorityResult.priority, label = priorityResult.label))
         }
 
         post("/api/plex-event") {
