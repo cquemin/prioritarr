@@ -19,6 +19,12 @@ experimental.OPEN_API_3_1.enable()
 
 schema = schemathesis.from_uri(f"{BASE_URL}/openapi.json")
 
+# v2 is kotlin-only. If the runtime schema doesn't advertise v2 paths,
+# schemathesis would fail parametrize collection for test_v2_*_conformance
+# with "does not match any API operations". Compute this once so the v2
+# tests can be pytest-skipped wholesale.
+_HAS_V2 = any(p.startswith("/api/v2/") for p in schema.raw_schema.get("paths", {}))
+
 
 @schemathesis.hook
 def before_call(context, case):
@@ -67,20 +73,25 @@ def test_plex_event_conformance(case) -> None:
 
 
 # ---- v2 conformance ----
+# Guard every v2 parametrize so the tests skip cleanly when running
+# against a v1-only backend (e.g. the python contract-tests job).
 
-@schema.parametrize(endpoint="/api/v2/series")
-def test_v2_series_conformance(case) -> None:
-    response = case.call()
-    case.validate_response(response, checks=_CHECKS)
+import pytest  # noqa: E402 — imported late so the v1 tests above don't depend on it
 
+pytestmark_v2 = pytest.mark.skipif(not _HAS_V2, reason="runtime schema has no /api/v2/* paths")
 
-@schema.parametrize(endpoint="/api/v2/settings")
-def test_v2_settings_conformance(case) -> None:
-    response = case.call()
-    case.validate_response(response, checks=_CHECKS)
+if _HAS_V2:
+    @schema.parametrize(endpoint="/api/v2/series")
+    def test_v2_series_conformance(case) -> None:
+        response = case.call()
+        case.validate_response(response, checks=_CHECKS)
 
+    @schema.parametrize(endpoint="/api/v2/settings")
+    def test_v2_settings_conformance(case) -> None:
+        response = case.call()
+        case.validate_response(response, checks=_CHECKS)
 
-@schema.parametrize(endpoint="/api/v2/mappings")
-def test_v2_mappings_conformance(case) -> None:
-    response = case.call()
-    case.validate_response(response, checks=_CHECKS)
+    @schema.parametrize(endpoint="/api/v2/mappings")
+    def test_v2_mappings_conformance(case) -> None:
+        response = case.call()
+        case.validate_response(response, checks=_CHECKS)
