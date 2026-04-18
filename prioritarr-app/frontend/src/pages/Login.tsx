@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { apiClient } from '../api/client'
+import { apiClient, UnauthorizedError } from '../api/client'
 import { useAuth } from '../hooks/useAuth'
 
 export function Login() {
@@ -13,13 +13,24 @@ export function Login() {
     setBusy(true)
     setError(null)
     localStorage.setItem('prioritarr_api_key', value)
-    const { error: err } = await apiClient.GET('/api/v2/settings')
-    setBusy(false)
-    if (err) {
-      localStorage.removeItem('prioritarr_api_key')
-      setError('API key rejected.')
-    } else {
-      setApiKey(value)
+    try {
+      const { error: err } = await apiClient.GET('/api/v2/settings')
+      if (err) {
+        localStorage.removeItem('prioritarr_api_key')
+        setError('API key rejected.')
+      } else {
+        setApiKey(value)
+      }
+    } catch (e) {
+      if (e instanceof UnauthorizedError) {
+        // middleware already cleared localStorage
+        setError('API key rejected.')
+      } else {
+        localStorage.removeItem('prioritarr_api_key')
+        setError(`Connection failed: ${String(e)}`)
+      }
+    } finally {
+      setBusy(false)
     }
   }
 
