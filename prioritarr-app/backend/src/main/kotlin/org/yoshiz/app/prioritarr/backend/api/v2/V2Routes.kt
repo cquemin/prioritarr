@@ -88,6 +88,11 @@ fun Route.v2Routes(state: AppState) {
             } catch (e: Exception) {
                 throw NotFoundException("series $id not found in Sonarr")
             }
+            // Some upstream stacks (incl. the WireMock stub) return 200
+            // with an arbitrary body for unknown ids. Validate the returned
+            // id matches what we asked for, else treat as not found.
+            val returnedId = seriesObj["id"]?.jsonPrimitive?.longOrNull
+            if (returnedId != id) throw NotFoundException("series $id not found in Sonarr")
             val title = seriesObj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
             val tvdbId = seriesObj["tvdbId"]?.jsonPrimitive?.longOrNull
             val cache = state.db.getPriorityCache(id)
@@ -114,9 +119,12 @@ fun Route.v2Routes(state: AppState) {
         post("/{id}/recompute") {
             val id = call.parameters["id"]?.toLongOrNull()
                 ?: throw ValidationException("id", "must be a number")
-            try {
+            val existing = try {
                 state.sonarr.getSeries(id)
             } catch (e: Exception) {
+                throw NotFoundException("series $id not found in Sonarr")
+            }
+            if (existing["id"]?.jsonPrimitive?.longOrNull != id) {
                 throw NotFoundException("series $id not found in Sonarr")
             }
             if (!state.settings.dryRun) {
