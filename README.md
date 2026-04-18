@@ -354,6 +354,24 @@ git add openapi.json && git commit -m "chore: regenerate openapi.json"
 
 `PRIORITARR_TEST_MODE=true` mounts destructive endpoints at `/api/v1/_testing/*` (reset all state, force stale heartbeat, inject series mappings). **Never enable this in production.** The default is `false`.
 
+### v2 API surface (Spec C)
+
+The `prioritarr-app` (Kotlin) backend adds a `/api/v2/*` read + control API for the upcoming UI. Every v2 endpoint requires authentication via `X-Api-Key: <key>` (or `Authorization: Bearer <key>`); the key comes from `PRIORITARR_API_KEY`. If unset, auth is disabled and a startup WARN is logged — dev mode only.
+
+Error bodies on `/api/v2/*` follow RFC 7807 Problem Details (`application/problem+json`). Webhooks (`/api/sonarr/on-grab`, `/api/plex-event`) keep the always-200 contract from Spec A and never emit an error body.
+
+Pagination uses arr-style envelope: `?offset=0&limit=50`, response wraps `records` in `{records, totalRecords, offset, limit}`.
+
+Real-time updates are available via Server-Sent Events at `GET /api/v2/events` — event types include `priority-recomputed`, `download-action`, `download-untracked`, `mapping-refreshed`, and a 30s `heartbeat`. Reconnect with `Last-Event-ID: <id>` to replay events you missed within the 1000-event ring buffer.
+
+Running contract tests against a v2-enabled backend requires `CONTRACT_TEST_API_KEY`:
+
+```bash
+CONTRACT_TEST_BASE_URL=http://localhost:8001 \
+CONTRACT_TEST_API_KEY=your-key \
+  pytest contract-tests/
+```
+
 ### Spec §4 response-example corrections
 
 The original spec (`docs/specs/2026-04-14-prioritarr-api-contract-v1-design.md`) shows a handful of example response bodies that don't match the live backend. The code and the contract tests are the source of truth; a follow-up will correct the spec examples. The actual responses are:
