@@ -56,7 +56,7 @@ fun Route.v2Routes(state: AppState) {
     route("/series") {
         get {
             val params = pageParamsFrom(call, allowedSorts = setOf("priority", "title", "id"), defaultSort = "priority")
-            val all = state.sonarr.getAllSeries()
+            val all = state.sonarrCache.getAllSeries()
             // Pre-aggregate: one table scan each, then in-memory map lookups
             // inside the enrich loop. Without the cache-map, ~450 single-row
             // priority_cache queries per request stacked up to 10s of wall
@@ -165,7 +165,7 @@ fun Route.v2Routes(state: AppState) {
             // per-row getSeries(id) lookup was ~350 HTTP round-trips at our
             // scale which made the page visibly slow to render.
             val titleById: Map<Long, String> = try {
-                state.sonarr.getAllSeries().associate {
+                state.sonarrCache.getAllSeries().associate {
                     (it.jsonObject["id"]?.jsonPrimitive?.longOrNull ?: -1L) to
                         (it.jsonObject["title"]?.jsonPrimitive?.contentOrNull.orEmpty())
                 }
