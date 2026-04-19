@@ -317,7 +317,6 @@ fun Route.v2Routes(state: AppState) {
             sabApiKey = "***",
             plexUrl = s.plexUrl,
             plexToken = redactSecret(s.plexToken),
-            redisUrl = redactSecret(s.redisUrl),
             apiKey = redactSecret(s.apiKey),
             uiOrigin = s.uiOrigin,
             dryRun = s.dryRun,

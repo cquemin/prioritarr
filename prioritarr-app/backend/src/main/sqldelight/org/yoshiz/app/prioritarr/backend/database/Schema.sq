@@ -57,6 +57,16 @@ CREATE TABLE IF NOT EXISTS heartbeat (
     ts TEXT NOT NULL
 );
 
+-- Persistent mapping cache (plex_rating_key -> series_id). Replaces the
+-- Lettuce/Redis cache in the Kotlin backend. One row per plex_key.
+-- Byte-compatible with a Python backend that adds the same table if it
+-- ever migrates off Redis too.
+CREATE TABLE IF NOT EXISTS mapping_cache (
+    plex_key TEXT PRIMARY KEY,
+    series_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 -- ------------------------------------------------------------------
 -- series_priority_cache
 -- ------------------------------------------------------------------
@@ -211,3 +221,20 @@ DELETE FROM series_priority_cache;
 
 deleteAllHeartbeat:
 DELETE FROM heartbeat;
+
+-- ------------------------------------------------------------------
+-- mapping_cache
+-- ------------------------------------------------------------------
+
+upsertMappingCache:
+INSERT INTO mapping_cache (plex_key, series_id, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(plex_key) DO UPDATE SET
+    series_id  = excluded.series_id,
+    updated_at = excluded.updated_at;
+
+listMappingCache:
+SELECT plex_key, series_id FROM mapping_cache;
+
+deleteAllMappingCache:
+DELETE FROM mapping_cache;

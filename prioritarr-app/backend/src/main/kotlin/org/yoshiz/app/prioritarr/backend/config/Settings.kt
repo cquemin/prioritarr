@@ -58,7 +58,6 @@ data class Settings(
 
     val qbitUsername: String? = null,
     val qbitPassword: String? = null,
-    val redisUrl: String? = null,
     val plexUrl: String? = null,
     val plexToken: String? = null,
 
@@ -152,7 +151,6 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         sabApiKey = envRequired("SAB_API_KEY"),
         qbitUsername = env("QBIT_USERNAME"),
         qbitPassword = env("QBIT_PASSWORD"),
-        redisUrl = env("REDIS_URL"),
         plexUrl = env("PLEX_URL"),
         plexToken = env("PLEX_TOKEN"),
         dryRun = dryRun,

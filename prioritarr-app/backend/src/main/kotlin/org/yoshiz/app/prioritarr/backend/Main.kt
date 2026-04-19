@@ -22,9 +22,8 @@ import org.yoshiz.app.prioritarr.backend.http.defaultJsonClient
 import org.yoshiz.app.prioritarr.backend.http.qbitClient
 import org.yoshiz.app.prioritarr.backend.http.xmlClient
 import org.yoshiz.app.prioritarr.backend.mapping.Hydrate
-import org.yoshiz.app.prioritarr.backend.mapping.InMemoryMappingCache
-import org.yoshiz.app.prioritarr.backend.mapping.LettuceMappingCache
 import org.yoshiz.app.prioritarr.backend.mapping.MappingCache
+import org.yoshiz.app.prioritarr.backend.mapping.SqliteMappingCache
 import org.yoshiz.app.prioritarr.backend.mapping.MappingState
 import org.yoshiz.app.prioritarr.backend.mapping.hydrate
 import org.yoshiz.app.prioritarr.backend.priority.PriorityService
@@ -51,7 +50,7 @@ fun main() {
 
     val mappings = MappingState()
 
-    val cache: MappingCache = settings.redisUrl?.let { LettuceMappingCache(it) } ?: InMemoryMappingCache()
+    val cache: MappingCache = SqliteMappingCache(db)
     // Re-hydrate the plex-key map at startup so webhooks work before the
     // first refresh. TVDB + title maps fill in on the next refresh cycle.
     mappings.hydrate(Hydrate.seed(cache.load()))

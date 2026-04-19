@@ -85,7 +85,9 @@ data class RefreshStats(
 /**
  * Rebuild plex↔sonarr mapping tables. Mirrors
  * prioritarr/main.py::_refresh_mappings including the 3-step matching
- * (TVDB → path → title) and Redis cache skip-on-hit optimisation.
+ * (TVDB → path → title) and the persistent-cache skip-on-hit
+ * optimisation (SqliteMappingCache in prod, Redis in the Python
+ * shadow — they store the same shape).
  */
 suspend fun refreshMappings(
     sonarr: SonarrClient,
