@@ -67,6 +67,9 @@ ON CONFLICT(series_id) DO UPDATE SET
 selectPriorityCache:
 SELECT * FROM series_priority_cache WHERE series_id = ?;
 
+listPriorityCache:
+SELECT * FROM series_priority_cache;
+
 invalidatePriorityCache:
 DELETE FROM series_priority_cache WHERE series_id = ?;
 

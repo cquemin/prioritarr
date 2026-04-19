@@ -57,16 +57,21 @@ fun Route.v2Routes(state: AppState) {
         get {
             val params = pageParamsFrom(call, allowedSorts = setOf("priority", "title", "id"), defaultSort = "priority")
             val all = state.sonarr.getAllSeries()
-            // Pre-aggregate managed_downloads once — a per-series count() would
-            // re-fetch+filter the entire table for each of 221 series.
+            // Pre-aggregate: one table scan each, then in-memory map lookups
+            // inside the enrich loop. Without the cache-map, ~450 single-row
+            // priority_cache queries per request stacked up to 10s of wall
+            // time on a local SQLite (JDBC connection overhead dominates).
             val downloadsBySeries: Map<Long, Int> =
                 state.db.listManagedDownloads().groupingBy { it.series_id }.eachCount()
+            val cacheBySeries = state.db.q.listPriorityCache()
+                .executeAsList()
+                .associateBy { it.series_id }
             val rows = all.map { el ->
                 val obj = el.jsonObject
                 val id = obj["id"]?.jsonPrimitive?.longOrNull ?: return@map null
                 val title = obj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
                 val tvdbId = obj["tvdbId"]?.jsonPrimitive?.longOrNull
-                val cache = state.db.getPriorityCache(id)
+                val cache = cacheBySeries[id]
                 SeriesSummary(
                     id = id,
                     title = title,
