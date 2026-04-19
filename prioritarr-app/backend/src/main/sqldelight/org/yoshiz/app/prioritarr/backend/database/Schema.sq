@@ -2,6 +2,17 @@
 -- the kotlin and python backends read the same /config/state.db during
 -- shadow deploy (Spec B §Task 15).
 
+-- Local read-model of Sonarr /series so v2 list endpoints never block
+-- on the upstream call (7s at ~450 shows). Refreshed periodically by a
+-- scheduler job.
+CREATE TABLE IF NOT EXISTS series_cache (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    tvdb_id INTEGER,
+    path TEXT,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS series_priority_cache (
     series_id INTEGER PRIMARY KEY,
     priority INTEGER NOT NULL,
@@ -69,6 +80,30 @@ SELECT * FROM series_priority_cache WHERE series_id = ?;
 
 listPriorityCache:
 SELECT * FROM series_priority_cache;
+
+upsertSeriesCache:
+INSERT INTO series_cache (id, title, tvdb_id, path, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    title      = excluded.title,
+    tvdb_id    = excluded.tvdb_id,
+    path       = excluded.path,
+    updated_at = excluded.updated_at;
+
+listSeriesCache:
+SELECT * FROM series_cache;
+
+selectSeriesCache:
+SELECT * FROM series_cache WHERE id = ?;
+
+countSeriesCache:
+SELECT COUNT(*) FROM series_cache;
+
+deleteAllSeriesCache:
+DELETE FROM series_cache;
+
+deleteSeriesCacheNotIn:
+DELETE FROM series_cache WHERE id NOT IN ?;
 
 invalidatePriorityCache:
 DELETE FROM series_priority_cache WHERE series_id = ?;
