@@ -57,6 +57,10 @@ fun Route.v2Routes(state: AppState) {
         get {
             val params = pageParamsFrom(call, allowedSorts = setOf("priority", "title", "id"), defaultSort = "priority")
             val all = state.sonarr.getAllSeries()
+            // Pre-aggregate managed_downloads once — a per-series count() would
+            // re-fetch+filter the entire table for each of 221 series.
+            val downloadsBySeries: Map<Long, Int> =
+                state.db.listManagedDownloads().groupingBy { it.series_id }.eachCount()
             val rows = all.map { el ->
                 val obj = el.jsonObject
                 val id = obj["id"]?.jsonPrimitive?.longOrNull ?: return@map null
@@ -70,7 +74,7 @@ fun Route.v2Routes(state: AppState) {
                     priority = cache?.priority?.toInt(),
                     label = cache?.let { "P${it.priority}" },
                     computedAt = cache?.computed_at,
-                    managedDownloadCount = state.db.listManagedDownloads().count { it.series_id == id },
+                    managedDownloadCount = downloadsBySeries[id] ?: 0,
                 )
             }.filterNotNull()
 
@@ -152,15 +156,21 @@ fun Route.v2Routes(state: AppState) {
         get {
             val params = pageParamsFrom(call, allowedSorts = setOf("clientId", "seriesId", "lastReconciledAt"), defaultSort = "lastReconciledAt", defaultDir = org.yoshiz.app.prioritarr.backend.pagination.SortDir.DESC)
             val clientFilter = call.request.queryParameters["client"]
+            // Pre-index Sonarr titles by id with a single /series call — the
+            // per-row getSeries(id) lookup was ~350 HTTP round-trips at our
+            // scale which made the page visibly slow to render.
+            val titleById: Map<Long, String> = try {
+                state.sonarr.getAllSeries().associate {
+                    (it.jsonObject["id"]?.jsonPrimitive?.longOrNull ?: -1L) to
+                        (it.jsonObject["title"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                }
+            } catch (_: Exception) { emptyMap() }
             val rows = state.db.listManagedDownloads(clientFilter).map { row ->
-                val title = try {
-                    state.sonarr.getSeries(row.series_id)["title"]?.jsonPrimitive?.contentOrNull
-                } catch (_: Exception) { null }
                 ManagedDownloadWire(
                     client = row.client,
                     clientId = row.client_id,
                     seriesId = row.series_id,
-                    seriesTitle = title,
+                    seriesTitle = titleById[row.series_id],
                     episodeIds = parseEpisodeIds(row.episode_ids),
                     initialPriority = row.initial_priority.toInt(),
                     currentPriority = row.current_priority.toInt(),
