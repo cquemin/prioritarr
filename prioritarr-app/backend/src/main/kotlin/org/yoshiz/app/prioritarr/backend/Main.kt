@@ -109,6 +109,17 @@ fun main() {
             delay(60L * 60L * 1000L)  // hourly
         }
     }
+    // Series-cache refresh is our read-model sync. First run is eager
+    // so the UI is populated within seconds of container boot; then
+    // every 5 minutes to pick up series adds/removes from Sonarr.
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_series_cache crashed", e) }) {
+        while (isActive) {
+            try {
+                org.yoshiz.app.prioritarr.backend.series.refreshSeriesCache(sonarr, db)
+            } catch (e: Exception) { logger.warn("refresh_series_cache: {}", e.message) }
+            delay(5L * 60L * 1000L)
+        }
+    }
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("reconcile crashed", e) }) {
         while (isActive) {
             try {

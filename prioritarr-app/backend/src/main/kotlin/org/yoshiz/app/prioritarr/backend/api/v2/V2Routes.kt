@@ -56,32 +56,27 @@ fun Route.v2Routes(state: AppState) {
     route("/series") {
         get {
             val params = pageParamsFrom(call, allowedSorts = setOf("priority", "title", "id"), defaultSort = "priority")
-            val all = state.sonarrCache.getAllSeries()
-            // Pre-aggregate: one table scan each, then in-memory map lookups
-            // inside the enrich loop. Without the cache-map, ~450 single-row
-            // priority_cache queries per request stacked up to 10s of wall
-            // time on a local SQLite (JDBC connection overhead dominates).
+            // Read-model: series list comes straight from local series_cache
+            // (populated by the refreshSeriesCache background job). Pure SQL +
+            // in-memory map lookups, no upstream calls in the request path.
+            val all = state.db.q.listSeriesCache().executeAsList()
             val downloadsBySeries: Map<Long, Int> =
                 state.db.listManagedDownloads().groupingBy { it.series_id }.eachCount()
             val cacheBySeries = state.db.q.listPriorityCache()
                 .executeAsList()
                 .associateBy { it.series_id }
-            val rows = all.map { el ->
-                val obj = el.jsonObject
-                val id = obj["id"]?.jsonPrimitive?.longOrNull ?: return@map null
-                val title = obj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                val tvdbId = obj["tvdbId"]?.jsonPrimitive?.longOrNull
-                val cache = cacheBySeries[id]
+            val rows = all.map { row ->
+                val cache = cacheBySeries[row.id]
                 SeriesSummary(
-                    id = id,
-                    title = title,
-                    tvdbId = tvdbId,
+                    id = row.id,
+                    title = row.title,
+                    tvdbId = row.tvdb_id,
                     priority = cache?.priority?.toInt(),
                     label = cache?.let { "P${it.priority}" },
                     computedAt = cache?.computed_at,
-                    managedDownloadCount = downloadsBySeries[id] ?: 0,
+                    managedDownloadCount = downloadsBySeries[row.id] ?: 0,
                 )
-            }.filterNotNull()
+            }
 
             val sorted = when (params.sort) {
                 "title" -> rows.sortedBy { it.title }
@@ -161,15 +156,10 @@ fun Route.v2Routes(state: AppState) {
         get {
             val params = pageParamsFrom(call, allowedSorts = setOf("clientId", "seriesId", "lastReconciledAt"), defaultSort = "lastReconciledAt", defaultDir = org.yoshiz.app.prioritarr.backend.pagination.SortDir.DESC)
             val clientFilter = call.request.queryParameters["client"]
-            // Pre-index Sonarr titles by id with a single /series call — the
-            // per-row getSeries(id) lookup was ~350 HTTP round-trips at our
-            // scale which made the page visibly slow to render.
-            val titleById: Map<Long, String> = try {
-                state.sonarrCache.getAllSeries().associate {
-                    (it.jsonObject["id"]?.jsonPrimitive?.longOrNull ?: -1L) to
-                        (it.jsonObject["title"]?.jsonPrimitive?.contentOrNull.orEmpty())
-                }
-            } catch (_: Exception) { emptyMap() }
+            // Title lookup served from local series_cache — no upstream call.
+            val titleById: Map<Long, String> = state.db.q.listSeriesCache()
+                .executeAsList()
+                .associate { it.id to it.title }
             val rows = state.db.listManagedDownloads(clientFilter).map { row ->
                 ManagedDownloadWire(
                     client = row.client,
