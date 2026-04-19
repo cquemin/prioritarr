@@ -42,7 +42,14 @@ const authMiddleware: Middleware = {
   },
 }
 
+// Served behind Traefik at yoshiz.org/prioritarr; Vite's `base` puts
+// `/prioritarr/` in import.meta.env.BASE_URL at runtime. Strip the
+// trailing slash so openapi-fetch doesn't produce `//api/v2/...`.
+export const API_BASE: string = (
+  import.meta.env.VITE_BACKEND_URL ?? import.meta.env.BASE_URL ?? ''
+).replace(/\/+$/, '')
+
 export const apiClient = createClient<paths>({
-  baseUrl: import.meta.env.VITE_BACKEND_URL ?? '',
+  baseUrl: API_BASE,
 })
 apiClient.use(authMiddleware)

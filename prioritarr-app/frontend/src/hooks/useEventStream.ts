@@ -1,7 +1,7 @@
 import { fetchEventSource } from '@microsoft/fetch-event-source'
 import { useEffect, useRef, useState } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
-import { getApiKey } from '../api/client'
+import { API_BASE, getApiKey } from '../api/client'
 
 type Status = 'connecting' | 'open' | 'closed'
 
@@ -30,7 +30,7 @@ export function useEventStream(queryClient: QueryClient) {
     if (lastId) headers['Last-Event-ID'] = lastId
 
     fetchEventSource(
-      (import.meta.env.VITE_BACKEND_URL ?? '') + '/api/v2/events',
+      API_BASE + '/api/v2/events',
       {
         headers,
         signal: ctrl.signal,
