@@ -3,6 +3,7 @@ package org.yoshiz.app.prioritarr.backend.app
 import io.ktor.client.HttpClient
 import org.yoshiz.app.prioritarr.backend.clients.QBitClient
 import org.yoshiz.app.prioritarr.backend.clients.SABClient
+import org.yoshiz.app.prioritarr.backend.clients.SonarrCache
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
 import org.yoshiz.app.prioritarr.backend.clients.TautulliClient
 import org.yoshiz.app.prioritarr.backend.config.Settings
@@ -22,6 +23,7 @@ data class AppState(
     val settings: Settings,
     val db: Database,
     val sonarr: SonarrClient,
+    val sonarrCache: SonarrCache,
     val tautulli: TautulliClient,
     val qbit: QBitClient,
     val sab: SABClient,
