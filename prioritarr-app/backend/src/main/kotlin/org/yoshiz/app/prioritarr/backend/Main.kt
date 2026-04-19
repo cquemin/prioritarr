@@ -94,10 +94,10 @@ fun main() {
     // SSE heartbeat event publisher (distinct from the db heartbeat above).
     org.yoshiz.app.prioritarr.backend.api.v2.startHeartbeat(state, scope.coroutineContext[Job]!!)
 
-    // Spec B §7 — four periodic background jobs mirror python's APScheduler:
-    //   refresh_mappings, reconcile (qbit + sab in one job), backfill_sweep,
-    //   cutoff_sweep. Each runs in its own coroutine under the supervisor job
-    //   so one crashing doesn't take the others down.
+    // Four periodic background jobs — refresh_mappings, reconcile
+    //   (qbit + sab in one job), backfill_sweep, cutoff_sweep. Each runs
+    //   in its own coroutine under the supervisor job so one crashing
+    //   doesn't take the others down.
     val intervals = settings.intervals
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_mappings crashed", e) }) {
         while (isActive) {

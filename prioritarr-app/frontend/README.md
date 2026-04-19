@@ -9,9 +9,8 @@ React 19 + TypeScript + Vite 5 + Tailwind v4 single-page operator console for th
 # on some of the older TanStack tools).
 npm ci --legacy-peer-deps
 
-# Point the Vite proxy at a running backend. Defaults to http://localhost:8001
-# (the shadow container from Spec B).
-VITE_BACKEND_URL=http://localhost:8001 npm run dev
+# Point the Vite proxy at a running backend.
+VITE_BACKEND_URL=http://localhost:8000 npm run dev
 ```
 
 Open http://localhost:5173, enter the API key you set via `PRIORITARR_API_KEY` on the backend.

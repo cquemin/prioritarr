@@ -20,12 +20,10 @@ import java.time.Instant
 import java.time.OffsetDateTime
 
 /**
- * Compute & cache per-series priorities. Mirrors the flow of
- * prioritarr/main.py::_compute_priority_for_series +
- * _build_series_snapshot. Tolerant of upstream failures: degrades to
- * a P3 default with reason=dependency_unreachable (same label as
- * python) rather than throwing — webhook handlers must always return a
- * priority per Spec §3.
+ * Compute & cache per-series priorities. Tolerant of upstream
+ * failures: degrades to a P3 default with
+ * reason=dependency_unreachable rather than throwing — webhook
+ * handlers must always return a priority per Spec §3.
  */
 class PriorityService(
     private val sonarr: SonarrClient,

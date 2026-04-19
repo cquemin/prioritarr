@@ -3,7 +3,7 @@ package org.yoshiz.app.prioritarr.backend.config
 import org.yaml.snakeyaml.Yaml
 import java.io.File
 
-/** Priority-compute tuning. Mirrors PriorityThresholds in prioritarr/config.py. */
+/** Priority-compute tuning. */
 data class PriorityThresholds(
     val p1WatchPctMin: Double = 0.90,
     val p1DaysSinceWatchMax: Int = 14,
@@ -16,7 +16,7 @@ data class PriorityThresholds(
     val p4MinWatched: Int = 1,
 )
 
-/** Scheduler cadences. Mirrors Intervals in prioritarr/config.py. */
+/** Scheduler cadences. */
 data class Intervals(
     val reconcileMinutes: Int = 15,
     val backfillSweepHours: Int = 2,
@@ -43,9 +43,9 @@ private fun <T : Number> Map<*, *>.num(key: String, coerce: (Number) -> T): T? =
     (this[key] as? Number)?.let(coerce)
 
 /**
- * Top-level application settings. Mirrors Settings in prioritarr/config.py.
- * Required fields have no default and must come from env; optional fields
- * default to `null` / sensible defaults and may be absent.
+ * Top-level application settings. Required fields have no default and
+ * must come from env; optional fields default to `null` / sensible
+ * defaults and may be absent.
  */
 data class Settings(
     val sonarrUrl: String,

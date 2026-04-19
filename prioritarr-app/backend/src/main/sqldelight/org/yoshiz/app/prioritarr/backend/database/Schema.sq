@@ -1,6 +1,6 @@
--- Mirror of prioritarr/database.py _SCHEMA. DDL must stay byte-compatible —
--- the kotlin and python backends read the same /config/state.db during
--- shadow deploy (Spec B §Task 15).
+-- SQLite schema owned by the Kotlin backend. Used to be shared
+-- byte-for-byte with a Python shadow during the rewrite; that backend
+-- is now retired, so changes here no longer need to mirror Python.
 
 -- Local read-model of Sonarr /series so v2 list endpoints never block
 -- on the upstream call (7s at ~450 shows). Refreshed periodically by a
