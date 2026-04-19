@@ -1,12 +1,10 @@
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { ClipboardList, Download, Settings, Star } from 'lucide-react'
-import { Login } from './pages/Login'
 import { SeriesPage } from './pages/SeriesPage'
 import { DownloadsPage } from './pages/DownloadsPage'
 import { AuditPage } from './pages/AuditPage'
 import { SettingsPage } from './pages/SettingsPage'
-import { useAuth } from './hooks/useAuth'
 import { useEventStream } from './hooks/useEventStream'
 import { useSettings } from './hooks/queries'
 
@@ -33,8 +31,9 @@ export default function App() {
 }
 
 function Root() {
-  const { isAuthed } = useAuth()
-  if (!isAuthed) return <Login />
+  // The deployment is protected by Authelia at the Traefik edge (same
+  // pattern as sonarr/radarr) so no in-app auth wall is needed. The
+  // backend's optional X-Api-Key is left unset on the server side.
   return <Shell />
 }
 
