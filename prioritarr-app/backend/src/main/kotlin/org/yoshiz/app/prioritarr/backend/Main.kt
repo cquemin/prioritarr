@@ -43,6 +43,7 @@ fun main() {
     val plexHttp = xmlClient()
     val qbitHttp = qbitClient()
     val sabHttp = defaultJsonClient()
+    val traktHttp = defaultJsonClient()
 
     val sonarr = SonarrClient(settings.sonarrUrl, settings.sonarrApiKey, sonarrHttp)
     val tautulli = TautulliClient(settings.tautulliUrl, settings.tautulliApiKey, tautulliHttp)
@@ -56,11 +57,29 @@ fun main() {
     // first refresh. TVDB + title maps fill in on the next refresh cycle.
     mappings.hydrate(Hydrate.seed(cache.load()))
 
+    // Assemble whichever watch-history providers are configured. Tautulli
+    // is always included (the app won't start without its URL + key);
+    // Trakt joins if both its client id + access token are present.
+    val tautulliProvider = org.yoshiz.app.prioritarr.backend.priority.TautulliHistoryProvider(tautulli, mappings)
+    val traktProvider: org.yoshiz.app.prioritarr.backend.priority.WatchHistoryProvider? =
+        if (settings.traktClientId != null && settings.traktAccessToken != null) {
+            logger.info("trakt: watch-history provider enabled")
+            val traktClient = org.yoshiz.app.prioritarr.backend.clients.TraktClient(
+                clientId = settings.traktClientId,
+                accessToken = settings.traktAccessToken,
+                http = traktHttp,
+            )
+            org.yoshiz.app.prioritarr.backend.priority.TraktHistoryProvider(traktClient)
+        } else {
+            logger.info("trakt: not configured, using Tautulli only")
+            null
+        }
+    val watchProviders = listOfNotNull(tautulliProvider, traktProvider)
+
     val priorityService = PriorityService(
         sonarr = sonarr,
-        tautulli = tautulli,
+        watchProviders = watchProviders,
         db = db,
-        mappings = mappings,
         thresholds = settings.priorityThresholds,
         cacheTtlMinutes = settings.cache.priorityTtlMinutes.toLong(),
     )
@@ -76,7 +95,7 @@ fun main() {
         mappings = mappings,
         priorityService = priorityService,
         eventBus = EventBus(),
-        httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp),
+        httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp),
     )
 
     // Heartbeat coroutine — enough to make /health flip to 200 after startup.

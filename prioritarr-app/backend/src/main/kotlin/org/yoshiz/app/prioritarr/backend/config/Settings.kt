@@ -62,6 +62,11 @@ data class Settings(
     val plexUrl: String? = null,
     val plexToken: String? = null,
 
+    // Trakt OAuth credentials. Both must be set for the Trakt provider
+    // to be installed; either missing = Trakt disabled, Tautulli alone.
+    val traktClientId: String? = null,
+    val traktAccessToken: String? = null,
+
     val dryRun: Boolean = true,
     val logLevel: String = "INFO",
     val testMode: Boolean = false,
@@ -155,6 +160,8 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         redisUrl = env("REDIS_URL"),
         plexUrl = env("PLEX_URL"),
         plexToken = env("PLEX_TOKEN"),
+        traktClientId = env("TRAKT_CLIENT_ID"),
+        traktAccessToken = env("TRAKT_ACCESS_TOKEN"),
         dryRun = dryRun,
         logLevel = env("LOG_LEVEL", "INFO") ?: "INFO",
         testMode = testMode,
