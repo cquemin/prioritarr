@@ -1,21 +1,18 @@
 package org.yoshiz.app.prioritarr.backend.priority
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import org.slf4j.LoggerFactory
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
-import org.yoshiz.app.prioritarr.backend.clients.TautulliClient
 import org.yoshiz.app.prioritarr.backend.config.PriorityThresholds
 import org.yoshiz.app.prioritarr.backend.database.Database
-import org.yoshiz.app.prioritarr.backend.mapping.MappingState
-import org.yoshiz.app.prioritarr.backend.mapping.normaliseTitle
-import org.slf4j.LoggerFactory
-import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 
@@ -24,12 +21,17 @@ import java.time.OffsetDateTime
  * failures: degrades to a P3 default with
  * reason=dependency_unreachable rather than throwing — webhook
  * handlers must always return a priority per Spec §3.
+ *
+ * Watch history is pluggable via [watchProviders] — Tautulli and/or
+ * Trakt and/or anything else in the future. If the list is empty the
+ * service just treats the series as "never watched" (all priorities
+ * collapse to P5 with watched=0); that's intentional so prioritarr
+ * runs without Tautulli + Trakt configured.
  */
 class PriorityService(
     private val sonarr: SonarrClient,
-    private val tautulli: TautulliClient,
+    private val watchProviders: List<WatchHistoryProvider>,
     private val db: Database,
-    private val mappings: MappingState,
     private val thresholds: PriorityThresholds,
     private val cacheTtlMinutes: Long,
 ) {
@@ -120,43 +122,20 @@ class PriorityService(
         val episodeReleaseDate = missing.lastOrNull()
         val previousEpisodeReleaseDate = if (missing.size >= 2) missing[missing.size - 2] else null
 
-        var lastWatchedAt: Instant? = null
-        val plexKey = mappings.plexKeyForSeriesTitle(title)
+        // Fan out watch-history fetches across every configured provider
+        // concurrently. Partial success is fine — e.g. Tautulli fails,
+        // Trakt works: use Trakt's data. Only when every configured
+        // provider fails do we degrade to dependency_unreachable.
+        val ref = SeriesRef(seriesId = seriesId, title = title, tvdbId = tvdbId.takeIf { it > 0 })
+        val watchEvents = fetchMergedHistory(ref, seriesId) ?: return null
 
-        val history: JsonArray = try {
-            if (plexKey != null) {
-                tautulli.getHistory(grandparentRatingKey = plexKey, mediaType = "episode", length = 500)
-            } else {
-                val all = tautulli.getHistory(mediaType = "episode", length = 2000)
-                val norm = normaliseTitle(title)
-                JsonArray(all.filter {
-                    normaliseTitle(it.jsonObject["grandparent_title"]?.jsonPrimitive?.contentOrNull.orEmpty()) == norm
-                })
-            }
-        } catch (e: Exception) {
-            logger.info("buildSnapshot: tautulli history failed for series $seriesId: ${e.message}")
-            return null
-        }
-
-        // Only count watches for episodes in monitored seasons — same
-        // rationale as above: a rewatch of a season the user explicitly
-        // unmonitored shouldn't inflate the engagement metric for the
-        // seasons they actually care about.
-        val watchedSe = mutableSetOf<Pair<Int, Int>>()
-        for (entry in history) {
-            val obj = entry.jsonObject
-            val season = obj["parent_media_index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
-            val episode = obj["media_index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
-            if (season != null && episode != null && season in monitoredSeasons) {
-                watchedSe.add(season to episode)
-            }
-            val ts = obj["date"]?.jsonPrimitive?.longOrNull
-            if (ts != null && (season == null || season in monitoredSeasons)) {
-                val candidate = Instant.ofEpochSecond(ts)
-                if (lastWatchedAt == null || candidate.isAfter(lastWatchedAt)) lastWatchedAt = candidate
-            }
-        }
+        // Apply the monitored-season filter after merge. A rewatch of a
+        // season the user explicitly unmonitored shouldn't inflate the
+        // engagement metric for the seasons they actually care about.
+        val inMonitored = watchEvents.filter { it.season in monitoredSeasons }
+        val watchedSe = inMonitored.map { it.season to it.episode }.toSet()
         val watched = watchedSe.size
+        val lastWatchedAt = inMonitored.maxOfOrNull { it.watchedAt }
 
         return SeriesSnapshot(
             seriesId = seriesId,
@@ -169,5 +148,35 @@ class PriorityService(
             episodeReleaseDate = episodeReleaseDate,
             previousEpisodeReleaseDate = previousEpisodeReleaseDate,
         )
+    }
+
+    /**
+     * Run every provider's [WatchHistoryProvider.historyFor] in
+     * parallel, merge the successes, return `null` if every configured
+     * provider failed (caller turns this into dependency_unreachable).
+     *
+     * If the provider list itself is empty (user configured neither
+     * Tautulli nor Trakt) we return an empty list — the caller builds
+     * a snapshot with watched=0 and computePriority returns P5. That's
+     * the correct behaviour: without a watch-history source there's no
+     * engagement signal at all, so everything is full-backfill.
+     */
+    private suspend fun fetchMergedHistory(ref: SeriesRef, seriesId: Long): List<WatchEvent>? {
+        if (watchProviders.isEmpty()) return emptyList()
+
+        val results = coroutineScope {
+            watchProviders.map { p -> async { p.name to p.historyFor(ref) } }.awaitAll()
+        }
+
+        val successes = results.mapNotNull { (_, res) -> res.getOrNull() }
+        if (successes.isEmpty()) {
+            logger.info(
+                "buildSnapshot: every watch-history provider failed for series {} (providers={})",
+                seriesId,
+                results.joinToString(", ") { (name, res) -> "$name=${if (res.isFailure) "fail" else "ok"}" },
+            )
+            return null
+        }
+        return mergeWatchHistory(successes)
     }
 }
