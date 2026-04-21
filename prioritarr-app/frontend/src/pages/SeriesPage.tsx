@@ -10,15 +10,9 @@ import { useState } from 'react'
 import { DataTable } from '../components/DataTable'
 import { KebabMenu } from '../components/KebabMenu'
 import { RowDrawer } from '../components/RowDrawer'
+import { TableSkeleton } from '../components/Skeleton'
 import { useRecomputeSeries, useSeries, useSeriesList } from '../hooks/queries'
-
-const PRIO_CLASS: Record<number, string> = {
-  1: 'bg-priority-1/20 text-priority-1 border-priority-1/50',
-  2: 'bg-priority-2/20 text-priority-2 border-priority-2/50',
-  3: 'bg-priority-3/20 text-priority-3 border-priority-3/50',
-  4: 'bg-priority-4/20 text-priority-4 border-priority-4/50',
-  5: 'bg-priority-5/20 text-priority-5 border-priority-5/50',
-}
+import { PRIORITY_CLASS, PRIORITY_LABELS } from '../lib/priority'
 
 interface SeriesRow {
   id: number
@@ -35,8 +29,25 @@ export function SeriesPage() {
   const recompute = useRecomputeSeries()
   const [openRow, setOpenRow] = useState<SeriesRow | null>(null)
 
-  if (isLoading) return <p className="p-6 opacity-70">Loading…</p>
-  if (error) return <p className="p-6 text-red-400">Error: {String(error)}</p>
+  if (isLoading) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-semibold mb-4">Series</h1>
+        <TableSkeleton rows={12} cols={6} />
+      </div>
+    )
+  }
+  if (error) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-semibold mb-4">Series</h1>
+        <div className="bg-red-900/20 border border-red-700/60 rounded-lg p-4 text-red-300 text-sm">
+          <strong>Failed to load series.</strong>
+          <div className="mt-1 font-mono text-xs opacity-80">{String(error)}</div>
+        </div>
+      </div>
+    )
+  }
 
   const rows = ((data?.records as unknown) as SeriesRow[]) ?? []
 
@@ -48,7 +59,10 @@ export function SeriesPage() {
         const p = row.original.priority
         if (!p) return <span className="opacity-40">—</span>
         return (
-          <span className={`px-2 py-0.5 rounded text-xs border ${PRIO_CLASS[p]}`}>
+          <span
+            className={`px-2 py-0.5 rounded text-xs border ${PRIORITY_CLASS[p]}`}
+            title={PRIORITY_LABELS[p]}
+          >
             P{p}
           </span>
         )
@@ -173,8 +187,8 @@ function SeriesDetailDrawer({
     >
       <DetailField label="Priority">
         {row.priority ? (
-          <span className={`px-2 py-0.5 rounded text-xs border ${PRIO_CLASS[row.priority]}`}>
-            {row.label ?? `P${row.priority}`}
+          <span className={`px-2 py-0.5 rounded text-xs border ${PRIORITY_CLASS[row.priority]}`}>
+            {PRIORITY_LABELS[row.priority]}
           </span>
         ) : (
           <span className="opacity-60">not computed yet</span>

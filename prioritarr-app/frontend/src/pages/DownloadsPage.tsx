@@ -15,7 +15,9 @@ import { BulkActionBar } from '../components/BulkActionBar'
 import { DataTable } from '../components/DataTable'
 import { KebabMenu } from '../components/KebabMenu'
 import { RowDrawer } from '../components/RowDrawer'
+import { TableSkeleton } from '../components/Skeleton'
 import { useDownloadAction, useDownloads, useUntrackDownload } from '../hooks/queries'
+import { PRIORITY_CLASS, PRIORITY_LABELS } from '../lib/priority'
 
 type DlAction = 'pause' | 'resume' | 'boost' | 'demote'
 
@@ -39,7 +41,14 @@ export function DownloadsPage() {
   const action = useDownloadAction()
   const untrack = useUntrackDownload()
 
-  if (isLoading) return <p className="p-6 opacity-70">Loading…</p>
+  if (isLoading) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-semibold mb-4">Downloads</h1>
+        <TableSkeleton rows={10} cols={6} />
+      </div>
+    )
+  }
   const rows = ((data?.records as unknown) as DownloadRow[]) ?? []
 
   function doBulk(a: DlAction) {
@@ -71,7 +80,17 @@ export function DownloadsPage() {
     {
       accessorKey: 'currentPriority',
       header: 'Priority',
-      cell: ({ row }) => <span>P{row.original.currentPriority}</span>,
+      cell: ({ row }) => {
+        const p = row.original.currentPriority
+        return (
+          <span
+            className={`px-2 py-0.5 rounded text-xs border ${PRIORITY_CLASS[p] ?? ''}`}
+            title={PRIORITY_LABELS[p] ?? `P${p}`}
+          >
+            P{p}
+          </span>
+        )
+      },
     },
     {
       accessorKey: 'pausedByUs',
