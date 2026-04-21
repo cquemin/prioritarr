@@ -23,10 +23,12 @@ class ComputeTest {
         lastWatchDaysAgo: Int? = 2,
         releaseDaysAgo: Int? = 1,
         prevReleaseDaysAgo: Int? = 8,
+        monitoredSeasons: Int = 1,
     ) = SeriesSnapshot(
         seriesId = 1,
         title = "Test",
         tvdbId = 12345,
+        monitoredSeasons = monitoredSeasons,
         monitoredEpisodesAired = aired,
         monitoredEpisodesWatched = watched,
         lastWatchedAt = lastWatchDaysAgo?.let { now.minus(Duration.ofDays(it.toLong())) },

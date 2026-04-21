@@ -83,11 +83,29 @@ class PriorityService(
         val tvdbId = series["tvdbId"]?.jsonPrimitive?.longOrNull ?: 0L
         val now = Instant.now()
 
+        // Monitored-season set — Sonarr's series.seasons[] has
+        // {seasonNumber, monitored}. Episodes whose season is unmonitored
+        // are excluded even if the episode itself has monitored=true —
+        // the user explicitly opted out of the whole season, so watch
+        // percentages computed on the remainder reflect their actual
+        // interest. Mirrors Sonarr's own episode-visibility logic.
+        val monitoredSeasons: Set<Int> = (series["seasons"] as? JsonArray)
+            ?.mapNotNull { el ->
+                val s = el.jsonObject
+                val n = s["seasonNumber"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                val mon = s["monitored"]?.jsonPrimitive?.booleanOrNull == true
+                if (n != null && mon) n else null
+            }
+            ?.toSet()
+            ?: emptySet()
+
         var monitoredAired = 0
         val missing = mutableListOf<Instant>()
         for (epEl in episodes) {
             val ep = epEl.jsonObject
             if (ep["monitored"]?.jsonPrimitive?.booleanOrNull != true) continue
+            val seasonNum = ep["seasonNumber"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+            if (seasonNum == null || seasonNum !in monitoredSeasons) continue
             val airStr = ep["airDateUtc"]?.jsonPrimitive?.contentOrNull ?: continue
             val airInstant = try {
                 OffsetDateTime.parse(airStr).toInstant()
@@ -102,7 +120,6 @@ class PriorityService(
         val episodeReleaseDate = missing.lastOrNull()
         val previousEpisodeReleaseDate = if (missing.size >= 2) missing[missing.size - 2] else null
 
-        var watched = 0
         var lastWatchedAt: Instant? = null
         val plexKey = mappings.plexKeyForSeriesTitle(title)
 
@@ -121,24 +138,31 @@ class PriorityService(
             return null
         }
 
+        // Only count watches for episodes in monitored seasons — same
+        // rationale as above: a rewatch of a season the user explicitly
+        // unmonitored shouldn't inflate the engagement metric for the
+        // seasons they actually care about.
         val watchedSe = mutableSetOf<Pair<Int, Int>>()
         for (entry in history) {
             val obj = entry.jsonObject
             val season = obj["parent_media_index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
             val episode = obj["media_index"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
-            if (season != null && episode != null) watchedSe.add(season to episode)
+            if (season != null && episode != null && season in monitoredSeasons) {
+                watchedSe.add(season to episode)
+            }
             val ts = obj["date"]?.jsonPrimitive?.longOrNull
-            if (ts != null) {
+            if (ts != null && (season == null || season in monitoredSeasons)) {
                 val candidate = Instant.ofEpochSecond(ts)
                 if (lastWatchedAt == null || candidate.isAfter(lastWatchedAt)) lastWatchedAt = candidate
             }
         }
-        watched = watchedSe.size
+        val watched = watchedSe.size
 
         return SeriesSnapshot(
             seriesId = seriesId,
             title = title,
             tvdbId = tvdbId,
+            monitoredSeasons = monitoredSeasons.size,
             monitoredEpisodesAired = monitoredAired,
             monitoredEpisodesWatched = watched,
             lastWatchedAt = lastWatchedAt,

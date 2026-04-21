@@ -76,7 +76,7 @@ fun computePriority(
     return PriorityResult(
         priority = 5,
         label = "P5 Full backfill / dormant",
-        reason = "watched=$watched, aired=$aired, last_watch=$daysSinceWatch",
+        reason = "watched=$watched of aired=$aired across ${snap.monitoredSeasons} monitored season(s), last_watch=$daysSinceWatch",
     )
 }
 
