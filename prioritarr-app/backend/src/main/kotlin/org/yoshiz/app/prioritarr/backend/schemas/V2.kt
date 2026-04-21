@@ -70,7 +70,6 @@ data class SettingsRedacted(
     val sabApiKey: String,
     val plexUrl: String?,
     val plexToken: String?,
-    val redisUrl: String?,
     val apiKey: String?,
     val uiOrigin: String?,
     val dryRun: Boolean,

@@ -35,9 +35,6 @@ dependencies {
     implementation(libs.sqldelight.sqlite.driver)
     implementation(libs.sqldelight.coroutines.extensions)
 
-    // Redis
-    implementation(libs.lettuce.core)
-
     // Config
     implementation(libs.snakeyaml)
 

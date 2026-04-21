@@ -6,10 +6,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'prioritarr/**'
       - 'prioritarr-app/**'
-      - 'requirements.txt'
-      - 'Dockerfile'
       - 'contract-tests/**'
       - 'openapi.json'
       - '.github/workflows/**'
@@ -20,16 +17,6 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - run: pip install -r requirements-dev.txt
-      - run: pytest -v
-
   frontend-build:
     runs-on: ubuntu-latest
     steps:
@@ -44,8 +31,6 @@ jobs:
         working-directory: prioritarr-app/frontend
         run: |
           npm run gen:api
-          # The generated file is gitignored — but if committed in the
-          # future, add `git diff --exit-code src/api/generated.ts` here.
       - name: Build
         working-directory: prioritarr-app/frontend
         run: npm run build
@@ -83,93 +68,7 @@ jobs:
           print(f"All v2 operations carry api_key security.")
           PY
 
-  contract-tests:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Start upstream mocks
-        run: docker compose -f contract-tests/mocks/docker-compose.yml up -d
-
-      - name: Wait for mocks to respond
-        run: |
-          timeout 30 bash -c 'until curl -fsS http://localhost:9001/sonarr/api/v3/system/status >/dev/null; do sleep 1; done'
-          timeout 30 bash -c 'until curl -fsS "http://localhost:9002/api/v2?apikey=x&cmd=arnold" >/dev/null; do sleep 1; done'
-
-      - name: Build prioritarr image
-        run: docker build -t prioritarr:test .
-
-      - name: Start prioritarr in test mode
-        run: |
-          docker run -d --name prioritarr \
-            --network host \
-            --tmpfs /config:rw,size=64m \
-            -e PRIORITARR_TEST_MODE=true \
-            -e PRIORITARR_DRY_RUN=true \
-            -e PRIORITARR_SONARR_URL=http://localhost:9001/sonarr \
-            -e PRIORITARR_SONARR_API_KEY=mock \
-            -e PRIORITARR_TAUTULLI_URL=http://localhost:9002 \
-            -e PRIORITARR_TAUTULLI_API_KEY=mock \
-            -e PRIORITARR_PLEX_URL=http://localhost:9003 \
-            -e PRIORITARR_PLEX_TOKEN=mock \
-            -e PRIORITARR_QBIT_URL=http://localhost:9004 \
-            -e PRIORITARR_SAB_URL=http://localhost:9005/sabnzbd \
-            -e PRIORITARR_SAB_API_KEY=mock \
-            -e PRIORITARR_CONFIG_PATH=/app/default-config.yaml \
-            prioritarr:test
-
-      - name: Wait for prioritarr to be live
-        run: timeout 120 bash -c 'until curl -fsS http://localhost:8000/openapi.json >/dev/null; do sleep 2; done'
-
-      - name: Verify committed openapi.json matches python runtime (v1 only)
-        run: |
-          # The committed openapi.json carries /api/v2/* paths that only the
-          # kotlin backend implements (Spec C §4). Strip them before diffing
-          # so this job only asserts v1 parity for the python backend.
-          docker run --rm --entrypoint python prioritarr:test scripts/generate_openapi.py > /tmp/runtime.json
-          python -m json.tool --sort-keys /tmp/runtime.json > /tmp/runtime_sorted.json
-          python <<'PY'
-          import json
-          spec = json.load(open("openapi.json"))
-          spec["paths"] = {p: v for p, v in spec["paths"].items() if not p.startswith("/api/v2/")}
-          comps = spec.get("components", {})
-          if "schemas" in comps:
-              for name in ("ProblemDetail", "PaginatedEnvelope", "ActionResult"):
-                  comps["schemas"].pop(name, None)
-          comps.pop("securitySchemes", None)
-          json.dump(spec, open("/tmp/committed_v1.json", "w"), sort_keys=True, indent=2)
-          PY
-          python -m json.tool --sort-keys /tmp/committed_v1.json > /tmp/committed.json
-          if ! diff -u /tmp/committed.json /tmp/runtime_sorted.json; then
-            echo ""
-            echo "ERROR: Committed openapi.json v1 surface differs from python runtime."
-            echo "Run 'make openapi' locally and commit the updated file."
-            exit 1
-          fi
-
-      - name: Install contract-tests dependencies
-        run: pip install -r contract-tests/requirements.txt
-
-      - name: Run contract tests (python — v1 only)
-        env:
-          CONTRACT_TEST_BASE_URL: http://localhost:8000
-          # CONTRACT_TEST_API_KEY intentionally unset — the python backend
-          # doesn't implement /api/v2/* and the v2 tests skip when the env
-          # var is absent.
-        run: python -m pytest contract-tests/ -v
-
-      - name: Dump prioritarr logs on failure
-        if: failure()
-        run: docker logs prioritarr
-
   app-contract-tests:
-    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -214,9 +113,6 @@ jobs:
 
       - name: Verify committed openapi.json matches runtime (app)
         run: |
-          # The app image serves the committed openapi.json verbatim, so the
-          # runtime spec is literally the file on disk. Diff against the
-          # repo copy to guard against a stale resource in the jar.
           curl -fsS http://localhost:8000/openapi.json | python -m json.tool --sort-keys > /tmp/runtime_app.json
           python -m json.tool --sort-keys openapi.json > /tmp/committed.json
           diff -u /tmp/committed.json /tmp/runtime_app.json
@@ -234,10 +130,6 @@ jobs:
 
       - name: Run Playwright E2E (UI happy path)
         working-directory: prioritarr-app/frontend
-        # continue-on-error: the UI is verified functional via docker
-        # smoke locally; the E2E harness has a timing issue on first
-        # page load that's being debugged in a follow-up. Don't gate
-        # release on this while that's in flight.
         continue-on-error: true
         env:
           PLAYWRIGHT_BASE_URL: http://localhost:8000
@@ -254,42 +146,8 @@ jobs:
         if: failure()
         run: docker logs prioritarr-app
 
-  build-and-push:
-    needs: [test, contract-tests]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
   build-and-push-app:
-    needs: [test, app-contract-tests, frontend-build]
+    needs: [app-contract-tests, frontend-build]
     runs-on: ubuntu-latest
     permissions:
       contents: read

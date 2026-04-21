@@ -74,7 +74,7 @@ class MappingTest {
 
         val stats = refreshMappings(sonarr, tautulli, cache, state)
 
-        assertEquals(1, stats.cached, "should have used the Redis cache entry")
+        assertEquals(1, stats.cached, "should have used the persistent mapping cache entry")
         assertEquals(0, stats.tvdb)
         assertEquals(mapOf("5000" to 1L), state.plexKeyToSeriesId)
         assertEquals(1L, state.seriesIdForPlexKey("5000"))

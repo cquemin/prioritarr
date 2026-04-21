@@ -1,6 +1,6 @@
--- Mirror of prioritarr/database.py _SCHEMA. DDL must stay byte-compatible —
--- the kotlin and python backends read the same /config/state.db during
--- shadow deploy (Spec B §Task 15).
+-- SQLite schema owned by the Kotlin backend. Used to be shared
+-- byte-for-byte with a Python shadow during the rewrite; that backend
+-- is now retired, so changes here no longer need to mirror Python.
 
 -- Local read-model of Sonarr /series so v2 list endpoints never block
 -- on the upstream call (7s at ~450 shows). Refreshed periodically by a
@@ -55,6 +55,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE TABLE IF NOT EXISTS heartbeat (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     ts TEXT NOT NULL
+);
+
+-- Persistent mapping cache (plex_rating_key -> series_id). Replaces the
+-- Lettuce/Redis cache in the Kotlin backend. One row per plex_key.
+-- Byte-compatible with a Python backend that adds the same table if it
+-- ever migrates off Redis too.
+CREATE TABLE IF NOT EXISTS mapping_cache (
+    plex_key TEXT PRIMARY KEY,
+    series_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 -- ------------------------------------------------------------------
@@ -211,3 +221,20 @@ DELETE FROM series_priority_cache;
 
 deleteAllHeartbeat:
 DELETE FROM heartbeat;
+
+-- ------------------------------------------------------------------
+-- mapping_cache
+-- ------------------------------------------------------------------
+
+upsertMappingCache:
+INSERT INTO mapping_cache (plex_key, series_id, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(plex_key) DO UPDATE SET
+    series_id  = excluded.series_id,
+    updated_at = excluded.updated_at;
+
+listMappingCache:
+SELECT plex_key, series_id FROM mapping_cache;
+
+deleteAllMappingCache:
+DELETE FROM mapping_cache;

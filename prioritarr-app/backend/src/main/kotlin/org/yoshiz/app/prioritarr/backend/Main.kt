@@ -22,9 +22,8 @@ import org.yoshiz.app.prioritarr.backend.http.defaultJsonClient
 import org.yoshiz.app.prioritarr.backend.http.qbitClient
 import org.yoshiz.app.prioritarr.backend.http.xmlClient
 import org.yoshiz.app.prioritarr.backend.mapping.Hydrate
-import org.yoshiz.app.prioritarr.backend.mapping.InMemoryMappingCache
-import org.yoshiz.app.prioritarr.backend.mapping.LettuceMappingCache
 import org.yoshiz.app.prioritarr.backend.mapping.MappingCache
+import org.yoshiz.app.prioritarr.backend.mapping.SqliteMappingCache
 import org.yoshiz.app.prioritarr.backend.mapping.MappingState
 import org.yoshiz.app.prioritarr.backend.mapping.hydrate
 import org.yoshiz.app.prioritarr.backend.priority.PriorityService
@@ -51,7 +50,7 @@ fun main() {
 
     val mappings = MappingState()
 
-    val cache: MappingCache = settings.redisUrl?.let { LettuceMappingCache(it) } ?: InMemoryMappingCache()
+    val cache: MappingCache = SqliteMappingCache(db)
     // Re-hydrate the plex-key map at startup so webhooks work before the
     // first refresh. TVDB + title maps fill in on the next refresh cycle.
     mappings.hydrate(Hydrate.seed(cache.load()))
@@ -95,10 +94,10 @@ fun main() {
     // SSE heartbeat event publisher (distinct from the db heartbeat above).
     org.yoshiz.app.prioritarr.backend.api.v2.startHeartbeat(state, scope.coroutineContext[Job]!!)
 
-    // Spec B §7 — four periodic background jobs mirror python's APScheduler:
-    //   refresh_mappings, reconcile (qbit + sab in one job), backfill_sweep,
-    //   cutoff_sweep. Each runs in its own coroutine under the supervisor job
-    //   so one crashing doesn't take the others down.
+    // Four periodic background jobs — refresh_mappings, reconcile
+    //   (qbit + sab in one job), backfill_sweep, cutoff_sweep. Each runs
+    //   in its own coroutine under the supervisor job so one crashing
+    //   doesn't take the others down.
     val intervals = settings.intervals
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_mappings crashed", e) }) {
         while (isActive) {

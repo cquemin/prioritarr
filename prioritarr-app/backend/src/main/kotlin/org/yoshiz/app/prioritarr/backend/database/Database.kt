@@ -13,10 +13,10 @@ import java.time.temporal.ChronoField.NANO_OF_SECOND
 import java.time.temporal.ChronoUnit
 
 /**
- * Kotlin counterpart of `prioritarr/database.py` Database class.
- * Public surface and semantics match 1:1 so a reader can diff either
- * implementation and see the same thing. The SQLDelight-generated
- * [Db]/[SchemaQueries] layer underneath is an implementation detail.
+ * Typed wrapper around the SQLDelight-generated [Db]/[SchemaQueries]
+ * layer. The split keeps the queries colocated with the Kotlin helpers
+ * that call them and hides the sqldelight machinery from the rest of
+ * the app.
  */
 class Database(dbPath: String) {
 
@@ -110,7 +110,8 @@ class Database(dbPath: String) {
     /**
      * Insert [eventKey] with [receivedAt]. Returns `true` if the row was
      * new, `false` if it was already present (dedupe hit). Matches the
-     * return contract of `prioritarr/database.py::try_insert_dedupe`.
+     * semantics as the /webhooks dedupe path: new insert → `true`,
+     * duplicate (already seen) → `false`.
      *
      * The `changes()` read must happen inside the same transaction as
      * the INSERT OR IGNORE, otherwise autoCommit resets the counter
@@ -202,8 +203,10 @@ class Database(dbPath: String) {
     companion object {
         /**
          * ISO 8601 with explicit '+00:00' offset (NOT 'Z') — matches
-         * Python's `datetime.now(timezone.utc).isoformat()`. Spec B §5.2
-         * and the contract test regex `\+\d{2}:\d{2}$` require this.
+         * the historical Python `datetime.now(timezone.utc).isoformat()`
+         * format. The contract-test regex `\+\d{2}:\d{2}$` still
+         * enforces the explicit offset, which is why we don't use
+         * [DateTimeFormatter.ISO_OFFSET_DATE_TIME] (it prints `Z`).
          *
          * Can't use [DateTimeFormatter.ISO_OFFSET_DATE_TIME] directly
          * because the JDK prints `Z` for zero offset. We build a custom

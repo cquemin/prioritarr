@@ -1,16 +1,19 @@
 package org.yoshiz.app.prioritarr.backend.mapping
 
-import io.lettuce.core.RedisClient
-import io.lettuce.core.api.StatefulRedisConnection
 import org.slf4j.LoggerFactory
-import java.time.Duration
-
-const val REDIS_MAPPING_KEY = "prioritarr:plex_to_series"
-val REDIS_MAPPING_TTL: Duration = Duration.ofDays(7)
+import org.yoshiz.app.prioritarr.backend.database.Database
 
 /**
  * Abstraction over the plex_key → series_id persistent cache. Production
- * uses [LettuceMappingCache]; tests use [InMemoryMappingCache].
+ * uses [SqliteMappingCache] (same SQLite file the rest of the app writes
+ * to); tests use [InMemoryMappingCache].
+ *
+ * Was previously Redis-backed via Lettuce. The access pattern (batch
+ * load on boot + hourly full rewrite) fits SQLite better than Redis:
+ *   - no extra infra dependency
+ *   - data survives redis-m restarts
+ *   - the Authelia sessions (unrelated) remain the only reason to keep
+ *     Redis in the stack.
  */
 interface MappingCache {
     fun load(): Map<String, Long>
@@ -26,36 +29,37 @@ class InMemoryMappingCache : MappingCache {
     }
 }
 
-class LettuceMappingCache(private val redisUrl: String) : MappingCache {
-    private val logger = LoggerFactory.getLogger(LettuceMappingCache::class.java)
-    private val client: RedisClient = RedisClient.create(redisUrl)
-    private val connection: StatefulRedisConnection<String, String> = client.connect()
+/**
+ * SQLite-backed mapping cache. `save` wipes and reinserts atomically in
+ * a single transaction so readers never observe a partially-rewritten
+ * map. `load` reads the whole table — cheap at the row counts we care
+ * about (~500 shows).
+ */
+class SqliteMappingCache(private val db: Database) : MappingCache {
+    private val logger = LoggerFactory.getLogger(SqliteMappingCache::class.java)
 
     override fun load(): Map<String, Long> =
         try {
-            connection.sync().hgetall(REDIS_MAPPING_KEY)
-                ?.mapValues { it.value.toLong() }
-                ?: emptyMap()
+            db.q.listMappingCache().executeAsList()
+                .associate { it.plex_key to it.series_id }
         } catch (e: Exception) {
-            logger.warn("Redis: failed to load cached mappings: {}", e.message)
+            logger.warn("sqlite: failed to load cached mappings: {}", e.message)
             emptyMap()
         }
 
     override fun save(mapping: Map<String, Long>) {
         if (mapping.isEmpty()) return
         try {
-            val cmds = connection.sync()
-            cmds.del(REDIS_MAPPING_KEY)
-            cmds.hset(REDIS_MAPPING_KEY, mapping.mapValues { it.value.toString() })
-            cmds.expire(REDIS_MAPPING_KEY, REDIS_MAPPING_TTL.toSeconds())
-            logger.debug("Redis: saved {} mappings", mapping.size)
+            val now = Database.nowIsoOffset()
+            db.q.transaction {
+                db.q.deleteAllMappingCache()
+                for ((key, sid) in mapping) {
+                    db.q.upsertMappingCache(plex_key = key, series_id = sid, updated_at = now)
+                }
+            }
+            logger.debug("sqlite: saved {} mappings", mapping.size)
         } catch (e: Exception) {
-            logger.warn("Redis: failed to save cached mappings: {}", e.message)
+            logger.warn("sqlite: failed to save cached mappings: {}", e.message)
         }
-    }
-
-    fun close() {
-        connection.close()
-        client.shutdown()
     }
 }

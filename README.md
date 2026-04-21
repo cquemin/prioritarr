@@ -29,7 +29,7 @@ The decision tree runs top-down (first match wins). All thresholds are configura
 2. **Folder path** -- Sonarr series folder name matched against Plex file paths.
 3. **Title** -- normalized title comparison as last resort.
 
-Matched mappings are cached in Redis (7-day TTL) so subsequent refreshes skip the expensive `get_metadata` calls.
+Matched mappings are persisted in SQLite (`mapping_cache` table) so subsequent refreshes skip the expensive `get_metadata` calls.
 
 ### Queue enforcement
 
@@ -66,27 +66,17 @@ Prioritarr takes over Sonarr's missing-episode search scheduling. Every 2 hours,
 - qBittorrent and/or SABnzbd
 - Plex Media Server
 - Tautulli (can restore from existing config or fresh install)
-- Redis (optional, for mapping cache)
 
-### 1. Configure
-
-```bash
-# Create config directory and download default config
-mkdir -p /path/to/docker/config/prioritarr
-curl -o /path/to/docker/config/prioritarr/prioritarr.yaml \
-  https://raw.githubusercontent.com/cquemin/prioritarr/main/default-config.yaml
-```
-
-### 2. Docker Compose
+### 1. Docker Compose
 
 Add to your `docker-compose.yml`:
 
 ```yaml
-prioritarr:
-  image: ghcr.io/cquemin/prioritarr:latest
-  container_name: prioritarr
+prioritarr-app:
+  image: ghcr.io/cquemin/prioritarr-app:latest
+  container_name: prioritarr-app
   volumes:
-    - /path/to/docker/config/prioritarr:/config
+    - /path/to/docker/config/prioritarr-app:/config
   environment:
     PRIORITARR_SONARR_URL: http://sonarr:8989         # include /sonarr if using URL base
     PRIORITARR_SONARR_API_KEY: ${SONARR_API_KEY}
@@ -99,10 +89,9 @@ prioritarr:
     PRIORITARR_SAB_API_KEY: ${SAB_API_KEY}
     PRIORITARR_PLEX_URL: http://plex:32400              # optional, for direct watch status
     PRIORITARR_PLEX_TOKEN: ${PLEX_TOKEN}                # optional
-    PRIORITARR_REDIS_URL: redis://:${REDIS_PW}@redis:6379/1  # optional, for mapping cache
+    PRIORITARR_API_KEY: ${PRIORITARR_API_KEY}           # required to access /api/v2/*
     PRIORITARR_DRY_RUN: "true"                          # start in dry-run!
     PRIORITARR_LOG_LEVEL: INFO                          # DEBUG for verbose
-    PRIORITARR_CONFIG_PATH: /config/prioritarr.yaml
     TZ: ${TZ}
   healthcheck:
     test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
@@ -171,16 +160,15 @@ Prioritarr logs structured JSON to stdout. Use `docker logs prioritarr` to monit
 
 **Startup:**
 ```
-prioritarr starting (dry_run=False)
+prioritarr (kotlin) starting (dry_run=false, test_mode=false)
 Plex direct client configured at http://plex:32400
-Redis connected at redis-m:6379/1
 ```
 
 **Mapping refresh (hourly):**
 ```
-_refresh_mappings: 424 sonarr series, 223 plex shows, 221 matched (cached=221, tvdb=0, path=0, title=0, unmatched=2)
+refreshMappings: 424 sonarr series, 223 plex shows, 221 matched (cached=221, tvdb=0, path=0, title=0, unmatched=2)
 ```
-- `cached` = loaded from Redis (fast)
+- `cached` = loaded from the SQLite `mapping_cache` table (fast)
 - `tvdb` = matched by TVDB ID this cycle
 - `unmatched` = Plex shows with no Sonarr match (normal for non-Sonarr content)
 
@@ -302,25 +290,26 @@ Sonarr OnGrab webhook -----> prioritarr <----- Tautulli Watched webhook
           |                   |
       qBittorrent          SABnzbd
       (pause/resume)       (priority levels)
-          |                   |
-        Redis              SQLite
-      (mapping cache)    (state store)
+              |
+            SQLite
+     (state + mapping_cache)
 ```
 
 ## Contract Testing
 
-Prioritarr has a shared contract test suite that locks the HTTP API surface. Any backend that passes this suite is behaviorally interchangeable with the current Python implementation — enabling a transparent port to another language/stack.
+Prioritarr has a black-box HTTP contract test suite that locks the API surface. All tests run against the single `prioritarr-app` image via the mocks in `contract-tests/mocks/`.
 
-### Running locally against the Python backend
+### Running locally against the Kotlin backend
 
 Restart the container with `PRIORITARR_TEST_MODE=true`:
 
 ```bash
-docker run -d --name prioritarr \
+docker run -d --name prioritarr-app \
   -e PRIORITARR_TEST_MODE=true \
   -e PRIORITARR_DRY_RUN=true \
+  -e PRIORITARR_API_KEY=ci-test-key \
   # ... rest of env vars ...
-  ghcr.io/cquemin/prioritarr:latest
+  ghcr.io/cquemin/prioritarr-app:latest
 ```
 
 Then install and run:
@@ -328,7 +317,9 @@ Then install and run:
 ```bash
 cd contract-tests
 pip install -r requirements.txt
-CONTRACT_TEST_BASE_URL=http://localhost:8000 pytest -v
+CONTRACT_TEST_BASE_URL=http://localhost:8000 \
+CONTRACT_TEST_API_KEY=ci-test-key \
+  pytest -v
 ```
 
 ### Running against mocked upstream services
@@ -343,12 +334,7 @@ docker compose up -d
 
 ### Regenerating `openapi.json`
 
-The OpenAPI spec is committed at the repo root and verified in CI.
-
-```bash
-make openapi
-git add openapi.json && git commit -m "chore: regenerate openapi.json"
-```
+The OpenAPI spec is committed at the repo root and verified in CI. The Kotlin backend serves the committed file verbatim — there is no runtime generator. Edit `openapi.json` by hand to add/modify endpoints, then let CI diff the committed spec against the live server.
 
 ### `PRIORITARR_TEST_MODE` safety
 
