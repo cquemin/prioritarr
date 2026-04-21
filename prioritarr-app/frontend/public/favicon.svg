@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Stacked priority bars — tallest on the right, representing "highest priority rises to the top" -->
+  <rect width="64" height="64" rx="12" fill="#0f172a"/>
+  <rect x="10" y="40" width="8"  height="14" rx="2" fill="#94a3b8"/>
+  <rect x="22" y="32" width="8"  height="22" rx="2" fill="#60a5fa"/>
+  <rect x="34" y="22" width="8"  height="32" rx="2" fill="#34d399"/>
+  <rect x="46" y="10" width="8"  height="44" rx="2" fill="#fbbf24"/>
+</svg>
