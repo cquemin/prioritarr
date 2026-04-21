@@ -130,6 +130,19 @@ fun main() {
             delay(intervals.reconcileMinutes * 60L * 1000L)
         }
     }
+    // Full-library priority refresh — walks every monitored Sonarr series
+    // every 30 min and triggers priorityForSeries. Cache TTL in the
+    // service keeps the upstream traffic bounded; this job exists so
+    // the UI has a priority value for every series, not just ones with
+    // pending downloads or recent webhook hits.
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_priorities crashed", e) }) {
+        while (isActive) {
+            try {
+                org.yoshiz.app.prioritarr.backend.priority.refreshAllPriorities(sonarr, priorityService)
+            } catch (e: Exception) { logger.warn("refresh_priorities: {}", e.message) }
+            delay(30L * 60L * 1000L)
+        }
+    }
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("backfill_sweep crashed", e) }) {
         while (isActive) {
             try {
