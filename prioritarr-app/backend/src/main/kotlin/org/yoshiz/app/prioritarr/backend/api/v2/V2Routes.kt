@@ -32,6 +32,9 @@ import org.yoshiz.app.prioritarr.backend.pagination.paginate
 import org.yoshiz.app.prioritarr.backend.priority.PriorityResult
 import org.yoshiz.app.prioritarr.backend.schemas.ActionResult
 import org.yoshiz.app.prioritarr.backend.schemas.AuditEntry
+import org.yoshiz.app.prioritarr.backend.schemas.BulkActionResult
+import org.yoshiz.app.prioritarr.backend.schemas.BulkDownloadActionRequest
+import org.yoshiz.app.prioritarr.backend.schemas.BulkItemResult
 import org.yoshiz.app.prioritarr.backend.schemas.InjectSeriesMappingRequest
 import org.yoshiz.app.prioritarr.backend.schemas.ManagedDownloadWire
 import org.yoshiz.app.prioritarr.backend.schemas.MappingSnapshot
@@ -39,6 +42,7 @@ import org.yoshiz.app.prioritarr.backend.schemas.PriorityResultWire
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesDetail
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesSummary
 import org.yoshiz.app.prioritarr.backend.schemas.SettingsRedacted
+import io.ktor.server.request.receive
 
 private fun PriorityResult.toWire() = PriorityResultWire(priority, label, reason)
 
@@ -73,6 +77,7 @@ fun Route.v2Routes(state: AppState) {
                     tvdbId = row.tvdb_id,
                     priority = cache?.priority?.toInt(),
                     label = cache?.let { "P${it.priority}" },
+                    reason = cache?.reason,
                     computedAt = cache?.computed_at,
                     managedDownloadCount = downloadsBySeries[row.id] ?: 0,
                 )
@@ -109,6 +114,7 @@ fun Route.v2Routes(state: AppState) {
                 tvdbId = tvdbId,
                 priority = cache?.priority?.toInt(),
                 label = cache?.let { "P${it.priority}" },
+                reason = cache?.reason,
                 computedAt = cache?.computed_at,
                 managedDownloadCount = state.db.listManagedDownloads().count { it.series_id == id },
             )
@@ -287,6 +293,40 @@ fun Route.v2Routes(state: AppState) {
             )
             call.respond(ActionResult(ok = true, message = action))
         }
+
+        // ---- Bulk action ----
+        //
+        // Sequential per-item (small selections, clients don't love
+        // parallel bursts). Partial failures surface as per-item
+        // `ok=false` — the HTTP response is always 200 with a detailed
+        // body the UI can render as a mixed-outcome toast.
+        post("/bulk") {
+            val req = try {
+                call.receive<BulkDownloadActionRequest>()
+            } catch (e: Exception) {
+                throw ValidationException("body", "must be {action, items: [{client, clientId}, ...]}: ${e.message}")
+            }
+            if (req.items.isEmpty()) {
+                throw ValidationException("items", "must contain at least one {client, clientId}")
+            }
+            if (req.action !in setOf("pause", "resume", "boost", "demote", "untrack")) {
+                throw ValidationException("action", "must be pause|resume|boost|demote|untrack")
+            }
+
+            val results = req.items.map { ref ->
+                applyDownloadAction(state, ref.client, ref.clientId, req.action)
+            }
+            val succeeded = results.count { it.ok }
+            val failed = results.size - succeeded
+            call.respond(BulkActionResult(
+                ok = failed == 0,
+                dryRun = state.settings.dryRun,
+                total = results.size,
+                succeeded = succeeded,
+                failed = failed,
+                results = results,
+            ))
+        }
     }
 
     // ---- Audit ----
@@ -359,3 +399,93 @@ private fun parseEpisodeIds(raw: String?): List<Long> =
     } ?: emptyList()
 
 private val kotlinx.serialization.json.JsonPrimitive.long: Long get() = this.content.toLong()
+
+/**
+ * Apply a single-item download action. Used by the bulk endpoint; the
+ * existing single-item route throws exceptions directly and is left
+ * untouched to avoid churn in its error shape.
+ *
+ * Returns an outcome instead of throwing — in a bulk batch we want a
+ * per-item verdict even when some fail. Dry-run is encoded the same
+ * way the single-item path does it (audit entry + ok=true).
+ */
+private suspend fun applyDownloadAction(
+    state: AppState,
+    client: String,
+    clientId: String,
+    action: String,
+): BulkItemResult {
+    if (action == "untrack") {
+        if (state.db.getManagedDownload(client, clientId) == null) {
+            return BulkItemResult(client, clientId, ok = false, message = "not tracked")
+        }
+        state.db.deleteManagedDownload(client, clientId)
+        state.eventBus.publish(
+            "download-untracked",
+            Json.parseToJsonElement("""{"client":"$client","client_id":"$clientId"}"""),
+        )
+        return BulkItemResult(client, clientId, ok = true, message = "untracked")
+    }
+
+    val row = state.db.getManagedDownload(client, clientId)
+        ?: return BulkItemResult(client, clientId, ok = false, message = "not tracked")
+
+    if (action == "pause" && row.paused_by_us == 1L) {
+        return BulkItemResult(client, clientId, ok = true, message = "already paused")
+    }
+
+    if (state.settings.dryRun) {
+        state.db.appendAudit(
+            action = "dry_run_action",
+            seriesId = row.series_id,
+            client = client,
+            clientId = clientId,
+            details = Json.parseToJsonElement("""{"requested_action":"$action"}"""),
+        )
+        return BulkItemResult(client, clientId, ok = true, message = "dry-run: $action")
+    }
+
+    try {
+        when (client) {
+            "qbit" -> when (action) {
+                "pause" -> state.qbit.pause(listOf(clientId))
+                "resume" -> state.qbit.resume(listOf(clientId))
+                "boost" -> state.qbit.topPriority(listOf(clientId))
+                "demote" -> state.qbit.bottomPriority(listOf(clientId))
+                else -> return BulkItemResult(client, clientId, ok = false, message = "unknown action: $action")
+            }
+            "sab" -> {
+                val sabPriority = when (action) {
+                    "pause" -> SABClient.PRIORITY_MAP[5] ?: -1
+                    "resume" -> SABClient.PRIORITY_MAP[3] ?: 0
+                    "boost" -> 2 // Force
+                    "demote" -> -1 // Low
+                    else -> return BulkItemResult(client, clientId, ok = false, message = "unknown action: $action")
+                }
+                state.sab.setPriority(clientId, sabPriority)
+            }
+            else -> return BulkItemResult(client, clientId, ok = false, message = "unknown client: $client")
+        }
+    } catch (e: Exception) {
+        return BulkItemResult(client, clientId, ok = false, message = "upstream: ${e.message}")
+    }
+
+    if (action == "pause") {
+        state.db.upsertManagedDownload(
+            client = row.client,
+            clientId = row.client_id,
+            seriesId = row.series_id,
+            episodeIds = parseEpisodeIds(row.episode_ids),
+            initialPriority = row.initial_priority,
+            currentPriority = row.current_priority,
+            pausedByUs = true,
+            firstSeenAt = row.first_seen_at,
+            lastReconciledAt = org.yoshiz.app.prioritarr.backend.database.Database.nowIsoOffset(),
+        )
+    }
+    state.eventBus.publish(
+        "download-action",
+        Json.parseToJsonElement("""{"client":"$client","client_id":"$clientId","action":"$action"}"""),
+    )
+    return BulkItemResult(client, clientId, ok = true, message = action)
+}

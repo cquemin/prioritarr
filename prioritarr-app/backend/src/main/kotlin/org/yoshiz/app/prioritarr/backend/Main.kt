@@ -69,7 +69,6 @@ fun main() {
         settings = settings,
         db = db,
         sonarr = sonarr,
-        sonarrCache = org.yoshiz.app.prioritarr.backend.clients.SonarrCache(sonarr),
         tautulli = tautulli,
         qbit = qbit,
         sab = sab,
