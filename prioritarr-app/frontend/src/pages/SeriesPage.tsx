@@ -20,6 +20,12 @@ interface SeriesRow {
   tvdbId?: number | null
   priority?: number | null
   label?: string | null
+  /**
+   * Priority reason string ("watched=0 of aired=100 across 3 monitored
+   * season(s)…"). Added to v2 SeriesSummary in the backend-polish PR
+   * (cquemin/prioritarr#21). Optional on older backends.
+   */
+  reason?: string | null
   computedAt?: string | null
   managedDownloadCount: number
 }
@@ -58,10 +64,15 @@ export function SeriesPage() {
       cell: ({ row }) => {
         const p = row.original.priority
         if (!p) return <span className="opacity-40">—</span>
+        // Tooltip shows the bucket name + the reason in one line, so
+        // power users don't need to open the drawer to learn why.
+        const tip = row.original.reason
+          ? `${PRIORITY_LABELS[p]} — ${row.original.reason}`
+          : PRIORITY_LABELS[p]
         return (
           <span
             className={`px-2 py-0.5 rounded text-xs border ${PRIORITY_CLASS[p]}`}
-            title={PRIORITY_LABELS[p]}
+            title={tip}
           >
             P{p}
           </span>
@@ -196,12 +207,18 @@ function SeriesDetailDrawer({
       </DetailField>
 
       <DetailField label="Why this priority">
-        {detail.isLoading ? (
-          <span className="opacity-60">Loading…</span>
+        {row.reason ? (
+          <span className="font-mono text-xs leading-relaxed whitespace-pre-wrap">
+            {row.reason}
+          </span>
         ) : d?.priority?.reason ? (
+          // Fallback for backends that haven't exposed reason on the
+          // list response yet (pre cquemin/prioritarr#21).
           <span className="font-mono text-xs leading-relaxed whitespace-pre-wrap">
             {d.priority.reason}
           </span>
+        ) : detail.isLoading ? (
+          <span className="opacity-60">Loading…</span>
         ) : (
           <span className="opacity-60">No reason available — priority hasn't been computed.</span>
         )}

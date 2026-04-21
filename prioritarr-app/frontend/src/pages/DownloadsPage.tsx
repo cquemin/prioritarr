@@ -16,7 +16,12 @@ import { DataTable } from '../components/DataTable'
 import { KebabMenu } from '../components/KebabMenu'
 import { RowDrawer } from '../components/RowDrawer'
 import { TableSkeleton } from '../components/Skeleton'
-import { useDownloadAction, useDownloads, useUntrackDownload } from '../hooks/queries'
+import {
+  useBulkDownloadAction,
+  useDownloadAction,
+  useDownloads,
+  useUntrackDownload,
+} from '../hooks/queries'
 import { PRIORITY_CLASS, PRIORITY_LABELS } from '../lib/priority'
 
 type DlAction = 'pause' | 'resume' | 'boost' | 'demote'
@@ -40,6 +45,7 @@ export function DownloadsPage() {
   const { data, isLoading } = useDownloads({ client: clientFilter, limit: 500 })
   const action = useDownloadAction()
   const untrack = useUntrackDownload()
+  const bulk = useBulkDownloadAction()
 
   if (isLoading) {
     return (
@@ -51,12 +57,29 @@ export function DownloadsPage() {
   }
   const rows = ((data?.records as unknown) as DownloadRow[]) ?? []
 
+  // Bulk actions go through /api/v2/downloads/bulk — one round trip with
+  // per-item verdicts — instead of fanning out N single-item mutations.
+  // The drawer + kebab paths still use the single-item endpoints.
   function doBulk(a: DlAction) {
-    selected.forEach((r) => action.mutate({ client: r.client, clientId: r.clientId, action: a }))
+    bulk.mutate(
+      { action: a, items: selected.map((r) => ({ client: r.client, clientId: r.clientId })) },
+      {
+        onSuccess: (res) => {
+          if (res.failed > 0) {
+            const firstFail = res.results.find((r) => !r.ok)
+            console.warn(`bulk ${a}: ${res.failed}/${res.total} failed (e.g. ${firstFail?.client}/${firstFail?.clientId}: ${firstFail?.message})`)
+          }
+          setSelected([])
+        },
+      },
+    )
   }
   function doBulkUntrack() {
     if (!confirm(`Untrack ${selected.length} downloads? They'll be left alone in the client.`)) return
-    selected.forEach((r) => untrack.mutate({ client: r.client, clientId: r.clientId }))
+    bulk.mutate(
+      { action: 'untrack', items: selected.map((r) => ({ client: r.client, clientId: r.clientId })) },
+      { onSuccess: () => setSelected([]) },
+    )
   }
 
   const columns: ColumnDef<DownloadRow>[] = [
@@ -170,16 +193,16 @@ export function DownloadsPage() {
           <button
             key={a}
             onClick={() => doBulk(a)}
-            disabled={action.isPending}
-            className="px-3 py-1.5 text-sm rounded bg-surface-3 hover:bg-accent capitalize"
+            disabled={bulk.isPending}
+            className="px-3 py-1.5 text-sm rounded bg-surface-3 hover:bg-accent capitalize disabled:opacity-50"
           >
             {a}
           </button>
         ))}
         <button
           onClick={doBulkUntrack}
-          disabled={untrack.isPending}
-          className="px-3 py-1.5 text-sm rounded bg-red-900/60 hover:bg-red-700"
+          disabled={bulk.isPending}
+          className="px-3 py-1.5 text-sm rounded bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
         >
           Untrack
         </button>

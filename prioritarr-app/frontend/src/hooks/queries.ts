@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { apiClient } from '../api/client'
+import { apiClient, API_BASE, getApiKey } from '../api/client'
 
 interface PaginationInput {
   offset?: number
@@ -87,6 +87,42 @@ export function useUntrackDownload() {
       )
       if (error) throw error
       return data
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['downloads'] }),
+  })
+}
+
+// Backend-polish PR (cquemin/prioritarr#21) adds POST /api/v2/downloads/bulk.
+// openapi.json regen is separate, so we post via raw fetch for now.
+export interface BulkDownloadItem { client: string; clientId: string }
+export type BulkDownloadActionName = 'pause' | 'resume' | 'boost' | 'demote' | 'untrack'
+export interface BulkItemResult { client: string; clientId: string; ok: boolean; message?: string }
+export interface BulkDownloadActionResult {
+  ok: boolean
+  dryRun: boolean
+  total: number
+  succeeded: number
+  failed: number
+  results: BulkItemResult[]
+}
+
+export function useBulkDownloadAction() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (v: { action: BulkDownloadActionName; items: BulkDownloadItem[] }): Promise<BulkDownloadActionResult> => {
+      const key = getApiKey()
+      const res = await fetch(`${API_BASE}/api/v2/downloads/bulk`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(key ? { 'X-Api-Key': key } : {}),
+        },
+        body: JSON.stringify(v),
+      })
+      if (!res.ok) {
+        throw new Error(`bulk action failed: ${res.status} ${res.statusText}`)
+      }
+      return (await res.json()) as BulkDownloadActionResult
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['downloads'] }),
   })
