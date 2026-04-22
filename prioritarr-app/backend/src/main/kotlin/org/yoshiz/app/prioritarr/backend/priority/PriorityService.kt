@@ -6,6 +6,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -101,24 +102,45 @@ class PriorityService(
             ?.toSet()
             ?: emptySet()
 
-        var monitoredAired = 0
+        // Build two parallel indexes over Sonarr's monitored-aired episodes:
+        //
+        //   monitoredAiredSE: Set<(season, episode)>  — canonical key
+        //   monitoredAiredByAbs: Map<Int, (season, episode)>  — absolute → canonical
+        //
+        // Watch events from upstream sources canonicalise against these:
+        // exact (s,e) wins; if absent, fall back to absolute episode
+        // number; otherwise drop. This guarantees `watched ≤ aired`
+        // (one entry per Sonarr-aired episode at most), and absorbs
+        // upstream sources whose season-numbering doesn't match Sonarr
+        // (long-running anime where Trakt arcs vs. cours-numbered TVDB
+        // seasons give different (season, episode) pairs for the same
+        // physical episode).
+        val monitoredAiredSE = HashSet<Pair<Int, Int>>()
+        val monitoredAiredByAbs = HashMap<Int, Pair<Int, Int>>()
         val missing = mutableListOf<Instant>()
         for (epEl in episodes) {
             val ep = epEl.jsonObject
             if (ep["monitored"]?.jsonPrimitive?.booleanOrNull != true) continue
             val seasonNum = ep["seasonNumber"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
             if (seasonNum == null || seasonNum !in monitoredSeasons) continue
+            val episodeNum = ep["episodeNumber"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: continue
             val airStr = ep["airDateUtc"]?.jsonPrimitive?.contentOrNull ?: continue
             val airInstant = try {
                 OffsetDateTime.parse(airStr).toInstant()
             } catch (_: Exception) { continue }
             if (airInstant > now) continue
-            monitoredAired++
+
+            val seKey = seasonNum to episodeNum
+            monitoredAiredSE += seKey
+            ep["absoluteEpisodeNumber"]?.jsonPrimitive?.intOrNull?.let { abs ->
+                monitoredAiredByAbs[abs] = seKey
+            }
             if (ep["hasFile"]?.jsonPrimitive?.booleanOrNull != true) {
                 missing += airInstant
             }
         }
         missing.sort()
+        val monitoredAired = monitoredAiredSE.size
         val episodeReleaseDate = missing.lastOrNull()
         val previousEpisodeReleaseDate = if (missing.size >= 2) missing[missing.size - 2] else null
 
@@ -129,13 +151,26 @@ class PriorityService(
         val ref = SeriesRef(seriesId = seriesId, title = title, tvdbId = tvdbId.takeIf { it > 0 })
         val watchEvents = fetchMergedHistory(ref, seriesId) ?: return null
 
-        // Apply the monitored-season filter after merge. A rewatch of a
-        // season the user explicitly unmonitored shouldn't inflate the
-        // engagement metric for the seasons they actually care about.
-        val inMonitored = watchEvents.filter { it.season in monitoredSeasons }
-        val watchedSe = inMonitored.map { it.season to it.episode }.toSet()
+        // Canonicalise + dedup watch events against Sonarr's actual
+        // monitored-aired set. Each event maps to *at most one*
+        // canonical (season, episode); any event we can't resolve is
+        // silently dropped.
+        val watchedSe = HashSet<Pair<Int, Int>>()
+        var lastWatchedAt: Instant? = null
+        for (e in watchEvents) {
+            val canonical: Pair<Int, Int>? = when {
+                (e.season to e.episode) in monitoredAiredSE -> e.season to e.episode
+                e.absoluteEpisode != null -> monitoredAiredByAbs[e.absoluteEpisode]
+                else -> null
+            }
+            if (canonical != null) {
+                watchedSe += canonical
+                if (lastWatchedAt == null || e.watchedAt.isAfter(lastWatchedAt)) {
+                    lastWatchedAt = e.watchedAt
+                }
+            }
+        }
         val watched = watchedSe.size
-        val lastWatchedAt = inMonitored.maxOfOrNull { it.watchedAt }
 
         return SeriesSnapshot(
             seriesId = seriesId,

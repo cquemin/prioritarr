@@ -47,19 +47,21 @@ class TraktClient(
     }
 
     /**
-     * Per-show watch history, episode-type only. Caller decides whether
-     * 1000 events is enough; it's Trakt's default max page size. For
-     * backfills beyond that, extend with `page` parameter later.
+     * Per-show watch history, episode-type only. `extended=full` is
+     * requested so each episode payload includes `number_abs` (the
+     * absolute episode number) — needed for canonicalising long-running
+     * anime where Trakt's per-arc seasons drift from Sonarr/TVDB's
+     * cours-based numbering.
      *
      * Returns the raw JSON array from Trakt. Each element has:
      *   {
      *     "watched_at": "2026-04-17T22:08:45.000Z",
-     *     "episode": {"season": N, "number": M, ...},
+     *     "episode": {"season": N, "number": M, "number_abs": K, ...},
      *     ...
      *   }
      */
     suspend fun getShowHistory(traktShowId: Long, limit: Int = 1000): JsonArray {
-        val url = "$baseUrl/sync/history/shows/$traktShowId?type=episodes&limit=$limit"
+        val url = "$baseUrl/sync/history/shows/$traktShowId?type=episodes&limit=$limit&extended=full"
         return http.get(url) { applyHeaders() }.body()
     }
 

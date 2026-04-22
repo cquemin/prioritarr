@@ -66,6 +66,7 @@ class TraktHistoryProvider(
             val episodeObj = obj["episode"]?.jsonObject ?: return@mapNotNull null
             val season = episodeObj["season"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
             val episode = episodeObj["number"]?.jsonPrimitive?.intOrNull ?: return@mapNotNull null
+            val absoluteEpisode = episodeObj["number_abs"]?.jsonPrimitive?.intOrNull
             val watchedAtStr = obj["watched_at"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
             val watchedAt = try {
                 OffsetDateTime.parse(watchedAtStr).toInstant()
@@ -75,6 +76,7 @@ class TraktHistoryProvider(
                 episode = episode,
                 watchedAt = watchedAt,
                 source = name,
+                absoluteEpisode = absoluteEpisode,
             )
         }
     }.onFailure {

@@ -9,6 +9,15 @@ import java.time.Instant
  * richer a specific source offers (scrobble vs checkin, device,
  * resume-point, etc.) is stripped here because prioritarr's downstream
  * logic only cares about "did this episode get watched, and when".
+ *
+ * [absoluteEpisode] is the absolute episode number when the source
+ * exposes it (Trakt does, via `episode.number_abs`; Tautulli/Plex
+ * does not). Used as a fallback identifier when (season, episode)
+ * doesn't match Sonarr's numbering — e.g. long-running anime where
+ * Trakt's per-arc seasons drift from TVDB/Sonarr's cours-based
+ * seasons. PriorityService canonicalises against Sonarr's actual
+ * monitored-aired set; events that don't match by either key are
+ * dropped.
  */
 data class WatchEvent(
     val season: Int,
@@ -16,6 +25,7 @@ data class WatchEvent(
     val watchedAt: Instant,
     /** "tautulli" or "trakt" — used for attribution in logs / UI. */
     val source: String,
+    val absoluteEpisode: Int? = null,
 )
 
 /**
