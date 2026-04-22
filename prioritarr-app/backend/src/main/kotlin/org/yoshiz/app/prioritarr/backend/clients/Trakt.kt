@@ -2,6 +2,7 @@ package org.yoshiz.app.prioritarr.backend.clients
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
+import io.ktor.client.plugins.ServerResponseException
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -11,6 +12,7 @@ import io.ktor.http.contentType
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -18,6 +20,7 @@ import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import org.slf4j.LoggerFactory
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 
@@ -42,6 +45,7 @@ class TraktClient(
     private val http: HttpClient,
     private val baseUrl: String = "https://api.trakt.tv",
 ) {
+    private val logger = LoggerFactory.getLogger(TraktClient::class.java)
 
     /**
      * Look up a TVDB id → Trakt show id. Returns null if no show is
@@ -71,10 +75,36 @@ class TraktClient(
      *     "episode": {"season": N, "number": M, "number_abs": K, ...},
      *     ...
      *   }
+     *
+     * Fallback: Trakt's per-show `/sync/history/shows/{id}` endpoint
+     * intermittently returns `500 handler.sync.getHistory` for some
+     * user/token combinations (reproduced on the April 2026 scopes).
+     * When that happens we fall back to fetching the account-wide
+     * `/sync/history?type=episodes` and filtering client-side by
+     * `show.ids.trakt == traktShowId`. That path is less precise
+     * (capped at `limit` total rows across every show) but robust.
      */
     suspend fun getShowHistory(traktShowId: Long, limit: Int = 1000): JsonArray {
-        val url = "$baseUrl/sync/history/shows/$traktShowId?type=episodes&limit=$limit&extended=full"
-        return http.get(url) { applyHeaders() }.body()
+        val perShowUrl = "$baseUrl/sync/history/shows/$traktShowId?type=episodes&limit=$limit&extended=full"
+        return try {
+            http.get(perShowUrl) { applyHeaders() }.body()
+        } catch (e: ServerResponseException) {
+            logger.warn(
+                "trakt per-show history 5xx for trakt_show_id={} ({}), falling back to account-wide /sync/history",
+                traktShowId, e.response.status,
+            )
+            val allUrl = "$baseUrl/sync/history?type=episodes&limit=$limit&extended=full"
+            val all: JsonArray = http.get(allUrl) { applyHeaders() }.body()
+            buildJsonArray {
+                for (el in all) {
+                    val obj = (el as? JsonObject) ?: continue
+                    val showId = obj["show"]?.jsonObject
+                        ?.get("ids")?.jsonObject
+                        ?.get("trakt")?.jsonPrimitive?.longOrNull
+                    if (showId == traktShowId) add(el)
+                }
+            }
+        }
     }
 
     /**
