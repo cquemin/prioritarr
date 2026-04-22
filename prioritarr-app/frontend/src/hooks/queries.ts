@@ -163,6 +163,54 @@ export function useMappings() {
   })
 }
 
+// Cross-source watch sync (Plex ⇆ Trakt). Posted via raw fetch — same
+// reason as bulk above (openapi.json regen is its own PR).
+export interface SeriesSyncReport {
+  seriesId: number
+  title: string
+  plexAdded: number
+  traktAdded: number
+  errors: string[]
+  skippedReason: string | null
+}
+export interface LibrarySyncReport {
+  ok: boolean
+  dryRun: boolean
+  totalSeries: number
+  plexAddedTotal: number
+  traktAddedTotal: number
+  perSeries: SeriesSyncReport[]
+}
+
+async function postJson<T>(path: string): Promise<T> {
+  const key = getApiKey()
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { ...(key ? { 'X-Api-Key': key } : {}) },
+  })
+  if (!res.ok) throw new Error(`POST ${path} failed: ${res.status} ${res.statusText}`)
+  return (await res.json()) as T
+}
+
+export function useSeriesSync() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => postJson<SeriesSyncReport>(`/api/v2/series/${id}/sync`),
+    onSuccess: (_d, id) => {
+      qc.invalidateQueries({ queryKey: ['series', id] })
+      qc.invalidateQueries({ queryKey: ['series'] })
+    },
+  })
+}
+
+export function useLibrarySync() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => postJson<LibrarySyncReport>('/api/v2/sync'),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['series'] }),
+  })
+}
+
 export function useRefreshMappings() {
   const qc = useQueryClient()
   return useMutation({

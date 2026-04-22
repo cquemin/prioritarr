@@ -163,3 +163,33 @@ data class BulkActionResult(
     val failed: Int,
     val results: List<BulkItemResult>,
 )
+
+/**
+ * Per-series cross-source watch sync result. The numbers describe what
+ * was *added* on each side after the diff (e.g. plexAdded=3 means three
+ * episodes Trakt knew about but Plex didn't, now scrobbled to Plex).
+ *
+ * `skipped` is non-zero when one side couldn't be resolved at all
+ * (e.g. no plex_key mapping → can't push anywhere on Plex). The series
+ * still appears in the report so the UI can show "couldn't sync".
+ */
+@Serializable
+data class SeriesSyncReport(
+    val seriesId: Long,
+    val title: String,
+    val plexAdded: Int = 0,
+    val traktAdded: Int = 0,
+    val errors: List<String> = emptyList(),
+    val skippedReason: String? = null,
+)
+
+/** Aggregated response for POST /api/v2/sync (library-wide). */
+@Serializable
+data class LibrarySyncReport(
+    val ok: Boolean,
+    val dryRun: Boolean = false,
+    val totalSeries: Int,
+    val plexAddedTotal: Int,
+    val traktAddedTotal: Int,
+    val perSeries: List<SeriesSyncReport>,
+)

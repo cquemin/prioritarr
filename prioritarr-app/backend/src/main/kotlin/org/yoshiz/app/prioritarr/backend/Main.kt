@@ -48,6 +48,12 @@ fun main() {
     val tautulli = TautulliClient(settings.tautulliUrl, settings.tautulliApiKey, tautulliHttp)
     val qbit = QBitClient(settings.qbitUrl, settings.qbitUsername.orEmpty(), settings.qbitPassword.orEmpty(), qbitHttp)
     val sab = SABClient(settings.sabUrl, settings.sabApiKey, sabHttp)
+    // Plex direct client — only built when both URL + token configured.
+    // Used by both PlexHistoryProvider (read) and CrossSourceSync (write).
+    val plexClient: org.yoshiz.app.prioritarr.backend.clients.PlexClient? =
+        if (!settings.plexUrl.isNullOrBlank() && !settings.plexToken.isNullOrBlank()) {
+            org.yoshiz.app.prioritarr.backend.clients.PlexClient(settings.plexUrl, settings.plexToken, plexHttp)
+        } else null
 
     val mappings = MappingState()
 
@@ -58,22 +64,40 @@ fun main() {
 
     // Assemble whichever watch-history providers are configured. Tautulli
     // is always included (the app won't start without its URL + key);
-    // Trakt joins if both its client id + access token are present.
+    // Plex + Trakt join if their respective env vars are set. The Trakt
+    // client is also stored separately so cross-source sync can reach it.
     val tautulliProvider = org.yoshiz.app.prioritarr.backend.priority.TautulliHistoryProvider(tautulli, mappings)
-    val traktProvider: org.yoshiz.app.prioritarr.backend.priority.WatchHistoryProvider? =
+    val plexProvider: org.yoshiz.app.prioritarr.backend.priority.WatchHistoryProvider? =
+        if (plexClient != null) {
+            logger.info("plex: direct watch-history provider enabled")
+            org.yoshiz.app.prioritarr.backend.priority.PlexHistoryProvider(plexClient, mappings)
+        } else {
+            logger.info("plex: direct provider disabled (URL/token not configured)")
+            null
+        }
+    val traktClient: org.yoshiz.app.prioritarr.backend.clients.TraktClient? =
         if (settings.traktClientId != null && settings.traktAccessToken != null) {
-            logger.info("trakt: watch-history provider enabled")
-            val traktClient = org.yoshiz.app.prioritarr.backend.clients.TraktClient(
+            org.yoshiz.app.prioritarr.backend.clients.TraktClient(
                 clientId = settings.traktClientId,
                 accessToken = settings.traktAccessToken,
                 http = traktHttp,
             )
+        } else null
+    val traktProvider: org.yoshiz.app.prioritarr.backend.priority.WatchHistoryProvider? =
+        if (traktClient != null) {
+            logger.info("trakt: watch-history provider enabled")
             org.yoshiz.app.prioritarr.backend.priority.TraktHistoryProvider(traktClient)
         } else {
-            logger.info("trakt: not configured, using Tautulli only")
+            logger.info("trakt: not configured, using other providers only")
             null
         }
-    val watchProviders = listOfNotNull(tautulliProvider, traktProvider)
+    val watchProviders = listOfNotNull(tautulliProvider, plexProvider, traktProvider)
+    val crossSourceSync = org.yoshiz.app.prioritarr.backend.sync.CrossSourceSync(
+        sonarr = sonarr,
+        plex = plexClient,
+        trakt = traktClient,
+        mappings = mappings,
+    )
 
     val priorityService = PriorityService(
         sonarr = sonarr,
@@ -92,6 +116,7 @@ fun main() {
         sab = sab,
         mappings = mappings,
         priorityService = priorityService,
+        crossSourceSync = crossSourceSync,
         eventBus = EventBus(),
         httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp),
     )

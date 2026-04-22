@@ -1,4 +1,4 @@
-import { useMappings, useRefreshMappings, useSettings } from '../hooks/queries'
+import { useLibrarySync, useMappings, useRefreshMappings, useSettings } from '../hooks/queries'
 import { useAuth } from '../hooks/useAuth'
 
 export function SettingsPage() {
@@ -6,6 +6,7 @@ export function SettingsPage() {
   const settings = useSettings()
   const mappings = useMappings()
   const refresh = useRefreshMappings()
+  const librarySync = useLibrarySync()
 
   if (settings.isLoading) return <p className="p-6 opacity-70">Loading…</p>
   const s = settings.data as any
@@ -41,6 +42,52 @@ export function SettingsPage() {
             {m.lastRefreshStats && (
               <> · last refresh: cached={m.lastRefreshStats.cached}, tvdb={m.lastRefreshStats.tvdb}, title={m.lastRefreshStats.title}, unmatched={m.lastRefreshStats.unmatched}</>
             )}
+          </div>
+        )}
+      </div>
+
+      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-2">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="font-semibold">Cross-source watch sync (Plex ⇆ Trakt)</h2>
+            <p className="text-xs opacity-70 mt-0.5">
+              Mirrors watch state both ways for every series in the library —
+              episodes Plex knows about get scrobbled to Trakt, and vice versa.
+              Sequential, ~one HTTP call per series. Safe to re-run.
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              if (!confirm('Sync watch state for ALL series? This may take several minutes.')) return
+              librarySync.mutate()
+            }}
+            disabled={librarySync.isPending}
+            className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
+          >
+            {librarySync.isPending ? 'Syncing library…' : 'Sync entire library'}
+          </button>
+        </div>
+        {librarySync.error && (
+          <div className="text-xs text-red-400 font-mono">
+            {String((librarySync.error as Error).message ?? librarySync.error)}
+          </div>
+        )}
+        {librarySync.data && (
+          <div className="text-xs opacity-80">
+            Done · {librarySync.data.totalSeries} series ·
+            <span className="text-green-400"> Plex+{librarySync.data.plexAddedTotal}</span>,
+            <span className="text-green-400"> Trakt+{librarySync.data.traktAddedTotal}</span>
+            {librarySync.data.dryRun && <span className="ml-2 text-amber-400">(dry-run)</span>}
+            {(() => {
+              const skipped = librarySync.data.perSeries.filter((p) => p.skippedReason).length
+              const errored = librarySync.data.perSeries.filter((p) => p.errors.length > 0).length
+              if (skipped === 0 && errored === 0) return null
+              return (
+                <span className="ml-2 text-amber-400">
+                  · {skipped} skipped, {errored} with errors
+                </span>
+              )
+            })()}
           </div>
         )}
       </div>

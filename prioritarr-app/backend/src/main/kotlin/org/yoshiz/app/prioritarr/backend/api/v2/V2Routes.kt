@@ -40,8 +40,10 @@ import org.yoshiz.app.prioritarr.backend.schemas.InjectSeriesMappingRequest
 import org.yoshiz.app.prioritarr.backend.schemas.ManagedDownloadWire
 import org.yoshiz.app.prioritarr.backend.schemas.MappingSnapshot
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityResultWire
+import org.yoshiz.app.prioritarr.backend.schemas.LibrarySyncReport
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesDetail
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesSummary
+import org.yoshiz.app.prioritarr.backend.schemas.SeriesSyncReport
 import org.yoshiz.app.prioritarr.backend.schemas.SettingsRedacted
 import io.ktor.server.request.receive
 
@@ -166,6 +168,21 @@ fun Route.v2Routes(state: AppState) {
                 downloads = downloadWires,
                 externalLinks = links,
             ))
+        }
+
+        // Per-series cross-source sync. Symmetric: pushes any episodes
+        // Plex has watched but Trakt doesn't (and vice versa) so both
+        // sides agree on the watch set. Idempotent — re-running is a
+        // no-op once both sides converge.
+        post("/{id}/sync") {
+            val id = call.parameters["id"]?.toLongOrNull()
+                ?: throw ValidationException("id", "must be a number")
+            val report = state.crossSourceSync.syncSeries(id, dryRun = state.settings.dryRun)
+            state.eventBus.publish(
+                "series-synced",
+                Json.encodeToJsonElement(SeriesSyncReport.serializer(), report),
+            )
+            call.respond(report)
         }
 
         post("/{id}/recompute") {
@@ -412,6 +429,39 @@ fun Route.v2Routes(state: AppState) {
             lastRefreshStats = state.mappings.lastRefreshStats,
             tautulliAvailable = state.mappings.tautulliAvailable,
         ))
+    }
+
+    // ---- Library-wide cross-source sync ----
+    //
+    // Walks every series in the local series_cache and runs the same
+    // per-series sync. Sequential (no parallelism) to keep upstream
+    // pressure low on Plex + Trakt; the typical library is ~150 series
+    // and the inner sync is ~3 HTTP calls each, so ~10 minutes worst
+    // case. Returns one aggregate report with per-series breakdown.
+    post("/sync") {
+        val all = state.db.q.listSeriesCache().executeAsList()
+        val perSeries = mutableListOf<SeriesSyncReport>()
+        var plexTotal = 0
+        var traktTotal = 0
+        for (row in all) {
+            val r = state.crossSourceSync.syncSeries(row.id, dryRun = state.settings.dryRun)
+            perSeries += r
+            plexTotal += r.plexAdded
+            traktTotal += r.traktAdded
+        }
+        val agg = LibrarySyncReport(
+            ok = perSeries.all { it.errors.isEmpty() && it.skippedReason == null },
+            dryRun = state.settings.dryRun,
+            totalSeries = perSeries.size,
+            plexAddedTotal = plexTotal,
+            traktAddedTotal = traktTotal,
+            perSeries = perSeries,
+        )
+        state.eventBus.publish(
+            "library-synced",
+            Json.encodeToJsonElement(LibrarySyncReport.serializer(), agg),
+        )
+        call.respond(agg)
     }
 
     post("/mappings/refresh") {

@@ -21,6 +21,7 @@ import {
   useRecomputeSeries,
   useSeries,
   useSeriesList,
+  useSeriesSync,
   useUntrackDownload,
 } from '../hooks/queries'
 import { PRIORITY_CLASS, PRIORITY_LABELS } from '../lib/priority'
@@ -221,6 +222,7 @@ function SeriesDetailDrawer({
 
   const action = useDownloadAction()
   const untrack = useUntrackDownload()
+  const sync = useSeriesSync()
 
   const titleNode = sonarrUrl ? (
     <a
@@ -251,6 +253,15 @@ function SeriesDetailDrawer({
             className="px-3 py-1.5 rounded bg-accent text-white text-sm disabled:opacity-50"
           >
             {isRecomputing ? 'Recomputing…' : 'Recompute priority'}
+          </button>
+          <button
+            type="button"
+            onClick={() => sync.mutate(row.id)}
+            disabled={sync.isPending}
+            className="px-3 py-1.5 rounded bg-surface-3 text-sm disabled:opacity-50"
+            title="Sync watch state between Plex and Trakt (mirror missing episodes)"
+          >
+            {sync.isPending ? 'Syncing…' : 'Sync Plex ⇆ Trakt'}
           </button>
           <button
             type="button"
@@ -334,6 +345,43 @@ function SeriesDetailDrawer({
               </li>
             ))}
           </ul>
+        </DetailField>
+      )}
+
+      {(sync.data || sync.error) && (
+        <DetailField label="Last sync result">
+          {sync.error ? (
+            <span className="text-red-400 font-mono text-xs">
+              {String((sync.error as Error).message ?? sync.error)}
+            </span>
+          ) : sync.data ? (
+            <div className="text-xs space-y-1">
+              {sync.data.skippedReason ? (
+                <span className="text-amber-400">Skipped — {sync.data.skippedReason}</span>
+              ) : (
+                <>
+                  <div>
+                    <span className="text-text-muted">Plex added:</span>{' '}
+                    <span className={sync.data.plexAdded > 0 ? 'text-green-400' : 'opacity-60'}>
+                      {sync.data.plexAdded}
+                    </span>
+                    <span className="mx-3 opacity-30">·</span>
+                    <span className="text-text-muted">Trakt added:</span>{' '}
+                    <span className={sync.data.traktAdded > 0 ? 'text-green-400' : 'opacity-60'}>
+                      {sync.data.traktAdded}
+                    </span>
+                  </div>
+                  {sync.data.errors.length > 0 && (
+                    <ul className="mt-1 space-y-0.5 text-red-400/80 font-mono">
+                      {sync.data.errors.map((e, i) => (
+                        <li key={i}>• {e}</li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
+            </div>
+          ) : null}
         </DetailField>
       )}
 
