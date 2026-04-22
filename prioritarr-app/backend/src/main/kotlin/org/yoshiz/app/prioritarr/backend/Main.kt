@@ -160,6 +160,20 @@ fun main() {
             delay(30L * 60L * 1000L)
         }
     }
+    // Queue janitor — every 30 min: detect stuck torrents (no activity
+    // > 48h) + failed/stuck SAB jobs, remove them, blocklist the
+    // release in Sonarr, trigger an EpisodeSearch in priority order.
+    val queueJanitor = org.yoshiz.app.prioritarr.backend.reconcile.QueueJanitor(
+        sonarr = sonarr, qbit = qbit, sab = sab, db = db,
+    )
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("queue_janitor crashed", e) }) {
+        while (isActive) {
+            try {
+                queueJanitor.sweep(dryRun = settings.dryRun)
+            } catch (e: Exception) { logger.warn("queue_janitor: {}", e.message) }
+            delay(30L * 60L * 1000L)
+        }
+    }
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("backfill_sweep crashed", e) }) {
         while (isActive) {
             try {

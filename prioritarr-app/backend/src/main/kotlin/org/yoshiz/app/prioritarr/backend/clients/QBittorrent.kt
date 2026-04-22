@@ -71,6 +71,25 @@ class QBitClient(
         }
     }
 
+    /**
+     * Permanently delete torrents from the client. [deleteFiles] also
+     * removes the partially-downloaded data on disk — used by the
+     * janitor to free up storage when blacklisting stuck releases.
+     */
+    suspend fun delete(hashes: List<String>, deleteFiles: Boolean = true) {
+        if (hashes.isEmpty()) return
+        request<Unit> {
+            http.submitForm(
+                url = "$root/api/v2/torrents/delete",
+                formParameters = parameters {
+                    append("hashes", hashes.joinToString("|"))
+                    append("deleteFiles", deleteFiles.toString())
+                },
+            )
+            Unit
+        }
+    }
+
     private suspend fun login() {
         http.submitForm(
             url = "$root/api/v2/auth/login",

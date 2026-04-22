@@ -31,6 +31,39 @@ class SABClient(
     suspend fun moveToPosition(nzoId: String, position: Int): JsonElement =
         call("switch", mapOf("value" to nzoId, "value2" to position.toString()))
 
+    /**
+     * Most recent N history items. Used by the queue janitor to find
+     * Failed entries (network errors, missing articles, par failures,
+     * duplicate-detected, etc.) that need to be removed + re-searched.
+     *
+     * Each slot has at minimum: nzo_id, status, fail_message, name.
+     */
+    suspend fun getHistory(limit: Int = 100): JsonArray {
+        val data = call("history", mapOf("limit" to limit.toString())) as JsonObject
+        return (data["history"] as JsonObject)["slots"] as JsonArray
+    }
+
+    /**
+     * Delete a queue or history entry. SAB uses the same endpoint with
+     * different `value` semantics depending on which list the nzo_id
+     * lives in; we expose both modes.
+     *
+     * `delFiles=1` purges any partial download from disk.
+     */
+    suspend fun deleteFromQueue(nzoId: String, delFiles: Boolean = true): JsonElement =
+        call("queue", mapOf(
+            "name" to "delete",
+            "value" to nzoId,
+            "del_files" to if (delFiles) "1" else "0",
+        ))
+
+    suspend fun deleteFromHistory(nzoId: String, delFiles: Boolean = true): JsonElement =
+        call("history", mapOf(
+            "name" to "delete",
+            "value" to nzoId,
+            "del_files" to if (delFiles) "1" else "0",
+        ))
+
     private suspend fun call(mode: String, params: Map<String, String> = emptyMap()): JsonElement =
         http.get("$root/sabnzbd/api") {
             parameter("apikey", apiKey)
