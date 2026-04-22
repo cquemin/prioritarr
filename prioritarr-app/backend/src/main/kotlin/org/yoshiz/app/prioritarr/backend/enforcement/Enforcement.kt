@@ -23,6 +23,20 @@ data class QBitDownloadView(
  * - P2 active (no P1) → pause P5
  * - Only P3/P4/P5 → nothing paused
  * - Every P1 also gets a top_priority action so qBit schedules it first.
+ *
+ * The resume branch intentionally does *not* require the torrent to be
+ * currently paused in qBit — `pausedByUs` is prioritarr's record of an
+ * earlier action, and qBit will auto-resume paused torrents on many
+ * events (restart, network blip, user click in qBit UI). Without this,
+ * a torrent whose priority rises back out of the pause band keeps
+ * `pausedByUs=true` forever, because qBit reports state=downloading
+ * (not pausedDL), the old `isPaused` guard fails, and the flag never
+ * clears. The symptom was a torrent correctly unpaused in qBit but
+ * still showing "pausedByUs=true" in the managed_downloads row.
+ *
+ * Calling qbit.resume on a not-paused torrent is a no-op; the thing
+ * that matters is the setManagedPaused(0) side-effect in the reconcile
+ * handler.
  */
 fun computeQBitPauseActions(downloads: Collection<QBitDownloadView>): List<QBitAction> {
     val activePriorities = downloads
@@ -43,7 +57,11 @@ fun computeQBitPauseActions(downloads: Collection<QBitDownloadView>): List<QBitA
         val isPaused = d.state in PAUSED_STATES
         if (d.priority in pauseLevels && !isPaused) {
             actions += QBitAction(d.hash, "pause")
-        } else if (d.priority !in pauseLevels && isPaused && d.pausedByUs) {
+        } else if (d.priority !in pauseLevels && d.pausedByUs) {
+            // Either actually paused (resume truly un-pauses) or state
+            // drifted already (resume is a no-op but the DB flag gets
+            // cleared — the goal). Unconditional when pausedByUs=true
+            // and priority isn't in the pause band.
             actions += QBitAction(d.hash, "resume")
         }
         if (d.priority == 1 && !isPaused) {
