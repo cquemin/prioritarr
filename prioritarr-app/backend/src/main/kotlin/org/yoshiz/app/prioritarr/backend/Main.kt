@@ -99,11 +99,15 @@ fun main() {
         mappings = mappings,
     )
 
+    val thresholdsSource = org.yoshiz.app.prioritarr.backend.priority.DbThresholdsSource(
+        db = db,
+        baseline = settings.priorityThresholds,
+    )
     val priorityService = PriorityService(
         sonarr = sonarr,
         watchProviders = watchProviders,
         db = db,
-        thresholds = settings.priorityThresholds,
+        thresholdsSource = thresholdsSource,
         cacheTtlMinutes = settings.cache.priorityTtlMinutes.toLong(),
     )
 
@@ -116,6 +120,7 @@ fun main() {
         sab = sab,
         mappings = mappings,
         priorityService = priorityService,
+        thresholdsSource = thresholdsSource,
         crossSourceSync = crossSourceSync,
         eventBus = EventBus(),
         httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp),

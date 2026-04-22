@@ -33,7 +33,7 @@ class PriorityService(
     private val sonarr: SonarrClient,
     private val watchProviders: List<WatchHistoryProvider>,
     private val db: Database,
-    private val thresholds: PriorityThresholds,
+    private val thresholdsSource: ThresholdsSource,
     private val cacheTtlMinutes: Long,
 ) {
     private val logger = LoggerFactory.getLogger(PriorityService::class.java)
@@ -62,7 +62,7 @@ class PriorityService(
             return PriorityResult(priority = 3, label = "P3 A few unwatched", reason = "dependency_unreachable")
         }
 
-        val result = computePriority(snapshot, thresholds)
+        val result = computePriority(snapshot, thresholdsSource.current())
         val now = Database.nowIsoOffset()
         val expires = OffsetDateTime.now().plusMinutes(cacheTtlMinutes).format(Database.ISO_OFFSET)
         db.upsertPriorityCache(
@@ -78,7 +78,22 @@ class PriorityService(
         return result
     }
 
-    private suspend fun buildSnapshot(seriesId: Long): SeriesSnapshot? {
+    /**
+     * Compute a priority with [overrides] applied without touching
+     * the cache. Returns the snapshot alongside so the sandbox UI can
+     * show the raw decision inputs (watchPct, unwatched, days since…).
+     *
+     * Snapshot building uses the same upstream calls as the real
+     * compute — it hits Sonarr + watch providers — so previews have
+     * the same data freshness as the real pipeline.
+     */
+    suspend fun preview(seriesId: Long, overrides: PriorityThresholds): PriorityPreview? {
+        val snap = try { buildSnapshot(seriesId) } catch (_: Exception) { null } ?: return null
+        val result = computePriority(snap, overrides)
+        return PriorityPreview(snapshot = snap, result = result, thresholds = overrides)
+    }
+
+    internal suspend fun buildSnapshot(seriesId: Long): SeriesSnapshot? {
         val series = sonarr.getSeries(seriesId)
         val episodes = sonarr.getEpisodes(seriesId)
 

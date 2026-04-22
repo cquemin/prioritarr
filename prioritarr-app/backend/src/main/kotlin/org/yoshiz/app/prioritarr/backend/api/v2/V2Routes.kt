@@ -41,6 +41,10 @@ import org.yoshiz.app.prioritarr.backend.schemas.ManagedDownloadWire
 import org.yoshiz.app.prioritarr.backend.schemas.MappingSnapshot
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityResultWire
 import org.yoshiz.app.prioritarr.backend.schemas.LibrarySyncReport
+import org.yoshiz.app.prioritarr.backend.schemas.ManagedDownloadPreview
+import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewEntry
+import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewRequest
+import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewResponse
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesDetail
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesSummary
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesSyncReport
@@ -462,6 +466,139 @@ fun Route.v2Routes(state: AppState) {
             Json.encodeToJsonElement(LibrarySyncReport.serializer(), agg),
         )
         call.respond(agg)
+    }
+
+    // ---- Priority thresholds (live-editable) ----
+    //
+    // GET returns the effective thresholds (baseline ∘ overrides); PUT
+    // replaces the override blob entirely with the posted object and
+    // invalidates the whole priority cache so the next refresh cycle
+    // picks up the new rules. No partial patch on PUT — the UI sends
+    // the full object; callers that want to reset can use DELETE.
+    get("/settings/thresholds") {
+        call.respond(state.thresholdsSource.current())
+    }
+
+    post("/settings/thresholds") {
+        val next = call.receive<org.yoshiz.app.prioritarr.backend.config.PriorityThresholds>()
+        state.thresholdsSource.save(next)
+        // Drop the entire priority cache so every series recomputes.
+        state.db.q.deleteAllSeriesPriorityCache()
+        state.eventBus.publish(
+            "thresholds-updated",
+            Json.encodeToJsonElement(
+                org.yoshiz.app.prioritarr.backend.config.PriorityThresholds.serializer(),
+                next,
+            ),
+        )
+        call.respond(state.thresholdsSource.current())
+    }
+
+    delete("/settings/thresholds") {
+        state.thresholdsSource.reset()
+        state.db.q.deleteAllSeriesPriorityCache()
+        state.eventBus.publish(
+            "thresholds-reset",
+            kotlinx.serialization.json.JsonNull,
+        )
+        call.respond(state.thresholdsSource.current())
+    }
+
+    // ---- What-if preview ----
+    //
+    // Runs the full compute for up to 3 series using a patched
+    // thresholds object, without writing anything. The response
+    // carries the decision inputs (pct, unwatched, days) so the UI
+    // can show a diff against the currently-cached priority.
+    post("/priority/preview") {
+        val req = try {
+            call.receive<PriorityPreviewRequest>()
+        } catch (e: Exception) {
+            throw ValidationException("body", "must be {seriesIds:[...], thresholds:{...}}: ${e.message}")
+        }
+        if (req.seriesIds.isEmpty()) {
+            throw ValidationException("seriesIds", "must contain at least one id")
+        }
+        if (req.seriesIds.size > 10) {
+            throw ValidationException("seriesIds", "maximum 10 series per preview")
+        }
+        val base = state.thresholdsSource.current()
+        val patched = org.yoshiz.app.prioritarr.backend.priority.applyPatch(base, req.thresholds)
+
+        val entries = req.seriesIds.map { sid ->
+            val preview = state.priorityService.preview(sid, patched)
+            val cached = state.db.getPriorityCache(sid)
+            val title = state.db.q.selectSeriesCache(sid).executeAsOneOrNull()?.title ?: "(unknown)"
+            val managed = state.db.listManagedDownloads().filter { it.series_id == sid }
+            if (preview == null) {
+                PriorityPreviewEntry(
+                    seriesId = sid,
+                    title = title,
+                    monitoredSeasons = 0,
+                    monitoredEpisodesAired = 0,
+                    monitoredEpisodesWatched = 0,
+                    unwatched = 0,
+                    watchPct = 0.0,
+                    daysSinceWatch = null,
+                    daysSinceRelease = null,
+                    previous = cached?.let { PriorityResultWire(it.priority.toInt(), "P${it.priority}", it.reason.orEmpty()) },
+                    preview = PriorityResultWire(5, "P5", "snapshot unavailable"),
+                    downloads = emptyList(),
+                )
+            } else {
+                val snap = preview.snapshot
+                val aired = snap.monitoredEpisodesAired
+                val watched = snap.monitoredEpisodesWatched
+                val unwatched = aired - watched
+                val now = java.time.Instant.now()
+                val dsw = snap.lastWatchedAt?.let { java.time.Duration.between(it, now).toDays().toInt() }
+                val dsr = snap.episodeReleaseDate?.let { java.time.Duration.between(it, now).toDays().toInt() }
+
+                // Overlay preview priority on each managed download so
+                // we can re-run the pause-band calc and report "would
+                // still be paused" per download.
+                val overlayedView = managed.map { row ->
+                    val overlay = if (row.series_id == sid) preview.result.priority else row.current_priority.toInt()
+                    org.yoshiz.app.prioritarr.backend.enforcement.QBitDownloadView(
+                        hash = row.client_id,
+                        priority = overlay,
+                        state = if (row.paused_by_us == 1L) "pausedDL" else "downloading",
+                        pausedByUs = row.paused_by_us == 1L,
+                    )
+                }
+                val actions = org.yoshiz.app.prioritarr.backend.enforcement
+                    .computeQBitPauseActions(overlayedView)
+                val pausedHashes = actions.filter { it.action == "pause" }.map { it.hash }.toSet()
+
+                PriorityPreviewEntry(
+                    seriesId = sid,
+                    title = title,
+                    monitoredSeasons = snap.monitoredSeasons,
+                    monitoredEpisodesAired = aired,
+                    monitoredEpisodesWatched = watched,
+                    unwatched = unwatched,
+                    watchPct = if (aired > 0) watched.toDouble() / aired.toDouble() else 0.0,
+                    daysSinceWatch = dsw,
+                    daysSinceRelease = dsr,
+                    previous = cached?.let { PriorityResultWire(it.priority.toInt(), "P${it.priority}", it.reason.orEmpty()) },
+                    preview = PriorityResultWire(
+                        preview.result.priority,
+                        preview.result.label,
+                        preview.result.reason,
+                    ),
+                    downloads = managed.map { row ->
+                        ManagedDownloadPreview(
+                            client = row.client,
+                            clientId = row.client_id,
+                            currentPriority = row.current_priority.toInt(),
+                            currentlyPausedByUs = row.paused_by_us == 1L,
+                            wouldBePaused = row.client_id in pausedHashes,
+                        )
+                    },
+                )
+            }
+        }
+        call.respond(PriorityPreviewResponse(thresholds = patched, entries = entries))
     }
 
     post("/mappings/refresh") {

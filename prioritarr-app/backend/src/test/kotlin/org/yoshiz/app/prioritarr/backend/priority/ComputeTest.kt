@@ -46,8 +46,18 @@ class ComputeTest {
         assertEquals(1, computePriority(snap(aired = 10, watched = 9, lastWatchDaysAgo = 2, releaseDaysAgo = 1), t, now).priority)
     }
 
-    @Test fun p1_89pct_does_not_qualify() {
-        assertNotEquals(1, computePriority(snap(aired = 9, watched = 8, lastWatchDaysAgo = 2, releaseDaysAgo = 1), t, now).priority)
+    @Test fun p1_below_both_gates_does_not_qualify() {
+        // Under the OR engagement gate, "failing" P1 now means failing BOTH
+        // the pct-min and the absolute-unwatched-count gates. 80% + 10
+        // unwatched → neither engagement path opens.
+        assertNotEquals(1, computePriority(snap(aired = 50, watched = 40, lastWatchDaysAgo = 2, releaseDaysAgo = 1), t, now).priority)
+    }
+
+    @Test fun p1_short_show_count_gate_qualifies() {
+        // New behaviour: 1 unwatched on a 12-ep show (92%) obviously P1, but
+        // also 3 unwatched on a 12-ep show (75%) should qualify because the
+        // absolute-count gate is open — "actively watching" regardless of pct.
+        assertEquals(1, computePriority(snap(aired = 12, watched = 9, lastWatchDaysAgo = 2, releaseDaysAgo = 1), t, now).priority)
     }
 
     @Test fun p1_post_hiatus_within_28_days() {
@@ -77,6 +87,15 @@ class ComputeTest {
         assertEquals(2, computePriority(snap(aired = 20, watched = 20, lastWatchDaysAgo = 30, releaseDaysAgo = 30), t, now).priority)
     }
 
+    @Test fun p2_nearly_caught_up_lapsed() {
+        // aired=20, watched=17 → 85% (≥ p2_watch_pct_min=0.80). Last watch 30d ago.
+        // Old rule (P2 required ≥90%) → dropped to P3. New rule → P2.
+        assertEquals(2, computePriority(
+            snap(aired = 20, watched = 17, lastWatchDaysAgo = 30, releaseDaysAgo = 30),
+            t, now
+        ).priority)
+    }
+
     @Test fun p2_exactly_60_days_boundary() {
         assertEquals(2, computePriority(snap(aired = 20, watched = 20, lastWatchDaysAgo = 60, releaseDaysAgo = 60), t, now).priority)
     }
@@ -94,9 +113,31 @@ class ComputeTest {
         ).priority)
     }
 
-    @Test fun p3_four_unwatched_falls_to_p4() {
-        assertEquals(4, computePriority(
+    @Test fun p3_four_unwatched_high_pct_still_qualifies() {
+        // Long show, 4 unwatched out of 44 = 91%. Old rule: count > 3 → P4.
+        // New rule: pct ≥ 75% → engagement gate opens → P3.
+        assertEquals(3, computePriority(
             snap(aired = 44, watched = 40, lastWatchDaysAgo = 5, releaseDaysAgo = 30, prevReleaseDaysAgo = 37),
+            t, now
+        ).priority)
+    }
+
+    @Test fun p3_falls_to_p4_only_when_both_gates_fail() {
+        // aired=44, watched=30 → 68% pct (< 75%) AND 14 unwatched (> 3) →
+        // neither engagement gate passes → P4.
+        assertEquals(4, computePriority(
+            snap(aired = 44, watched = 30, lastWatchDaysAgo = 5, releaseDaysAgo = 30, prevReleaseDaysAgo = 37),
+            t, now
+        ).priority)
+    }
+
+    @Test fun p3_short_show_three_unwatched_qualifies() {
+        // 3 unwatched of 12 (= 75%). Under the new rule the count gate
+        // opens the engagement band; the user is still actively watching a
+        // short show and shouldn't fall to P4 just because 3/12 crosses
+        // percentage-wise.
+        assertEquals(3, computePriority(
+            snap(aired = 12, watched = 9, lastWatchDaysAgo = 5, releaseDaysAgo = 30, prevReleaseDaysAgo = 37),
             t, now
         ).priority)
     }

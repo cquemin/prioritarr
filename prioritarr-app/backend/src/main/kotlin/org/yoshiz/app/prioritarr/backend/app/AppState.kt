@@ -10,6 +10,7 @@ import org.yoshiz.app.prioritarr.backend.database.Database
 import org.yoshiz.app.prioritarr.backend.events.EventBus
 import org.yoshiz.app.prioritarr.backend.mapping.MappingState
 import org.yoshiz.app.prioritarr.backend.priority.PriorityService
+import org.yoshiz.app.prioritarr.backend.priority.ThresholdsSource
 import org.yoshiz.app.prioritarr.backend.sync.CrossSourceSync
 
 /**
@@ -28,6 +29,7 @@ data class AppState(
     val sab: SABClient,
     val mappings: MappingState,
     val priorityService: PriorityService,
+    val thresholdsSource: ThresholdsSource,
     val crossSourceSync: CrossSourceSync,
     val eventBus: EventBus,
     val httpClients: List<HttpClient>,

@@ -211,6 +211,122 @@ export function useLibrarySync() {
   })
 }
 
+// Priority thresholds — live editable via the Settings UI. POSTed via
+// raw fetch for the same reason as bulk (openapi.json regen is separate).
+export interface PriorityThresholds {
+  p1WatchPctMin: number
+  p1DaysSinceWatchMax: number
+  p1DaysSinceReleaseMax: number
+  p1HiatusGapDays: number
+  p1HiatusReleaseWindowDays: number
+  p2WatchPctMin: number
+  p2DaysSinceWatchMax: number
+  p3WatchPctMin: number
+  p3UnwatchedMax: number
+  p3DaysSinceWatchMax: number
+  p4MinWatched: number
+}
+
+async function rawFetch<T>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const key = getApiKey()
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(key ? { 'X-Api-Key': key } : {}),
+      ...(init.headers ?? {}),
+    },
+  })
+  if (!res.ok) throw new Error(`${init.method ?? 'GET'} ${path} failed: ${res.status} ${res.statusText}`)
+  return (await res.json()) as T
+}
+
+export function useThresholds() {
+  return useQuery({
+    queryKey: ['thresholds'],
+    queryFn: () => rawFetch<PriorityThresholds>('/api/v2/settings/thresholds'),
+  })
+}
+
+export function useSaveThresholds() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (next: PriorityThresholds) =>
+      rawFetch<PriorityThresholds>('/api/v2/settings/thresholds', {
+        method: 'POST',
+        body: JSON.stringify(next),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['thresholds'] })
+      qc.invalidateQueries({ queryKey: ['series'] })
+    },
+  })
+}
+
+export function useResetThresholds() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () =>
+      rawFetch<PriorityThresholds>('/api/v2/settings/thresholds', {
+        method: 'DELETE',
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['thresholds'] })
+      qc.invalidateQueries({ queryKey: ['series'] })
+    },
+  })
+}
+
+export interface PriorityResultWire {
+  priority: number
+  label: string
+  reason: string
+}
+
+export interface ManagedDownloadPreview {
+  client: string
+  clientId: string
+  currentPriority: number
+  currentlyPausedByUs: boolean
+  wouldBePaused: boolean
+}
+
+export interface PriorityPreviewEntry {
+  seriesId: number
+  title: string
+  monitoredSeasons: number
+  monitoredEpisodesAired: number
+  monitoredEpisodesWatched: number
+  unwatched: number
+  watchPct: number
+  daysSinceWatch: number | null
+  daysSinceRelease: number | null
+  previous: PriorityResultWire | null
+  preview: PriorityResultWire
+  downloads: ManagedDownloadPreview[]
+}
+
+export interface PriorityPreviewResponse {
+  thresholds: PriorityThresholds
+  entries: PriorityPreviewEntry[]
+}
+
+export function usePriorityPreview() {
+  // Not a useQuery because it's a POST with a body — the body's a
+  // user-tweakable patch, so caching by queryKey would be a mess.
+  // Callers call mutate({seriesIds, thresholds}) whenever inputs change.
+  return useMutation({
+    mutationFn: (v: { seriesIds: number[]; thresholds: Partial<PriorityThresholds> }) =>
+      rawFetch<PriorityPreviewResponse>('/api/v2/priority/preview', {
+        method: 'POST',
+        body: JSON.stringify(v),
+      }),
+  })
+}
+
 export function useRefreshMappings() {
   const qc = useQueryClient()
   return useMutation({

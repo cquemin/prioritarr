@@ -193,3 +193,48 @@ data class LibrarySyncReport(
     val traktAddedTotal: Int,
     val perSeries: List<SeriesSyncReport>,
 )
+
+/**
+ * Request body for POST /api/v2/priority/preview — choose up to 3
+ * series and supply a *partial* threshold patch (any missing field
+ * falls back to the current live value). The endpoint runs the full
+ * priority compute without touching the cache.
+ */
+@Serializable
+data class PriorityPreviewRequest(
+    val seriesIds: List<Long>,
+    val thresholds: kotlinx.serialization.json.JsonObject = kotlinx.serialization.json.JsonObject(emptyMap()),
+)
+
+/** Per-series preview result — decision inputs + computed priority. */
+@Serializable
+data class PriorityPreviewEntry(
+    val seriesId: Long,
+    val title: String,
+    val monitoredSeasons: Int,
+    val monitoredEpisodesAired: Int,
+    val monitoredEpisodesWatched: Int,
+    val unwatched: Int,
+    val watchPct: Double,
+    val daysSinceWatch: Int?,
+    val daysSinceRelease: Int?,
+    val previous: PriorityResultWire?,
+    val preview: PriorityResultWire,
+    /** Per-download: priority (current) + would-it-still-be-paused under preview. */
+    val downloads: List<ManagedDownloadPreview>,
+)
+
+@Serializable
+data class ManagedDownloadPreview(
+    val client: String,
+    val clientId: String,
+    val currentPriority: Int,
+    val currentlyPausedByUs: Boolean,
+    val wouldBePaused: Boolean,
+)
+
+@Serializable
+data class PriorityPreviewResponse(
+    val thresholds: org.yoshiz.app.prioritarr.backend.config.PriorityThresholds,
+    val entries: List<PriorityPreviewEntry>,
+)

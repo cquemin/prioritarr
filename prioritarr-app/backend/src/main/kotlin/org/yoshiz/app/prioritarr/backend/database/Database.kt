@@ -178,6 +178,22 @@ class Database(dbPath: String) {
     fun getHeartbeat(): String? = q.selectHeartbeat().executeAsOneOrNull()
 
     // ------------------------------------------------------------------
+    // priority_thresholds_overrides
+    // ------------------------------------------------------------------
+
+    /** Read the JSON-blob override row. Null when no override has been written. */
+    fun getThresholdsOverride(): String? =
+        q.selectThresholdsOverride().executeAsOneOrNull()?.payload
+
+    fun setThresholdsOverride(payload: String) {
+        q.upsertThresholdsOverride(payload, nowIsoOffset())
+    }
+
+    fun clearThresholdsOverride() {
+        q.deleteThresholdsOverride()
+    }
+
+    // ------------------------------------------------------------------
     // prune
     // ------------------------------------------------------------------
 

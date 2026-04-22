@@ -3,14 +3,34 @@ package org.yoshiz.app.prioritarr.backend.config
 import org.yaml.snakeyaml.Yaml
 import java.io.File
 
-/** Priority-compute tuning. */
+/**
+ * Priority-compute tuning.
+ *
+ * P1/P2/P3 all use OR gates over two engagement metrics:
+ *   (watchPct ≥ pN_watch_pct_min)  OR  (unwatched ≤ p3_unwatched_max)
+ * So a user with a few unwatched episodes is "engaged" both on a long
+ * show (3/100 left = 97%) and on a short show (3/12 left = 75%).
+ *
+ * Release recency gates whether P1 is accessible:
+ *   release ≤ p1_days_since_release_max  → P1 gate open
+ *   release ≤ p1_hiatus_release_window_days AND hiatus detected → P1 gate open
+ *   else → P1 gate closed
+ *
+ * These defaults reproduce the original single-metric behaviour for
+ * shows at the ≥90% / ≥80% / ≥75% watch-percent extremes; they only
+ * widen things for shows with small absolute unwatched counts that
+ * previously got stuck in P4.
+ */
+@kotlinx.serialization.Serializable
 data class PriorityThresholds(
     val p1WatchPctMin: Double = 0.90,
     val p1DaysSinceWatchMax: Int = 14,
     val p1DaysSinceReleaseMax: Int = 7,
     val p1HiatusGapDays: Int = 14,
     val p1HiatusReleaseWindowDays: Int = 28,
+    val p2WatchPctMin: Double = 0.80,
     val p2DaysSinceWatchMax: Int = 60,
+    val p3WatchPctMin: Double = 0.75,
     val p3UnwatchedMax: Int = 3,
     val p3DaysSinceWatchMax: Int = 60,
     val p4MinWatched: Int = 1,
@@ -116,7 +136,9 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 p1DaysSinceReleaseMax = o.num("p1_days_since_release_max") { it.toInt() } ?: thresholds.p1DaysSinceReleaseMax,
                 p1HiatusGapDays = o.num("p1_hiatus_gap_days") { it.toInt() } ?: thresholds.p1HiatusGapDays,
                 p1HiatusReleaseWindowDays = o.num("p1_hiatus_release_window_days") { it.toInt() } ?: thresholds.p1HiatusReleaseWindowDays,
+                p2WatchPctMin = o.num("p2_watch_pct_min") { it.toDouble() } ?: thresholds.p2WatchPctMin,
                 p2DaysSinceWatchMax = o.num("p2_days_since_watch_max") { it.toInt() } ?: thresholds.p2DaysSinceWatchMax,
+                p3WatchPctMin = o.num("p3_watch_pct_min") { it.toDouble() } ?: thresholds.p3WatchPctMin,
                 p3UnwatchedMax = o.num("p3_unwatched_max") { it.toInt() } ?: thresholds.p3UnwatchedMax,
                 p3DaysSinceWatchMax = o.num("p3_days_since_watch_max") { it.toInt() } ?: thresholds.p3DaysSinceWatchMax,
                 p4MinWatched = o.num("p4_min_watched") { it.toInt() } ?: thresholds.p4MinWatched,

@@ -28,3 +28,15 @@ data class PriorityResult(
     val label: String,
     val reason: String,
 )
+
+/**
+ * Bundle returned by [PriorityService.preview] — the actual
+ * computed priority, the snapshot that produced it, and the
+ * thresholds that were in effect. The UI reads every field so the
+ * sandbox can render a complete what-if breakdown.
+ */
+data class PriorityPreview(
+    val snapshot: SeriesSnapshot,
+    val result: PriorityResult,
+    val thresholds: org.yoshiz.app.prioritarr.backend.config.PriorityThresholds,
+)

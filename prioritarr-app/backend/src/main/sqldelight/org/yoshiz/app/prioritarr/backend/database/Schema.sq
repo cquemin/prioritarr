@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS heartbeat (
     ts TEXT NOT NULL
 );
 
+-- Single-row JSON blob of PriorityThresholds overrides. Empty/missing =
+-- "use config.yaml + compiled defaults". When present, every field in
+-- the JSON overrides the matching field from the env-loaded defaults.
+-- Kept schema-less on purpose so adding threshold fields doesn't
+-- require a migration — the JSON decoder ignores unknown keys and
+-- defaults fields absent from the payload.
+CREATE TABLE IF NOT EXISTS priority_thresholds_overrides (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 -- Persistent mapping cache (plex_rating_key -> series_id). Replaces the
 -- Lettuce/Redis cache in the Kotlin backend. One row per plex_key.
 -- Byte-compatible with a Python backend that adds the same table if it
@@ -202,6 +214,23 @@ ON CONFLICT(id) DO UPDATE SET ts = excluded.ts;
 
 selectHeartbeat:
 SELECT ts FROM heartbeat WHERE id = 1;
+
+-- ------------------------------------------------------------------
+-- priority_thresholds_overrides
+-- ------------------------------------------------------------------
+
+upsertThresholdsOverride:
+INSERT INTO priority_thresholds_overrides (id, payload, updated_at)
+VALUES (1, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    payload    = excluded.payload,
+    updated_at = excluded.updated_at;
+
+selectThresholdsOverride:
+SELECT payload, updated_at FROM priority_thresholds_overrides WHERE id = 1;
+
+deleteThresholdsOverride:
+DELETE FROM priority_thresholds_overrides;
 
 -- ------------------------------------------------------------------
 -- reset — used by /_testing/reset to wipe all mutable state in one go.
