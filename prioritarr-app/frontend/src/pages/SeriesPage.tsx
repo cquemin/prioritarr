@@ -9,8 +9,8 @@
  */
 
 import { type ColumnDef } from '@tanstack/react-table'
-import { ExternalLink } from 'lucide-react'
-import { useState } from 'react'
+import { ExternalLink, Search, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { DataTable } from '../components/DataTable'
 import { KebabMenu } from '../components/KebabMenu'
@@ -19,10 +19,12 @@ import { TableSkeleton } from '../components/Skeleton'
 import {
   useDownloadAction,
   useRecomputeSeries,
+  useSearch,
   useSeries,
   useSeriesList,
   useSeriesSync,
   useUntrackDownload,
+  type SearchHit,
 } from '../hooks/queries'
 import { PRIORITY_CLASS, PRIORITY_LABELS } from '../lib/priority'
 
@@ -45,6 +47,22 @@ export function SeriesPage() {
   const recompute = useRecomputeSeries()
   const [openRow, setOpenRow] = useState<SeriesRow | null>(null)
 
+  // Global search — matches series title OR episode name. Debounced so
+  // typing fast doesn't spam the /search endpoint.
+  const [searchInput, setSearchInput] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQuery(searchInput.trim()), 300)
+    return () => clearTimeout(t)
+  }, [searchInput])
+  const search = useSearch(searchQuery)
+  const searchHitsBySeriesId = useMemo(() => {
+    const map = new Map<number, SearchHit>()
+    for (const h of search.data?.hits ?? []) map.set(h.seriesId, h)
+    return map
+  }, [search.data])
+  const isSearching = searchQuery.length >= 2
+
   if (isLoading) {
     return (
       <div className="p-6">
@@ -65,7 +83,10 @@ export function SeriesPage() {
     )
   }
 
-  const rows = ((data?.records as unknown) as SeriesRow[]) ?? []
+  const allRows = ((data?.records as unknown) as SeriesRow[]) ?? []
+  const rows = isSearching
+    ? allRows.filter((r) => searchHitsBySeriesId.has(r.id))
+    : allRows
 
   const columns: ColumnDef<SeriesRow>[] = [
     {
@@ -88,7 +109,22 @@ export function SeriesPage() {
     {
       accessorKey: 'title',
       header: 'Title',
-      cell: ({ row }) => <span className="font-medium">{row.original.title}</span>,
+      cell: ({ row }) => {
+        const hit = searchHitsBySeriesId.get(row.original.id)
+        const matched = hit?.matchedEpisode
+        return (
+          <div className="space-y-0.5">
+            <span className="font-medium">{row.original.title}</span>
+            {matched && (
+              <div className="text-xs opacity-70">
+                <span className="font-mono">S{String(matched.season).padStart(2, '0')}E{String(matched.number).padStart(2, '0')}</span>
+                <span className="mx-1 opacity-50">·</span>
+                <span className="italic">{matched.title}</span>
+              </div>
+            )}
+          </div>
+        )
+      },
       filterFn: 'includesString',
     },
     {
@@ -157,10 +193,38 @@ export function SeriesPage() {
   return (
     <div className="p-6">
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-semibold">Series ({data?.totalRecords ?? 0})</h1>
+        <h1 className="text-2xl font-semibold">
+          Series ({isSearching ? `${rows.length} of ${allRows.length}` : data?.totalRecords ?? 0})
+        </h1>
         <p className="text-xs text-text-muted">
           Click a column header to sort · type in a header field to filter · click a row for details + external links
         </p>
+      </div>
+
+      <div className="mb-4 relative">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-60 pointer-events-none" />
+        <input
+          type="search"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Search series title or episode name… (≥ 2 chars)"
+          className="w-full pl-9 pr-9 py-2 bg-surface-1 border border-surface-3 rounded text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+        />
+        {searchInput && (
+          <button
+            type="button"
+            onClick={() => setSearchInput('')}
+            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded hover:bg-surface-3"
+            aria-label="Clear search"
+          >
+            <X size={14} />
+          </button>
+        )}
+        {isSearching && search.isFetching && (
+          <span className="absolute right-10 top-1/2 -translate-y-1/2 text-xs opacity-60">
+            searching…
+          </span>
+        )}
       </div>
 
       <DataTable

@@ -327,6 +327,33 @@ export function usePriorityPreview() {
   })
 }
 
+// Global search across series titles + monitored episode titles.
+export interface MatchedEpisode {
+  season: number
+  number: number
+  title: string
+}
+export interface SearchHit {
+  seriesId: number
+  title: string
+  matchedBy: 'title' | 'episode'
+  matchedEpisode: MatchedEpisode | null
+}
+export interface SearchResponse {
+  query: string
+  hits: SearchHit[]
+}
+
+export function useSearch(query: string) {
+  return useQuery({
+    queryKey: ['search', query],
+    queryFn: () =>
+      rawFetch<SearchResponse>(`/api/v2/search?q=${encodeURIComponent(query)}`),
+    // Below 2 chars the backend returns empty; skip the roundtrip.
+    enabled: query.trim().length >= 2,
+  })
+}
+
 export function useRefreshMappings() {
   const qc = useQueryClient()
   return useMutation({

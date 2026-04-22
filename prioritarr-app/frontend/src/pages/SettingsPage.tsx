@@ -172,13 +172,16 @@ function ThresholdsPanel() {
     return THRESHOLD_FIELDS.some((f) => draft[f.key] !== live.data![f.key])
   }, [draft, live.data])
 
-  // Re-run preview whenever draft thresholds or selection changes. The
-  // `mutate` call is debounced via react's effect batching — in practice
-  // the UI feels live but doesn't spam the backend on every keystroke
-  // because the input commits onBlur (number input default).
+  // Re-run preview whenever draft thresholds or selection changes,
+  // debounced 300ms so rapid keystrokes coalesce into one backend call.
+  // Selection changes also pass through the same debounce — clicking two
+  // series quickly fires one preview, not two.
   useEffect(() => {
     if (!draft || selectedSeriesIds.length === 0) return
-    preview.mutate({ seriesIds: selectedSeriesIds, thresholds: draft })
+    const t = setTimeout(() => {
+      preview.mutate({ seriesIds: selectedSeriesIds, thresholds: draft })
+    }, 300)
+    return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft, selectedSeriesIds])
 

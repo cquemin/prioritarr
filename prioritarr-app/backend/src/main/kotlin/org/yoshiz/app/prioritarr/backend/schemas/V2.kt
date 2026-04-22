@@ -238,3 +238,30 @@ data class PriorityPreviewResponse(
     val thresholds: org.yoshiz.app.prioritarr.backend.config.PriorityThresholds,
     val entries: List<PriorityPreviewEntry>,
 )
+
+/**
+ * One hit in the Series-page global search result. When the match was
+ * on an episode title, [matchedEpisode] carries the SxxExx label + the
+ * episode title for UI context ("matched: 'The Avatar Team is Formed'").
+ * When matched by series title, [matchedEpisode] is null.
+ */
+@Serializable
+data class SearchHit(
+    val seriesId: Long,
+    val title: String,
+    val matchedBy: String,             // "title" | "episode"
+    val matchedEpisode: MatchedEpisode? = null,
+)
+
+@Serializable
+data class MatchedEpisode(
+    val season: Int,
+    val number: Int,
+    val title: String,
+)
+
+@Serializable
+data class SearchResponse(
+    val query: String,
+    val hits: List<SearchHit>,
+)

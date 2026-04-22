@@ -42,9 +42,12 @@ import org.yoshiz.app.prioritarr.backend.schemas.MappingSnapshot
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityResultWire
 import org.yoshiz.app.prioritarr.backend.schemas.LibrarySyncReport
 import org.yoshiz.app.prioritarr.backend.schemas.ManagedDownloadPreview
+import org.yoshiz.app.prioritarr.backend.schemas.MatchedEpisode
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewEntry
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewRequest
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewResponse
+import org.yoshiz.app.prioritarr.backend.schemas.SearchHit
+import org.yoshiz.app.prioritarr.backend.schemas.SearchResponse
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesDetail
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesSummary
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesSyncReport
@@ -466,6 +469,53 @@ fun Route.v2Routes(state: AppState) {
             Json.encodeToJsonElement(LibrarySyncReport.serializer(), agg),
         )
         call.respond(agg)
+    }
+
+    // ---- Search ----
+    //
+    // Matches series by title OR by any of their monitored episode
+    // titles (case-insensitive substring). Backed by the episode_cache
+    // read-model so a query is a single SQL scan, not a fan-out to
+    // Sonarr. Returns each series at most once; when the match was on
+    // an episode, the first matching (season, number, title) is echoed
+    // back for UI context.
+    get("/search") {
+        val q = call.request.queryParameters["q"]?.trim().orEmpty()
+        val limit = (call.request.queryParameters["limit"]?.toLongOrNull() ?: 50L).coerceIn(1, 200)
+        if (q.length < 2) {
+            // Below 2 chars the result set would be too large to be useful
+            // (and expensive). Return an empty list rather than 400 so the
+            // frontend can render "keep typing" UX without an error path.
+            call.respond(SearchResponse(query = q, hits = emptyList()))
+            return@get
+        }
+        val like = "%${q.lowercase()}%"
+        val rows = state.db.q.searchSeriesByTitleOrEpisode(like, limit).executeAsList()
+        // First-match-per-series — the SQL returned every matching
+        // (series, episode) row; collapse to the first hit keeping the
+        // "title" match winner if present.
+        val bySeries = linkedMapOf<Long, SearchHit>()
+        for (row in rows) {
+            val existing = bySeries[row.series_id]
+            val matchedBy = row.matched_by
+            val hit = SearchHit(
+                seriesId = row.series_id,
+                title = row.series_title,
+                matchedBy = matchedBy,
+                matchedEpisode = if (matchedBy == "episode" && row.season_number != null && row.episode_number != null && row.episode_title != null) {
+                    MatchedEpisode(
+                        season = row.season_number.toInt(),
+                        number = row.episode_number.toInt(),
+                        title = row.episode_title,
+                    )
+                } else null,
+            )
+            // Prefer title matches over episode matches when both present.
+            if (existing == null || (existing.matchedBy == "episode" && matchedBy == "title")) {
+                bySeries[row.series_id] = hit
+            }
+        }
+        call.respond(SearchResponse(query = q, hits = bySeries.values.toList()))
     }
 
     // ---- Priority thresholds (live-editable) ----

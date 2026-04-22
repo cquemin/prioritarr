@@ -167,6 +167,19 @@ fun main() {
             delay(5L * 60L * 1000L)
         }
     }
+    // Episode-cache refresh feeds the global search box. One-shot at
+    // startup after series_cache populates, then hourly — episode
+    // titles don't churn, so a lower cadence keeps Sonarr load down.
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_episode_cache crashed", e) }) {
+        // Let refreshSeriesCache seed series_cache once before the first episode pass.
+        delay(30_000)
+        while (isActive) {
+            try {
+                org.yoshiz.app.prioritarr.backend.series.refreshEpisodeCache(sonarr, db)
+            } catch (e: Exception) { logger.warn("refresh_episode_cache: {}", e.message) }
+            delay(60L * 60L * 1000L)
+        }
+    }
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("reconcile crashed", e) }) {
         while (isActive) {
             try {

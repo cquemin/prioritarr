@@ -69,6 +69,25 @@ CREATE TABLE IF NOT EXISTS priority_thresholds_overrides (
     updated_at TEXT NOT NULL
 );
 
+-- Episode read-model for the Series page's global search box. Every
+-- aired episode title is stored once per (series, season, number) so
+-- `WHERE title LIKE '%q%'` returns hits in a single SQL scan. Refreshed
+-- hourly by a background job — not tied to priority compute so an
+-- unused priority engine doesn't leave the search stale.
+CREATE TABLE IF NOT EXISTS episode_cache (
+    series_id INTEGER NOT NULL,
+    season_number INTEGER NOT NULL,
+    episode_number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (series_id, season_number, episode_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_episode_cache_series_id
+    ON episode_cache(series_id);
+CREATE INDEX IF NOT EXISTS idx_episode_cache_title
+    ON episode_cache(title COLLATE NOCASE);
+
 -- Persistent mapping cache (plex_rating_key -> series_id). Replaces the
 -- Lettuce/Redis cache in the Kotlin backend. One row per plex_key.
 -- Byte-compatible with a Python backend that adds the same table if it
@@ -250,6 +269,39 @@ DELETE FROM series_priority_cache;
 
 deleteAllHeartbeat:
 DELETE FROM heartbeat;
+
+-- ------------------------------------------------------------------
+-- episode_cache
+-- ------------------------------------------------------------------
+
+upsertEpisodeCache:
+INSERT INTO episode_cache
+    (series_id, season_number, episode_number, title, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(series_id, season_number, episode_number) DO UPDATE SET
+    title      = excluded.title,
+    updated_at = excluded.updated_at;
+
+deleteEpisodeCacheForSeries:
+DELETE FROM episode_cache WHERE series_id = ?;
+
+countEpisodeCache:
+SELECT COUNT(*) FROM episode_cache;
+
+-- Return series ids whose title OR any monitored episode title
+-- contains :q (case-insensitive). Capped at :lim.
+searchSeriesByTitleOrEpisode:
+SELECT DISTINCT s.id AS series_id, s.title AS series_title,
+       ec.season_number, ec.episode_number, ec.title AS episode_title,
+       CASE WHEN LOWER(s.title) LIKE :q THEN 'title' ELSE 'episode' END AS matched_by
+FROM series_cache s
+LEFT JOIN episode_cache ec ON ec.series_id = s.id AND LOWER(ec.title) LIKE :q
+WHERE LOWER(s.title) LIKE :q OR LOWER(ec.title) LIKE :q
+ORDER BY matched_by ASC, s.title ASC
+LIMIT :lim;
+
+deleteAllEpisodeCache:
+DELETE FROM episode_cache;
 
 -- ------------------------------------------------------------------
 -- mapping_cache
