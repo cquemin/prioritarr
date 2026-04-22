@@ -2,8 +2,8 @@ package org.yoshiz.app.prioritarr.backend.clients
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.plugins.ServerResponseException
 import io.ktor.client.request.get
+import io.ktor.client.statement.HttpResponse
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -86,23 +86,26 @@ class TraktClient(
      */
     suspend fun getShowHistory(traktShowId: Long, limit: Int = 1000): JsonArray {
         val perShowUrl = "$baseUrl/sync/history/shows/$traktShowId?type=episodes&limit=$limit&extended=full"
-        return try {
-            http.get(perShowUrl) { applyHeaders() }.body()
-        } catch (e: ServerResponseException) {
-            logger.warn(
-                "trakt per-show history 5xx for trakt_show_id={} ({}), falling back to account-wide /sync/history",
-                traktShowId, e.response.status,
-            )
-            val allUrl = "$baseUrl/sync/history?type=episodes&limit=$limit&extended=full"
-            val all: JsonArray = http.get(allUrl) { applyHeaders() }.body()
-            buildJsonArray {
-                for (el in all) {
-                    val obj = (el as? JsonObject) ?: continue
-                    val showId = obj["show"]?.jsonObject
-                        ?.get("ids")?.jsonObject
-                        ?.get("trakt")?.jsonPrimitive?.longOrNull
-                    if (showId == traktShowId) add(el)
-                }
+        // Manual status check: Ktor's ContentNegotiation eagerly deserializes
+        // any response body into JsonArray, so a 5xx error body ("{error:…}")
+        // throws a SerializationException before any try/catch on HTTP status
+        // can fire. Taking HttpResponse first lets us branch on .status.
+        val perShowResp: HttpResponse = http.get(perShowUrl) { applyHeaders() }
+        if (perShowResp.status.value < 500) return perShowResp.body()
+
+        logger.warn(
+            "trakt per-show history {} for trakt_show_id={}, falling back to account-wide /sync/history",
+            perShowResp.status, traktShowId,
+        )
+        val allUrl = "$baseUrl/sync/history?type=episodes&limit=$limit&extended=full"
+        val all: JsonArray = http.get(allUrl) { applyHeaders() }.body()
+        return buildJsonArray {
+            for (el in all) {
+                val obj = (el as? JsonObject) ?: continue
+                val showId = obj["show"]?.jsonObject
+                    ?.get("ids")?.jsonObject
+                    ?.get("trakt")?.jsonPrimitive?.longOrNull
+                if (showId == traktShowId) add(el)
             }
         }
     }
