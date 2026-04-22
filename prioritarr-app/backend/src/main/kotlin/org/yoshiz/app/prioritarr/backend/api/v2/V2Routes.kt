@@ -35,6 +35,7 @@ import org.yoshiz.app.prioritarr.backend.schemas.AuditEntry
 import org.yoshiz.app.prioritarr.backend.schemas.BulkActionResult
 import org.yoshiz.app.prioritarr.backend.schemas.BulkDownloadActionRequest
 import org.yoshiz.app.prioritarr.backend.schemas.BulkItemResult
+import org.yoshiz.app.prioritarr.backend.schemas.ExternalLinks
 import org.yoshiz.app.prioritarr.backend.schemas.InjectSeriesMappingRequest
 import org.yoshiz.app.prioritarr.backend.schemas.ManagedDownloadWire
 import org.yoshiz.app.prioritarr.backend.schemas.MappingSnapshot
@@ -64,22 +65,27 @@ fun Route.v2Routes(state: AppState) {
             // (populated by the refreshSeriesCache background job). Pure SQL +
             // in-memory map lookups, no upstream calls in the request path.
             val all = state.db.q.listSeriesCache().executeAsList()
-            val downloadsBySeries: Map<Long, Int> =
-                state.db.listManagedDownloads().groupingBy { it.series_id }.eachCount()
+            val allDownloads = state.db.listManagedDownloads()
+            val downloadsBySeries: Map<Long, List<org.yoshiz.app.prioritarr.backend.database.Managed_downloads>> =
+                allDownloads.groupBy { it.series_id }
             val cacheBySeries = state.db.q.listPriorityCache()
                 .executeAsList()
                 .associateBy { it.series_id }
             val rows = all.map { row ->
                 val cache = cacheBySeries[row.id]
+                val dls = downloadsBySeries[row.id].orEmpty()
                 SeriesSummary(
                     id = row.id,
                     title = row.title,
+                    titleSlug = null,  // filled only by the detail endpoint (cheaper this way)
                     tvdbId = row.tvdb_id,
                     priority = cache?.priority?.toInt(),
                     label = cache?.let { "P${it.priority}" },
                     reason = cache?.reason,
                     computedAt = cache?.computed_at,
-                    managedDownloadCount = downloadsBySeries[row.id] ?: 0,
+                    managedDownloadCount = dls.size,
+                    clients = dls.map { it.client }.distinct().sorted(),
+                    pausedCount = dls.count { it.paused_by_us == 1L },
                 )
             }
 
@@ -106,26 +112,59 @@ fun Route.v2Routes(state: AppState) {
             val returnedId = seriesObj["id"]?.jsonPrimitive?.longOrNull
             if (returnedId != id) throw NotFoundException("series $id not found in Sonarr")
             val title = seriesObj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val titleSlug = seriesObj["titleSlug"]?.jsonPrimitive?.contentOrNull
             val tvdbId = seriesObj["tvdbId"]?.jsonPrimitive?.longOrNull
             val cache = state.db.getPriorityCache(id)
+            val managed = state.db.listManagedDownloads().filter { it.series_id == id }
+
+            val downloadWires = managed.map { row ->
+                ManagedDownloadWire(
+                    client = row.client,
+                    clientId = row.client_id,
+                    seriesId = row.series_id,
+                    seriesTitle = title,
+                    episodeIds = parseEpisodeIds(row.episode_ids),
+                    initialPriority = row.initial_priority.toInt(),
+                    currentPriority = row.current_priority.toInt(),
+                    pausedByUs = row.paused_by_us == 1L,
+                    firstSeenAt = row.first_seen_at,
+                    lastReconciledAt = row.last_reconciled_at,
+                )
+            }
+
             val summary = SeriesSummary(
                 id = id,
                 title = title,
+                titleSlug = titleSlug,
                 tvdbId = tvdbId,
                 priority = cache?.priority?.toInt(),
                 label = cache?.let { "P${it.priority}" },
                 reason = cache?.reason,
                 computedAt = cache?.computed_at,
-                managedDownloadCount = state.db.listManagedDownloads().count { it.series_id == id },
+                managedDownloadCount = managed.size,
+                clients = managed.map { it.client }.distinct().sorted(),
+                pausedCount = managed.count { it.paused_by_us == 1L },
             )
             val priority = cache?.let {
                 PriorityResultWire(it.priority.toInt(), "P${it.priority}", it.reason.orEmpty())
             }
+            val plexKey = state.mappings.plexKeyToSeriesId.entries
+                .firstOrNull { it.value == id }?.key
+            val links = buildExternalLinks(
+                origin = state.settings.uiOrigin,
+                titleSlug = titleSlug,
+                tvdbId = tvdbId,
+                plexKey = plexKey,
+                hasQbit = managed.any { it.client == "qbit" },
+                hasSab = managed.any { it.client == "sab" },
+            )
             call.respond(SeriesDetail(
                 summary = summary,
                 priority = priority,
                 cacheExpiresAt = cache?.expires_at,
                 recentAudit = state.db.listAudit(seriesId = id, limit = 10),
+                downloads = downloadWires,
+                externalLinks = links,
             ))
         }
 
@@ -388,6 +427,45 @@ fun Route.v2Routes(state: AppState) {
         )
         call.respond(ActionResult(ok = true, refreshStats = stats))
     }
+}
+
+/**
+ * Compute deep-link URLs for a series across every third-party tool
+ * we know about. Each field is nullable — if the ingredients for a
+ * particular URL aren't available (no plex_key, no titleSlug, no
+ * origin), that field stays null and the UI just doesn't render a
+ * link for it.
+ *
+ * This is deliberately string-construction, not a full URL-parse
+ * round-trip — the deploy-local Traefik routes (/sonarr, /tautulli,
+ * /qbittorrent, /sabnzbd) are stable across prioritarr's user base,
+ * and Plex/Trakt public URL shapes are documented API patterns.
+ */
+private fun buildExternalLinks(
+    origin: String?,
+    titleSlug: String?,
+    tvdbId: Long?,
+    plexKey: String?,
+    hasQbit: Boolean,
+    hasSab: Boolean,
+): ExternalLinks {
+    val base = origin?.trimEnd('/')
+    return ExternalLinks(
+        sonarr = if (base != null && titleSlug != null) "$base/sonarr/series/$titleSlug" else null,
+        // Trakt's "by TVDB" permalink redirects to the show's canonical page.
+        trakt = tvdbId?.let { "https://trakt.tv/search/tvdb/$it?id_type=show" },
+        // Tautulli doesn't accept a query-string deep link to a specific
+        // media item; users land on the library index and click through.
+        // Surface the rating_key in the URL so a future Tautulli release
+        // that supports it lights up automatically.
+        tautulli = if (base != null && plexKey != null) "$base/tautulli/#?rating_key=$plexKey" else null,
+        // Plex web deep links need the server's machine id which we
+        // don't track; the subdomain form resolves in most deployments.
+        plex = base?.let { it.replace("://", "://plex.").replaceAfter(".", "/") + "web/index.html" }
+            ?.takeIf { false }, // disabled until we expose Plex machine id
+        qbit = if (base != null && hasQbit) "$base/qbittorrent/" else null,
+        sab = if (base != null && hasSab) "$base/sabnzbd/" else null,
+    )
 }
 
 private fun parseEpisodeIds(raw: String?): List<Long> =

@@ -1,18 +1,19 @@
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
-import { ClipboardList, Download, Settings, Star } from 'lucide-react'
+import { ClipboardList, Settings, Star } from 'lucide-react'
 import { SeriesPage } from './pages/SeriesPage'
-import { DownloadsPage } from './pages/DownloadsPage'
 import { AuditPage } from './pages/AuditPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { useEventStream } from './hooks/useEventStream'
 import { useSettings } from './hooks/queries'
 
-type View = 'series' | 'downloads' | 'audit' | 'settings'
+// Downloads was its own tab; as of the unified-series-view change
+// every download surface lives inside the Series drawer alongside the
+// series it belongs to.
+type View = 'series' | 'audit' | 'settings'
 
 const NAV: Array<{ view: View; icon: React.ReactNode; label: string }> = [
-  { view: 'series', icon: <Star size={20} />, label: 'Series' },
-  { view: 'downloads', icon: <Download size={20} />, label: 'Downloads' },
+  { view: 'series', icon: <Star size={20} />, label: 'Series + Downloads' },
   { view: 'audit', icon: <ClipboardList size={20} />, label: 'Audit' },
   { view: 'settings', icon: <Settings size={20} />, label: 'Settings' },
 ]
@@ -74,7 +75,6 @@ function Shell() {
         </nav>
         <main className="flex-1 overflow-auto">
           {view === 'series' && <SeriesPage />}
-          {view === 'downloads' && <DownloadsPage />}
           {view === 'audit' && <AuditPage />}
           {view === 'settings' && <SettingsPage />}
         </main>

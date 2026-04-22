@@ -6,21 +6,28 @@ import org.yoshiz.app.prioritarr.backend.mapping.RefreshStats
 
 /**
  * Summary row for /api/v2/series list. `reason` carries the same
- * string that the priority cache stores for the series — e.g.
- * "watched=0 of aired=100 across 3 monitored season(s)…". UIs can
- * surface it as a tooltip/subtitle without paying a per-row detail
- * fetch.
+ * string that the priority cache stores for the series. UIs surface
+ * it as a tooltip/subtitle without paying a per-row detail fetch.
+ *
+ * `clients` + `pausedCount` come from the series' managed_downloads —
+ * the former lets the UI show a "qbit+sab" chip column, the latter
+ * drives a "1 of 2 paused" indicator without the UI having to hit
+ * /downloads at all. `titleSlug` is Sonarr's own URL slug so the UI
+ * can render the title as a direct link into Sonarr.
  */
 @Serializable
 data class SeriesSummary(
     val id: Long,
     val title: String,
+    val titleSlug: String?,
     val tvdbId: Long?,
     val priority: Int?,
     val label: String?,
     val reason: String?,
     val computedAt: String?,
     val managedDownloadCount: Int,
+    val clients: List<String>,
+    val pausedCount: Int,
 )
 
 @Serializable
@@ -29,6 +36,26 @@ data class SeriesDetail(
     val priority: PriorityResultWire?,
     val cacheExpiresAt: String?,
     val recentAudit: List<AuditEntry>,
+    /** Every managed download for this series, each with its own pause state. */
+    val downloads: List<ManagedDownloadWire>,
+    /** Pre-computed external URLs. Fields that can't be constructed for this deploy are null. */
+    val externalLinks: ExternalLinks,
+)
+
+/**
+ * Deep links to the third-party tools that know about this series.
+ * Keep fields nullable — each link construction depends on config
+ * that may be absent (e.g. `plex` needs a UI origin, `tautulli` needs
+ * the plex_key mapping), and the UI just hides any null entry.
+ */
+@Serializable
+data class ExternalLinks(
+    val sonarr: String? = null,
+    val trakt: String? = null,
+    val tautulli: String? = null,
+    val plex: String? = null,
+    val qbit: String? = null,
+    val sab: String? = null,
 )
 
 @Serializable

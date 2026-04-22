@@ -1,33 +1,42 @@
 /**
- * Series browser — full library at a glance with sort + filter on every
- * column. Row click opens a detail drawer that loads the full series
- * detail (including the priority reason string) via /api/v2/series/{id}.
+ * Unified Series + Downloads browser. One row per series; download
+ * state (client list, paused indicator) collapses in as columns. Row
+ * click opens a drawer with everything: priority detail, external
+ * deep-links (Sonarr / Trakt / Tautulli / qBit / SAB), and the
+ * per-managed-download breakdown with inline pause/resume/boost/
+ * demote/untrack — so the drawer answers "why is Dr Stone paused?"
+ * in one glance.
  */
 
 import { type ColumnDef } from '@tanstack/react-table'
+import { ExternalLink } from 'lucide-react'
 import { useState } from 'react'
 
 import { DataTable } from '../components/DataTable'
 import { KebabMenu } from '../components/KebabMenu'
 import { RowDrawer } from '../components/RowDrawer'
 import { TableSkeleton } from '../components/Skeleton'
-import { useRecomputeSeries, useSeries, useSeriesList } from '../hooks/queries'
+import {
+  useDownloadAction,
+  useRecomputeSeries,
+  useSeries,
+  useSeriesList,
+  useUntrackDownload,
+} from '../hooks/queries'
 import { PRIORITY_CLASS, PRIORITY_LABELS } from '../lib/priority'
 
 interface SeriesRow {
   id: number
   title: string
+  titleSlug?: string | null
   tvdbId?: number | null
   priority?: number | null
   label?: string | null
-  /**
-   * Priority reason string ("watched=0 of aired=100 across 3 monitored
-   * season(s)…"). Added to v2 SeriesSummary in the backend-polish PR
-   * (cquemin/prioritarr#21). Optional on older backends.
-   */
   reason?: string | null
   computedAt?: string | null
   managedDownloadCount: number
+  clients: string[]
+  pausedCount: number
 }
 
 export function SeriesPage() {
@@ -39,7 +48,7 @@ export function SeriesPage() {
     return (
       <div className="p-6">
         <h1 className="text-2xl font-semibold mb-4">Series</h1>
-        <TableSkeleton rows={12} cols={6} />
+        <TableSkeleton rows={12} cols={7} />
       </div>
     )
   }
@@ -64,16 +73,11 @@ export function SeriesPage() {
       cell: ({ row }) => {
         const p = row.original.priority
         if (!p) return <span className="opacity-40">—</span>
-        // Tooltip shows the bucket name + the reason in one line, so
-        // power users don't need to open the drawer to learn why.
         const tip = row.original.reason
           ? `${PRIORITY_LABELS[p]} — ${row.original.reason}`
           : PRIORITY_LABELS[p]
         return (
-          <span
-            className={`px-2 py-0.5 rounded text-xs border ${PRIORITY_CLASS[p]}`}
-            title={tip}
-          >
+          <span className={`px-2 py-0.5 rounded text-xs border ${PRIORITY_CLASS[p]}`} title={tip}>
             P{p}
           </span>
         )
@@ -87,11 +91,33 @@ export function SeriesPage() {
       filterFn: 'includesString',
     },
     {
-      accessorKey: 'tvdbId',
-      header: 'TVDB',
-      cell: ({ row }) => (
-        <span className="opacity-70 font-mono">{row.original.tvdbId ?? '—'}</span>
-      ),
+      id: 'clients',
+      accessorFn: (r) => r.clients.join(','),
+      header: 'Client',
+      cell: ({ row }) => {
+        const cs = row.original.clients
+        if (cs.length === 0) return <span className="opacity-40">—</span>
+        return (
+          <div className="flex gap-1">
+            {cs.map((c) => (
+              <span key={c} className="px-1.5 py-0.5 text-xs bg-surface-3 rounded font-mono">{c}</span>
+            ))}
+          </div>
+        )
+      },
+      filterFn: 'includesString',
+    },
+    {
+      id: 'paused',
+      header: 'Paused',
+      cell: ({ row }) => {
+        const { managedDownloadCount: n, pausedCount: p } = row.original
+        if (n === 0) return <span className="opacity-40">—</span>
+        if (p === 0) return <span className="opacity-60">no</span>
+        if (p === n) return <span className="text-amber-400">all ({p})</span>
+        return <span className="text-amber-400">{p} of {n}</span>
+      },
+      sortingFn: (a, b) => a.original.pausedCount - b.original.pausedCount,
     },
     {
       accessorKey: 'computedAt',
@@ -120,10 +146,7 @@ export function SeriesPage() {
               onSelect: () => recompute.mutate(row.original.id),
               disabled: recompute.isPending,
             },
-            {
-              label: 'View detail',
-              onSelect: () => setOpenRow(row.original),
-            },
+            { label: 'View detail', onSelect: () => setOpenRow(row.original) },
           ]}
         />
       ),
@@ -135,7 +158,7 @@ export function SeriesPage() {
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-2xl font-semibold">Series ({data?.totalRecords ?? 0})</h1>
         <p className="text-xs text-text-muted">
-          Click a column header to sort · type in a header field to filter · click a row for details
+          Click a column header to sort · type in a header field to filter · click a row for details + external links
         </p>
       </div>
 
@@ -159,6 +182,28 @@ export function SeriesPage() {
   )
 }
 
+interface ExternalLinksDto {
+  sonarr?: string | null
+  trakt?: string | null
+  tautulli?: string | null
+  plex?: string | null
+  qbit?: string | null
+  sab?: string | null
+}
+
+interface DownloadDto {
+  client: 'qbit' | 'sab'
+  clientId: string
+  seriesId: number
+  seriesTitle?: string | null
+  episodeIds: number[]
+  initialPriority: number
+  currentPriority: number
+  pausedByUs: boolean
+  firstSeenAt: string
+  lastReconciledAt: string
+}
+
 function SeriesDetailDrawer({
   row, onClose, onRecompute, isRecomputing,
 }: {
@@ -168,7 +213,28 @@ function SeriesDetailDrawer({
   isRecomputing: boolean
 }) {
   const detail = useSeries(row.id)
-  const d = detail.data as any // schema regen will tighten this
+  const d = detail.data as any
+  const links: ExternalLinksDto | undefined = d?.externalLinks
+  const downloads: DownloadDto[] = (d?.downloads as DownloadDto[]) ?? []
+  const summary = d?.summary as (SeriesRow | undefined)
+  const sonarrUrl = links?.sonarr ?? undefined
+
+  const action = useDownloadAction()
+  const untrack = useUntrackDownload()
+
+  const titleNode = sonarrUrl ? (
+    <a
+      href={sonarrUrl}
+      target="_blank"
+      rel="noreferrer"
+      className="hover:text-accent inline-flex items-center gap-1"
+    >
+      {row.title}
+      <ExternalLink size={14} className="opacity-60" />
+    </a>
+  ) : (
+    <>{row.title}</>
+  )
 
   return (
     <RowDrawer
@@ -196,6 +262,10 @@ function SeriesDetailDrawer({
         </>
       }
     >
+      <DetailField label="Title">
+        <span className="text-base">{titleNode}</span>
+      </DetailField>
+
       <DetailField label="Priority">
         {row.priority ? (
           <span className={`px-2 py-0.5 rounded text-xs border ${PRIORITY_CLASS[row.priority]}`}>
@@ -207,15 +277,9 @@ function SeriesDetailDrawer({
       </DetailField>
 
       <DetailField label="Why this priority">
-        {row.reason ? (
+        {row.reason ?? d?.priority?.reason ? (
           <span className="font-mono text-xs leading-relaxed whitespace-pre-wrap">
-            {row.reason}
-          </span>
-        ) : d?.priority?.reason ? (
-          // Fallback for backends that haven't exposed reason on the
-          // list response yet (pre cquemin/prioritarr#21).
-          <span className="font-mono text-xs leading-relaxed whitespace-pre-wrap">
-            {d.priority.reason}
+            {row.reason ?? d?.priority?.reason}
           </span>
         ) : detail.isLoading ? (
           <span className="opacity-60">Loading…</span>
@@ -225,27 +289,131 @@ function SeriesDetailDrawer({
       </DetailField>
 
       <DetailField label="Cache expires">
-        <span className="opacity-80 text-xs">
-          {d?.cacheExpiresAt?.slice(0, 19) ?? '—'}
-        </span>
+        <span className="opacity-80 text-xs">{d?.cacheExpiresAt?.slice(0, 19) ?? '—'}</span>
       </DetailField>
 
-      <DetailField label="Active downloads">
-        <span>{row.managedDownloadCount}</span>
-      </DetailField>
+      {downloads.length > 0 && (
+        <DetailField label={`Downloads (${downloads.length})`}>
+          <div className="space-y-2">
+            {downloads.map((dl) => (
+              <DownloadCard
+                key={`${dl.client}-${dl.clientId}`}
+                dl={dl}
+                isPending={action.isPending || untrack.isPending}
+                onAction={(a) => action.mutate({ client: dl.client, clientId: dl.clientId, action: a })}
+                onUntrack={() => {
+                  if (!confirm('Untrack this download? It will be left alone in the client.')) return
+                  untrack.mutate({ client: dl.client, clientId: dl.clientId })
+                }}
+              />
+            ))}
+          </div>
+        </DetailField>
+      )}
+
+      {links && (links.sonarr || links.trakt || links.tautulli || links.plex || links.qbit || links.sab) && (
+        <DetailField label="Open in">
+          <div className="flex flex-wrap gap-2">
+            <LinkBadge href={links.sonarr} label="Sonarr" />
+            <LinkBadge href={links.trakt} label="Trakt" />
+            <LinkBadge href={links.tautulli} label="Tautulli" />
+            <LinkBadge href={links.plex} label="Plex" />
+            <LinkBadge href={links.qbit} label="qBittorrent" />
+            <LinkBadge href={links.sab} label="SABnzbd" />
+          </div>
+        </DetailField>
+      )}
 
       {d?.recentAudit?.length > 0 && (
         <DetailField label="Recent activity">
           <ul className="text-xs space-y-1 opacity-80">
-            {d.recentAudit.slice(0, 5).map((a: any) => (
+            {d.recentAudit.slice(0, 10).map((a: any) => (
               <li key={a.id} className="font-mono">
                 {a.ts.slice(0, 19)} · {a.action}
+                {a.client && <span className="opacity-60"> · {a.client}/{a.clientId?.slice(0, 10)}</span>}
               </li>
             ))}
           </ul>
         </DetailField>
       )}
+
+      {summary && (
+        <DetailField label="Identifiers">
+          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs font-mono opacity-80">
+            <span>series_id</span><span>{row.id}</span>
+            <span>tvdb_id</span><span>{row.tvdbId ?? '—'}</span>
+            <span>title_slug</span><span>{summary.titleSlug ?? '—'}</span>
+          </div>
+        </DetailField>
+      )}
     </RowDrawer>
+  )
+}
+
+function DownloadCard({
+  dl, isPending, onAction, onUntrack,
+}: {
+  dl: DownloadDto
+  isPending: boolean
+  onAction: (a: 'pause' | 'resume' | 'boost' | 'demote') => void
+  onUntrack: () => void
+}) {
+  return (
+    <div className="bg-surface-2 border border-surface-3 rounded-md p-3 space-y-2">
+      <div className="flex items-center gap-2">
+        <span className="px-1.5 py-0.5 text-xs bg-surface-3 rounded font-mono">{dl.client}</span>
+        <span className="font-mono text-xs opacity-70 truncate">{dl.clientId}</span>
+        <span className="ml-auto px-1.5 py-0.5 text-xs rounded bg-surface-3">P{dl.currentPriority}</span>
+      </div>
+      <div className="text-xs grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 opacity-90">
+        <span className="text-text-muted">Paused by us</span>
+        <span className={dl.pausedByUs ? 'text-amber-400' : 'opacity-60'}>
+          {dl.pausedByUs
+            ? 'yes — prioritarr paused it (low priority enforcement)'
+            : 'no — not paused by prioritarr'}
+        </span>
+        <span className="text-text-muted">Episodes</span>
+        <span className="font-mono">{dl.episodeIds.join(', ') || '—'}</span>
+        <span className="text-text-muted">First seen</span>
+        <span className="font-mono">{dl.firstSeenAt.slice(0, 19)}</span>
+        <span className="text-text-muted">Last reconciled</span>
+        <span className="font-mono">{dl.lastReconciledAt.slice(0, 19)}</span>
+      </div>
+      <div className="flex flex-wrap gap-1 text-xs">
+        {(['pause', 'resume', 'boost', 'demote'] as const).map((a) => (
+          <button
+            key={a}
+            onClick={() => onAction(a)}
+            disabled={isPending}
+            className="px-2 py-1 rounded bg-surface-3 hover:bg-accent capitalize disabled:opacity-50"
+          >
+            {a}
+          </button>
+        ))}
+        <button
+          onClick={onUntrack}
+          disabled={isPending}
+          className="px-2 py-1 rounded bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
+        >
+          Untrack
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function LinkBadge({ href, label }: { href?: string | null; label: string }) {
+  if (!href) return null
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="px-2 py-1 text-xs rounded bg-surface-3 hover:bg-accent inline-flex items-center gap-1"
+    >
+      {label}
+      <ExternalLink size={12} className="opacity-70" />
+    </a>
   )
 }
 
