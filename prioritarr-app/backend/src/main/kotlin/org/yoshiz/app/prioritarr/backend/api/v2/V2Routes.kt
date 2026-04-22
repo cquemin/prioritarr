@@ -181,10 +181,16 @@ fun Route.v2Routes(state: AppState) {
         // Plex has watched but Trakt doesn't (and vice versa) so both
         // sides agree on the watch set. Idempotent — re-running is a
         // no-op once both sides converge.
+        //
+        // ?dryRun=true forces a non-destructive run regardless of the
+        // global setting — the report still enumerates everything that
+        // would be pushed, but no scrobble / sync/history call fires.
         post("/{id}/sync") {
             val id = call.parameters["id"]?.toLongOrNull()
                 ?: throw ValidationException("id", "must be a number")
-            val report = state.crossSourceSync.syncSeries(id, dryRun = state.settings.dryRun)
+            val dryRun = call.request.queryParameters["dryRun"]?.equals("true", ignoreCase = true)
+                ?: state.settings.dryRun
+            val report = state.crossSourceSync.syncSeries(id, dryRun = dryRun)
             state.eventBus.publish(
                 "series-synced",
                 Json.encodeToJsonElement(SeriesSyncReport.serializer(), report),
@@ -446,19 +452,21 @@ fun Route.v2Routes(state: AppState) {
     // and the inner sync is ~3 HTTP calls each, so ~10 minutes worst
     // case. Returns one aggregate report with per-series breakdown.
     post("/sync") {
+        val dryRun = call.request.queryParameters["dryRun"]?.equals("true", ignoreCase = true)
+            ?: state.settings.dryRun
         val all = state.db.q.listSeriesCache().executeAsList()
         val perSeries = mutableListOf<SeriesSyncReport>()
         var plexTotal = 0
         var traktTotal = 0
         for (row in all) {
-            val r = state.crossSourceSync.syncSeries(row.id, dryRun = state.settings.dryRun)
+            val r = state.crossSourceSync.syncSeries(row.id, dryRun = dryRun)
             perSeries += r
             plexTotal += r.plexAdded
             traktTotal += r.traktAdded
         }
         val agg = LibrarySyncReport(
             ok = perSeries.all { it.errors.isEmpty() && it.skippedReason == null },
-            dryRun = state.settings.dryRun,
+            dryRun = dryRun,
             totalSeries = perSeries.size,
             plexAddedTotal = plexTotal,
             traktAddedTotal = traktTotal,

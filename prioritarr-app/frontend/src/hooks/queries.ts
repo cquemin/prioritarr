@@ -165,11 +165,14 @@ export function useMappings() {
 
 // Cross-source watch sync (Plex ⇆ Trakt). Posted via raw fetch — same
 // reason as bulk above (openapi.json regen is its own PR).
+export interface EpisodeRef { season: number; number: number }
 export interface SeriesSyncReport {
   seriesId: number
   title: string
   plexAdded: number
   traktAdded: number
+  pushedToPlex: EpisodeRef[]
+  pushedToTrakt: EpisodeRef[]
   errors: string[]
   skippedReason: string | null
 }
@@ -195,9 +198,12 @@ async function postJson<T>(path: string): Promise<T> {
 export function useSeriesSync() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (id: number) => postJson<SeriesSyncReport>(`/api/v2/series/${id}/sync`),
-    onSuccess: (_d, id) => {
-      qc.invalidateQueries({ queryKey: ['series', id] })
+    mutationFn: (v: { id: number; dryRun?: boolean }) =>
+      postJson<SeriesSyncReport>(`/api/v2/series/${v.id}/sync${v.dryRun ? '?dryRun=true' : ''}`),
+    onSuccess: (_d, v) => {
+      // Skip cache invalidation on dry-run — nothing actually changed.
+      if (v.dryRun) return
+      qc.invalidateQueries({ queryKey: ['series', v.id] })
       qc.invalidateQueries({ queryKey: ['series'] })
     },
   })
@@ -206,8 +212,12 @@ export function useSeriesSync() {
 export function useLibrarySync() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: () => postJson<LibrarySyncReport>('/api/v2/sync'),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['series'] }),
+    mutationFn: (opts: { dryRun?: boolean } = {}) =>
+      postJson<LibrarySyncReport>(`/api/v2/sync${opts.dryRun ? '?dryRun=true' : ''}`),
+    onSuccess: (_d, opts) => {
+      if (opts.dryRun) return
+      qc.invalidateQueries({ queryKey: ['series'] })
+    },
   })
 }
 

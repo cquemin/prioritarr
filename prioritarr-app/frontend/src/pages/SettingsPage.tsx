@@ -44,7 +44,6 @@ export function SettingsPage() {
   const settings = useSettings()
   const mappings = useMappings()
   const refresh = useRefreshMappings()
-  const librarySync = useLibrarySync()
 
   if (settings.isLoading) return <p className="p-6 opacity-70">Loading…</p>
   const s = settings.data as any
@@ -86,51 +85,7 @@ export function SettingsPage() {
         )}
       </div>
 
-      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-2">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-semibold">Cross-source watch sync (Plex ⇆ Trakt)</h2>
-            <p className="text-xs opacity-70 mt-0.5">
-              Mirrors watch state both ways for every series in the library —
-              episodes Plex knows about get scrobbled to Trakt, and vice versa.
-              Sequential, ~one HTTP call per series. Safe to re-run.
-            </p>
-          </div>
-          <button
-            onClick={() => {
-              if (!confirm('Sync watch state for ALL series? This may take several minutes.')) return
-              librarySync.mutate()
-            }}
-            disabled={librarySync.isPending}
-            className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
-          >
-            {librarySync.isPending ? 'Syncing library…' : 'Sync entire library'}
-          </button>
-        </div>
-        {librarySync.error && (
-          <div className="text-xs text-red-400 font-mono">
-            {String((librarySync.error as Error).message ?? librarySync.error)}
-          </div>
-        )}
-        {librarySync.data && (
-          <div className="text-xs opacity-80">
-            Done · {librarySync.data.totalSeries} series ·
-            <span className="text-green-400"> Plex+{librarySync.data.plexAddedTotal}</span>,
-            <span className="text-green-400"> Trakt+{librarySync.data.traktAddedTotal}</span>
-            {librarySync.data.dryRun && <span className="ml-2 text-amber-400">(dry-run)</span>}
-            {(() => {
-              const skipped = librarySync.data.perSeries.filter((p) => p.skippedReason).length
-              const errored = librarySync.data.perSeries.filter((p) => p.errors.length > 0).length
-              if (skipped === 0 && errored === 0) return null
-              return (
-                <span className="ml-2 text-amber-400">
-                  · {skipped} skipped, {errored} with errors
-                </span>
-              )
-            })()}
-          </div>
-        )}
-      </div>
+      <LibrarySyncPanel />
 
       <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 flex justify-between items-center">
         <div className="text-sm opacity-70">API key stored in localStorage.</div>
@@ -208,7 +163,14 @@ function ThresholdsPanel() {
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={() => reset.mutate()}
+            onClick={async () => {
+              // Force draft to whatever Reset returns — the useQuery
+              // refetch alone doesn't always re-fire the seeding effect
+              // (structural-sharing keeps the reference equal when the
+              // user hadn't saved anything custom).
+              const next = await reset.mutateAsync()
+              setDraft(next)
+            }}
             disabled={reset.isPending}
             className="px-3 py-1 rounded text-sm bg-surface-3 disabled:opacity-50"
             title="Drop the DB override and restore values from config.yaml + env"
@@ -259,8 +221,11 @@ function ThresholdsPanel() {
             Preview under draft thresholds
             {preview.isPending && <span className="ml-2 opacity-60">recomputing…</span>}
           </div>
+          {/* Render the most recent entries even while a new mutation is
+              in flight — the cards stay visible (greyed) instead of
+              disappearing during the 300ms+API roundtrip. */}
           {preview.data?.entries.map((entry) => (
-            <SandboxCard key={entry.seriesId} entry={entry} />
+            <SandboxCard key={entry.seriesId} entry={entry} loading={preview.isPending} />
           ))}
           {preview.error && (
             <div className="text-xs text-red-400 font-mono">
@@ -344,12 +309,18 @@ function SandboxPicker({
   )
 }
 
-function SandboxCard({ entry }: { entry: PriorityPreviewEntry }) {
+function SandboxCard({ entry, loading = false }: { entry: PriorityPreviewEntry; loading?: boolean }) {
   const prev = entry.previous
   const next = entry.preview
   const changed = !prev || prev.priority !== next.priority
   return (
-    <div className="bg-surface-0 border border-surface-3 rounded-md p-3 space-y-2">
+    <div className={`bg-surface-0 border border-surface-3 rounded-md p-3 space-y-2 relative transition-opacity ${loading ? 'opacity-60' : ''}`}>
+      {loading && (
+        <div className="absolute top-2 right-2 text-xs opacity-70 flex items-center gap-1">
+          <span className="inline-block w-3 h-3 border-2 border-text-muted border-t-accent rounded-full animate-spin" />
+          recomputing
+        </div>
+      )}
       <div className="flex items-center gap-2">
         <span className="font-medium text-sm">{entry.title}</span>
         <span className="opacity-40 text-xs">#{entry.seriesId}</span>
@@ -395,6 +366,159 @@ function SandboxCard({ entry }: { entry: PriorityPreviewEntry }) {
                 → {d.wouldBePaused ? 'paused' : 'running'}
               </span>
             </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Library-wide Plex ⇆ Trakt sync. Two buttons: Preview (dry-run, never
+ * commits) and Sync (real). Both yield the same shape of report; the
+ * "show details" toggle expands a per-series breakdown listing the
+ * actual episodes that were (or would be) pushed in each direction.
+ */
+function LibrarySyncPanel() {
+  const sync = useLibrarySync()
+  const [showDetails, setShowDetails] = useState(false)
+
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold">Cross-source watch sync (Plex ⇆ Trakt)</h2>
+          <p className="text-xs opacity-70 mt-0.5">
+            Mirrors watch state both ways for every series — episodes
+            Plex knows about get scrobbled to Trakt and vice versa.
+            Sequential (one HTTP call per series). Safe to re-run.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => sync.mutate({ dryRun: true })}
+            disabled={sync.isPending}
+            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50 whitespace-nowrap"
+            title="Run the sync without writing — shows what would be pushed"
+          >
+            {sync.isPending && sync.variables?.dryRun ? 'Previewing…' : 'Preview (dry-run)'}
+          </button>
+          <button
+            onClick={() => {
+              if (!confirm('Sync watch state for ALL series? This may take several minutes.')) return
+              sync.mutate({})
+            }}
+            disabled={sync.isPending}
+            className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
+          >
+            {sync.isPending && !sync.variables?.dryRun ? 'Syncing library…' : 'Sync entire library'}
+          </button>
+        </div>
+      </div>
+      {sync.error && (
+        <div className="text-xs text-red-400 font-mono">
+          {String((sync.error as Error).message ?? sync.error)}
+        </div>
+      )}
+      {sync.data && (
+        <LibrarySyncReport report={sync.data} showDetails={showDetails} setShowDetails={setShowDetails} />
+      )}
+    </div>
+  )
+}
+
+function LibrarySyncReport({
+  report, showDetails, setShowDetails,
+}: {
+  report: import('../hooks/queries').LibrarySyncReport
+  showDetails: boolean
+  setShowDetails: (v: boolean) => void
+}) {
+  const skipped = report.perSeries.filter((p) => p.skippedReason).length
+  const errored = report.perSeries.filter((p) => p.errors.length > 0).length
+  const verb = report.dryRun ? 'would push' : 'pushed'
+  // Only series that contributed something to the totals — the
+  // detail view doesn't need 400+ "0/0" rows for shows where nothing
+  // changed.
+  const interesting = report.perSeries.filter(
+    (p) => p.plexAdded > 0 || p.traktAdded > 0 || p.errors.length > 0 || p.skippedReason,
+  )
+
+  return (
+    <div className="space-y-2">
+      <div className="text-sm">
+        {report.dryRun && <span className="text-amber-400 mr-2">(dry-run)</span>}
+        {report.totalSeries} series checked ·
+        <span className="text-green-400"> {verb} {report.plexAddedTotal}</span> to Plex,
+        <span className="text-green-400"> {report.traktAddedTotal}</span> to Trakt
+        {(skipped > 0 || errored > 0) && (
+          <span className="text-amber-400 ml-2">
+            · {skipped} skipped, {errored} with errors
+          </span>
+        )}
+      </div>
+      {interesting.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowDetails(!showDetails)}
+          className="text-xs underline opacity-70 hover:opacity-100"
+        >
+          {showDetails ? 'Hide' : 'Show'} per-series detail ({interesting.length})
+        </button>
+      )}
+      {showDetails && (
+        <div className="space-y-1 pt-2 border-t border-surface-3 max-h-96 overflow-auto">
+          {interesting.map((p) => (
+            <SeriesSyncRow key={p.seriesId} entry={p} verb={verb} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SeriesSyncRow({ entry, verb }: {
+  entry: import('../hooks/queries').SeriesSyncReport
+  verb: string
+}) {
+  const [open, setOpen] = useState(false)
+  const hasDetail = entry.pushedToPlex.length > 0 || entry.pushedToTrakt.length > 0 || entry.errors.length > 0
+  return (
+    <div className="text-xs">
+      <button
+        type="button"
+        onClick={() => hasDetail && setOpen(!open)}
+        disabled={!hasDetail}
+        className="w-full flex items-center gap-2 py-1 px-2 hover:bg-surface-2 rounded disabled:cursor-default text-left"
+      >
+        <span className="font-medium flex-1 truncate">{entry.title}</span>
+        {entry.skippedReason && <span className="text-amber-400">skipped</span>}
+        {entry.plexAdded > 0 && <span className="text-green-400">→Plex {entry.plexAdded}</span>}
+        {entry.traktAdded > 0 && <span className="text-green-400">→Trakt {entry.traktAdded}</span>}
+        {entry.errors.length > 0 && <span className="text-red-400">{entry.errors.length} errs</span>}
+        {hasDetail && (
+          <span className="opacity-50 font-mono">{open ? '▾' : '▸'}</span>
+        )}
+      </button>
+      {open && hasDetail && (
+        <div className="ml-4 my-1 space-y-1 font-mono opacity-90 text-[11px]">
+          {entry.skippedReason && (
+            <div className="text-amber-400">{entry.skippedReason}</div>
+          )}
+          {entry.pushedToPlex.length > 0 && (
+            <div>
+              <span className="text-text-muted">Plex {verb}: </span>
+              {entry.pushedToPlex.map((e) => `S${String(e.season).padStart(2,'0')}E${String(e.number).padStart(2,'0')}`).join(', ')}
+            </div>
+          )}
+          {entry.pushedToTrakt.length > 0 && (
+            <div>
+              <span className="text-text-muted">Trakt {verb}: </span>
+              {entry.pushedToTrakt.map((e) => `S${String(e.season).padStart(2,'0')}E${String(e.number).padStart(2,'0')}`).join(', ')}
+            </div>
+          )}
+          {entry.errors.map((e, i) => (
+            <div key={i} className="text-red-400">• {e}</div>
           ))}
         </div>
       )}

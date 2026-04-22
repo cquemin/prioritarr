@@ -320,7 +320,7 @@ function SeriesDetailDrawer({
           </button>
           <button
             type="button"
-            onClick={() => sync.mutate(row.id)}
+            onClick={() => sync.mutate({ id: row.id })}
             disabled={sync.isPending}
             className="px-3 py-1.5 rounded bg-surface-3 text-sm disabled:opacity-50"
             title="Sync watch state between Plex and Trakt (mirror missing episodes)"

@@ -164,12 +164,21 @@ data class BulkActionResult(
     val results: List<BulkItemResult>,
 )
 
+/** Single (season, episode) reference. Used by the sync detail report. */
+@Serializable
+data class EpisodeRef(val season: Int, val number: Int)
+
 /**
  * Per-series cross-source watch sync result. The numbers describe what
  * was *added* on each side after the diff (e.g. plexAdded=3 means three
  * episodes Trakt knew about but Plex didn't, now scrobbled to Plex).
  *
- * `skipped` is non-zero when one side couldn't be resolved at all
+ * [pushedToPlex] / [pushedToTrakt] enumerate the actual episodes — only
+ * those that were *attempted* (non-empty even on dry-run). Failed
+ * pushes still appear here so the breakdown matches the count; lookup
+ * the [errors] list for per-attempt failure detail.
+ *
+ * [skippedReason] is non-null when one side couldn't be resolved at all
  * (e.g. no plex_key mapping → can't push anywhere on Plex). The series
  * still appears in the report so the UI can show "couldn't sync".
  */
@@ -179,6 +188,8 @@ data class SeriesSyncReport(
     val title: String,
     val plexAdded: Int = 0,
     val traktAdded: Int = 0,
+    val pushedToPlex: List<EpisodeRef> = emptyList(),
+    val pushedToTrakt: List<EpisodeRef> = emptyList(),
     val errors: List<String> = emptyList(),
     val skippedReason: String? = null,
 )

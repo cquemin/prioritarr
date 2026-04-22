@@ -5,6 +5,7 @@ import org.yoshiz.app.prioritarr.backend.clients.PlexClient
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
 import org.yoshiz.app.prioritarr.backend.clients.TraktClient
 import org.yoshiz.app.prioritarr.backend.mapping.MappingState
+import org.yoshiz.app.prioritarr.backend.schemas.EpisodeRef
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesSyncReport
 import java.time.Instant
 
@@ -123,6 +124,10 @@ class CrossSourceSync(
 
         var plexAdded = 0
         var traktAdded = 0
+        // Track episodes we *attempted* to push, regardless of outcome.
+        // The frontend uses these for the per-series detail breakdown.
+        val pushedToPlex = mutableListOf<EpisodeRef>()
+        val pushedToTrakt = mutableListOf<EpisodeRef>()
 
         // ---- write to Plex ----
         if (plex != null && plexKey != null && toPushToPlex.isNotEmpty()) {
@@ -132,6 +137,7 @@ class CrossSourceSync(
                     errors += "plex: no rating_key for s${s}e${e}"
                     continue
                 }
+                pushedToPlex += EpisodeRef(season = s, number = e)
                 if (!dryRun) {
                     try {
                         plex.markEpisodeWatched(rk)
@@ -147,6 +153,7 @@ class CrossSourceSync(
 
         // ---- write to Trakt ----
         if (trakt != null && traktShowId != null && toPushToTrakt.isNotEmpty()) {
+            for ((s, e) in toPushToTrakt) pushedToTrakt += EpisodeRef(season = s, number = e)
             if (!dryRun) {
                 try {
                     val resp = trakt.addEpisodesToHistory(traktShowId, toPushToTrakt, Instant.now())
@@ -171,6 +178,8 @@ class CrossSourceSync(
             title = title,
             plexAdded = plexAdded,
             traktAdded = traktAdded,
+            pushedToPlex = pushedToPlex,
+            pushedToTrakt = pushedToTrakt,
             errors = errors,
             skippedReason = null,
         )
