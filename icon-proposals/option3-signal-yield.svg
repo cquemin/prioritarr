@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Option 3: "Signal Yield" — single bold inverted triangle filled with three
+       horizontal scan lines that taper with the triangle's slope. Reads as a
+       priority hierarchy (P1/P3/P5) constrained to the yield silhouette.
+       Cyberpunk/scanner vibe via the contrast between the bright outline and
+       the inset bars. -->
+  <rect width="64" height="64" rx="12" fill="#0f172a"/>
+  <!-- Triangle outline -->
+  <polygon points="6,12 58,12 32,58"
+           fill="none" stroke="#fbbf24" stroke-width="2.6" stroke-linejoin="round"/>
+  <!-- Inner stripes — taper to match the triangle. y values pre-computed so each
+       bar inset matches (slope = (32-x)/(58-y) on each edge). -->
+  <line x1="13" y1="22" x2="51" y2="22" stroke="#fbbf24" stroke-width="3" opacity="0.85"/>
+  <line x1="20" y1="34" x2="44" y2="34" stroke="#34d399" stroke-width="3" opacity="0.85"/>
+  <line x1="27" y1="46" x2="37" y2="46" stroke="#60a5fa" stroke-width="3" opacity="0.85"/>
+</svg>

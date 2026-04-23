@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Option 1: "Layered Yield" — three nested inverted triangles in graduated
+       colors (P1 amber outer → P3 teal mid → P5 blue inner). Each triangle is a
+       stroked outline, no fill, so the layering reads at small sizes. -->
+  <rect width="64" height="64" rx="12" fill="#0f172a"/>
+  <polygon points="6,12 58,12 32,58"
+           fill="none" stroke="#fbbf24" stroke-width="2.4" stroke-linejoin="round"/>
+  <polygon points="14.5,18 49.5,18 32,49"
+           fill="none" stroke="#34d399" stroke-width="2.2" stroke-linejoin="round"/>
+  <polygon points="22,24 42,24 32,40"
+           fill="#60a5fa" opacity="0.9"/>
+</svg>

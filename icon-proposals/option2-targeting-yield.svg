@@ -1,15 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- "Targeting Yield" — inverted yield triangle inside a HUD-style ring with
-       crosshair tick marks at 12/3/6/9. The amber glow dot at the triangle's
-       apex reads as a "lock-on" point — radar reticle meets yield sign. -->
+  <!-- Option 2: "Targeting Yield" — inverted triangle inside a HUD-style ring
+       with crosshair tick marks. A glowing dot sits at the apex (the "lock-on"
+       point). Reads as both a yield sign and a radar reticle. -->
   <rect width="64" height="64" rx="12" fill="#0f172a"/>
+  <!-- Outer ring -->
   <circle cx="32" cy="32" r="26" fill="none" stroke="#475569" stroke-width="1.5"/>
+  <!-- Tick marks at 12/3/6/9 o'clock -->
   <line x1="32" y1="4" x2="32" y2="9" stroke="#94a3b8" stroke-width="1.5"/>
   <line x1="60" y1="32" x2="55" y2="32" stroke="#94a3b8" stroke-width="1.5"/>
   <line x1="32" y1="60" x2="32" y2="55" stroke="#94a3b8" stroke-width="1.5"/>
   <line x1="4" y1="32" x2="9" y2="32" stroke="#94a3b8" stroke-width="1.5"/>
+  <!-- Inverted triangle, bold stroke -->
   <polygon points="14,18 50,18 32,52"
            fill="none" stroke="#34d399" stroke-width="2.6" stroke-linejoin="round"/>
+  <!-- Apex glow dot -->
   <circle cx="32" cy="52" r="3" fill="#fbbf24"/>
   <circle cx="32" cy="52" r="5.5" fill="#fbbf24" opacity="0.25"/>
 </svg>
