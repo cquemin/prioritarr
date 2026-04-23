@@ -127,6 +127,12 @@ fun main() {
         cacheTtlMinutes = settings.cache.priorityTtlMinutes.toLong(),
     )
 
+    val orphanReaper = org.yoshiz.app.prioritarr.backend.reconcile.OrphanReaper(
+        qbit = qbit, sab = sab, sonarr = sonarr, db = db,
+        cleanupPaths = settings.orphanReaperPaths,
+        autoImport = true,
+    )
+
     val state = AppState(
         settings = settings,
         db = db,
@@ -138,6 +144,7 @@ fun main() {
         priorityService = priorityService,
         thresholdsSource = thresholdsSource,
         crossSourceSync = crossSourceSync,
+        orphanReaper = orphanReaper,
         eventBus = EventBus(),
         httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp),
     )
@@ -231,6 +238,21 @@ fun main() {
                 queueJanitor.sweep(dryRun = settings.dryRun)
             } catch (e: Exception) { logger.warn("queue_janitor: {}", e.message) }
             delay(30L * 60L * 1000L)
+        }
+    }
+    // Orphan reaper — sweeps download folders for files Sonarr/SAB
+    // no longer track. Auto-imports the importable, deletes the
+    // hardlink-twins + "not an upgrade" cases, keeps anything else
+    // for the operator to action via the Settings page.
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("orphan_reaper crashed", e) }) {
+        // Stagger 5min after boot so the initial Sonarr ManualImport
+        // calls don't dogpile on top of priority refresh.
+        delay(5L * 60L * 1000L)
+        while (isActive) {
+            try {
+                orphanReaper.sweep(dryRun = settings.dryRun)
+            } catch (e: Exception) { logger.warn("orphan_reaper: {}", e.message) }
+            delay(settings.orphanReaperIntervalMinutes.toLong() * 60L * 1000L)
         }
     }
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("backfill_sweep crashed", e) }) {

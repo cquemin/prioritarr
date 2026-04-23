@@ -11,6 +11,8 @@ import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -105,6 +107,52 @@ class SonarrClient(
             "skipRedownload" to "true",
         ))
 
+    /**
+     * Probe a single file/folder for import. Sonarr returns a list of
+     * candidate matches with `rejections` populated when something
+     * blocks import (sample, not-an-upgrade, unknown series, etc.).
+     * Empty list = Sonarr can't parse the file at all.
+     *
+     * Per-file probe avoids the whole-folder mediainfo scan which
+     * hangs on directories with hundreds of files.
+     */
+    suspend fun manualImportProbe(folderOrFile: String): JsonArray =
+        get("/api/v3/manualimport", mapOf(
+            "folder" to folderOrFile,
+            "filterExistingFiles" to "false",
+        )).jsonArray
+
+    /**
+     * Trigger a ManualImport command for one orphan that
+     * [manualImportProbe] returned with no rejections. Sonarr handles
+     * the move/hardlink + library scan itself; we only need to forward
+     * the candidate match payload.
+     */
+    suspend fun triggerManualImport(probedItem: JsonObject): JsonObject =
+        post("/api/v3/command", buildJsonObject {
+            put("name", "ManualImport")
+            put("importMode", "auto")
+            putJsonArray("files") {
+                add(buildJsonObject {
+                    put("path", probedItem["path"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                    put("folderName", probedItem["folderName"]?.jsonPrimitive?.contentOrNull.orEmpty())
+                    val series = probedItem["series"] as? JsonObject
+                    val seriesId = series?.get("id")?.jsonPrimitive?.longOrNull
+                    if (seriesId != null) put("seriesId", seriesId)
+                    val episodes = (probedItem["episodes"] as? JsonArray).orEmpty()
+                    putJsonArray("episodeIds") {
+                        for (e in episodes) {
+                            val id = (e as? JsonObject)?.get("id")?.jsonPrimitive?.longOrNull
+                            if (id != null) add(id)
+                        }
+                    }
+                    probedItem["quality"]?.let { put("quality", it) }
+                    probedItem["languages"]?.let { put("languages", it) }
+                    probedItem["releaseGroup"]?.jsonPrimitive?.contentOrNull?.let { put("releaseGroup", it) }
+                })
+            }
+        }) as JsonObject
+
     private suspend fun get(path: String, params: Map<String, String> = emptyMap()): JsonElement =
         http.get("$root$path") {
             header("X-Api-Key", apiKey)
@@ -124,3 +172,5 @@ class SonarrClient(
             for ((k, v) in params) parameter(k, v)
         }.body()
 }
+
+private fun JsonArray?.orEmpty(): JsonArray = this ?: JsonArray(emptyList())

@@ -43,6 +43,7 @@ import org.yoshiz.app.prioritarr.backend.schemas.PriorityResultWire
 import org.yoshiz.app.prioritarr.backend.schemas.LibrarySyncReport
 import org.yoshiz.app.prioritarr.backend.schemas.ManagedDownloadPreview
 import org.yoshiz.app.prioritarr.backend.schemas.MatchedEpisode
+import org.yoshiz.app.prioritarr.backend.schemas.OrphanAuditRow
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewEntry
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewRequest
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewResponse
@@ -584,6 +585,37 @@ fun Route.v2Routes(state: AppState) {
             Json.encodeToJsonElement(LibrarySyncReport.serializer(), agg),
         )
         call.respond(agg)
+    }
+
+    // ---- Orphan reaper ----
+    //
+    // POST /sweep — runs an OrphanReaper.sweep cycle synchronously
+    // and returns the report. Honors ?dryRun=true override.
+    // GET  /orphans — recent orphan_reaper_* audit entries (the
+    // "delete/import/keep" journal — the UI's review surface).
+    post("/orphans/sweep") {
+        val dryRun = call.request.queryParameters["dryRun"]?.equals("true", ignoreCase = true)
+            ?: state.settings.dryRun
+        val report = state.orphanReaper.sweep(dryRun = dryRun)
+        call.respond(report)
+    }
+
+    get("/orphans") {
+        val limit = (call.request.queryParameters["limit"]?.toLongOrNull() ?: 500L).coerceIn(1, 5000)
+        // Show every orphan_reaper_* audit action from the last sweep set.
+        val rows = state.db.q.listAuditFiltered(seriesId = null, action = null, since = null, lim = limit)
+            .executeAsList()
+            .filter { it.action.startsWith("orphan_reaper_") }
+        // Bundle into a typed envelope so the UI can read fields directly.
+        val typed = rows.map { r ->
+            OrphanAuditRow(
+                id = r.id,
+                ts = r.ts,
+                action = r.action,
+                details = r.details?.let { Json.parseToJsonElement(it) },
+            )
+        }
+        call.respond(typed)
     }
 
     // ---- Search ----

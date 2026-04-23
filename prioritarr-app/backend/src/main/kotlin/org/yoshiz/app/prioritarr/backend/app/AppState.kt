@@ -11,6 +11,7 @@ import org.yoshiz.app.prioritarr.backend.events.EventBus
 import org.yoshiz.app.prioritarr.backend.mapping.MappingState
 import org.yoshiz.app.prioritarr.backend.priority.PriorityService
 import org.yoshiz.app.prioritarr.backend.priority.ThresholdsSource
+import org.yoshiz.app.prioritarr.backend.reconcile.OrphanReaper
 import org.yoshiz.app.prioritarr.backend.sync.CrossSourceSync
 
 /**
@@ -31,6 +32,7 @@ data class AppState(
     val priorityService: PriorityService,
     val thresholdsSource: ThresholdsSource,
     val crossSourceSync: CrossSourceSync,
+    val orphanReaper: OrphanReaper,
     val eventBus: EventBus,
     val httpClients: List<HttpClient>,
 )

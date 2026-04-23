@@ -3,6 +3,8 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   useLibrarySync,
   useMappings,
+  useOrphanSweep,
+  useOrphans,
   usePriorityPreview,
   useRefreshMappings,
   useResetSettings,
@@ -13,6 +15,7 @@ import {
   useSettings,
   useThresholds,
   type EditableSettings,
+  type OrphanAuditRow,
   type PriorityPreviewEntry,
   type PriorityThresholds,
 } from '../hooks/queries'
@@ -82,6 +85,8 @@ export function SettingsPage() {
       </div>
 
       <LibrarySyncPanel />
+
+      <OrphanReaperPanel />
 
       <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 flex justify-between items-center">
         <div className="text-sm opacity-70">API key stored in localStorage.</div>
@@ -705,3 +710,137 @@ function SeriesSyncRow({ entry, verb }: {
     </div>
   )
 }
+
+/**
+ * OrphanReaper review surface. The recurring backend job auto-deletes
+ * hardlinked-twin orphans and triggers Sonarr ManualImport for
+ * importable ones; this panel:
+ *
+ *   1. Manual sweep buttons (Preview / Run) for on-demand reaper passes.
+ *   2. Last sweep summary (counts + bytes per action class).
+ *   3. The "kept" journal — every orphan the reaper couldn't safely
+ *      auto-decide on, with the per-file rejection reason from Sonarr,
+ *      so the operator can see WHY and act manually.
+ */
+function OrphanReaperPanel() {
+  const sweep = useOrphanSweep()
+  const orphans = useOrphans(500)
+
+  const kept = (orphans.data ?? []).filter((r) => r.action === 'orphan_reaper_keep')
+  const lastDelete = (orphans.data ?? []).find((r) => r.action === 'orphan_reaper_delete')
+  const lastImport = (orphans.data ?? []).find((r) => r.action === 'orphan_reaper_import')
+
+  function hr(b: number): string {
+    let n = b
+    for (const u of ['B', 'KB', 'MB', 'GB', 'TB']) {
+      if (n < 1024) return `${n.toFixed(1)}${u}`
+      n /= 1024
+    }
+    return `${n.toFixed(1)}PB`
+  }
+
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold">Orphan reaper</h2>
+          <p className="text-xs opacity-70 mt-0.5">
+            Sweeps the configured download folders, classifying each
+            untracked file as <strong>delete</strong> (hardlinked twin in
+            library / not-an-upgrade), <strong>import</strong> (Sonarr
+            can match it cleanly), or <strong>keep</strong> (needs your
+            judgement). Runs hourly; sweep on demand below.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => sweep.mutate({ dryRun: true })}
+            disabled={sweep.isPending}
+            className="px-3 py-1 rounded text-sm bg-surface-3 disabled:opacity-50 whitespace-nowrap"
+            title="Run the reaper without writing — shows what would happen"
+          >
+            {sweep.isPending && sweep.variables?.dryRun ? 'Previewing…' : 'Preview sweep'}
+          </button>
+          <button
+            onClick={() => {
+              if (!confirm('Run the reaper? It will delete safe orphans + trigger Sonarr imports.')) return
+              sweep.mutate({})
+            }}
+            disabled={sweep.isPending}
+            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-50 whitespace-nowrap"
+          >
+            {sweep.isPending && !sweep.variables?.dryRun ? 'Sweeping…' : 'Sweep now'}
+          </button>
+        </div>
+      </div>
+
+      {sweep.error && (
+        <div className="text-xs text-red-400 font-mono">
+          {String((sweep.error as Error).message ?? sweep.error)}
+        </div>
+      )}
+
+      {sweep.data && (
+        <div className="text-sm">
+          <span className="text-green-400">{sweep.data.deleted}</span> deleted
+          <span className="opacity-50 mx-1">({hr(sweep.data.deletedBytes)}),</span>
+          <span className="text-blue-400">{sweep.data.imported}</span> import-queued,
+          <span className="text-amber-400 ml-1">{sweep.data.kept}</span> kept for review
+          <span className="opacity-50 mx-1">({hr(sweep.data.keptBytes)}),</span>
+          {sweep.data.matched} matched (active),
+          {sweep.data.emptyDirsRemoved} empty dirs removed
+          {sweep.data.errors > 0 && (
+            <span className="text-red-400 ml-2">· {sweep.data.errors} errors</span>
+          )}
+        </div>
+      )}
+
+      {/* Kept journal — orphans the reaper couldn't safely classify.
+          The user reviews each, decides on Delete or "leave alone". */}
+      <div className="pt-2 border-t border-surface-3">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-medium">
+            Needs review ({kept.length})
+          </h3>
+          <div className="text-xs opacity-60">
+            {lastImport && <>last import: {lastImport.ts.slice(0, 19)} · </>}
+            {lastDelete && <>last delete: {lastDelete.ts.slice(0, 19)}</>}
+          </div>
+        </div>
+        {kept.length === 0 ? (
+          <p className="text-xs opacity-60">Nothing flagged — every orphan was either deleted or imported.</p>
+        ) : (
+          <div className="space-y-1 max-h-96 overflow-auto text-xs font-mono">
+            {kept.map((r) => (
+              <KeptOrphanRow key={r.id} row={r} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function KeptOrphanRow({ row }: { row: OrphanAuditRow }) {
+  const path = row.details?.path ?? '?'
+  const reason = row.details?.reason ?? '?'
+  const size = row.details?.size_bytes ?? 0
+  const sizeStr = (() => {
+    let n = size
+    for (const u of ['B', 'KB', 'MB', 'GB', 'TB']) {
+      if (n < 1024) return `${n.toFixed(1)}${u}`
+      n /= 1024
+    }
+    return `${n.toFixed(1)}PB`
+  })()
+  // Trim path to its filename — full path is in tooltip.
+  const name = path.split(/[\\/]/).pop() ?? path
+  return (
+    <div className="flex items-center gap-2 py-1 px-2 hover:bg-surface-2 rounded" title={path}>
+      <span className="opacity-50 w-16 text-right">{sizeStr}</span>
+      <span className="flex-1 truncate">{name}</span>
+      <span className="opacity-70 truncate" title={reason}>{reason}</span>
+    </div>
+  )
+}
+

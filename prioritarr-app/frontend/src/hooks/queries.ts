@@ -187,6 +187,51 @@ export function useSaveSettings() {
   })
 }
 
+// OrphanReaper — sweeps download folders for files no client tracks.
+// One sweep returns a count + journal; the recurring backend job uses
+// the same logic. UI uses these to surface kept-orphans needing
+// operator review.
+export interface OrphanReportEntry {
+  action: string
+  path: string
+  sizeBytes: number
+  reason: string
+}
+export interface OrphanReport {
+  matched: number
+  deleted: number
+  imported: number
+  importPending: number
+  kept: number
+  emptyDirsRemoved: number
+  errors: number
+  deletedBytes: number
+  keptBytes: number
+  entries: OrphanReportEntry[]
+}
+export interface OrphanAuditRow {
+  id: number
+  ts: string
+  action: string
+  details: { path?: string; size_bytes?: number; reason?: string } | null
+}
+
+export function useOrphanSweep() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (opts: { dryRun?: boolean } = {}) =>
+      rawFetch<OrphanReport>(`/api/v2/orphans/sweep${opts.dryRun ? '?dryRun=true' : ''}`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['orphans'] }),
+  })
+}
+
+export function useOrphans(limit = 500) {
+  return useQuery({
+    queryKey: ['orphans', limit],
+    queryFn: () => rawFetch<OrphanAuditRow[]>(`/api/v2/orphans?limit=${limit}`),
+  })
+}
+
 export function useResetSettings() {
   const qc = useQueryClient()
   return useMutation({

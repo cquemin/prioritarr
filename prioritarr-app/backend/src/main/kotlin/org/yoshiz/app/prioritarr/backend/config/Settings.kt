@@ -99,6 +99,17 @@ data class Settings(
     val intervals: Intervals = Intervals(),
     val cache: CacheConfig = CacheConfig(),
     val audit: AuditConfig = AuditConfig(),
+
+    /** Paths swept by the OrphanReaper. Empty list disables the reaper. */
+    val orphanReaperPaths: List<String> = listOf(
+        "/storage/torrents/series",
+        "/storage/torrents/movies",
+        "/storage/usenet/incomplete",
+        "/storage/usenet/complete/series",
+        "/storage/usenet/complete/movies",
+    ),
+    /** OrphanReaper sweep cadence in minutes. */
+    val orphanReaperIntervalMinutes: Int = 60,
 )
 
 /**

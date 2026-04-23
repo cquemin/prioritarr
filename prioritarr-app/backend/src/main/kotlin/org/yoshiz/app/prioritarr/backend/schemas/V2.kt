@@ -285,3 +285,17 @@ data class SearchResponse(
     val query: String,
     val hits: List<SearchHit>,
 )
+
+/**
+ * One audit row from the OrphanReaper journal. The `action` value
+ * encodes the verb (orphan_reaper_delete, _import, _keep, _dry_*,
+ * _import_pending, _import_error). `details` is the JSON the reaper
+ * wrote — usually `{path, size_bytes, reason}`.
+ */
+@Serializable
+data class OrphanAuditRow(
+    val id: Long,
+    val ts: String,
+    val action: String,
+    val details: kotlinx.serialization.json.JsonElement?,
+)
