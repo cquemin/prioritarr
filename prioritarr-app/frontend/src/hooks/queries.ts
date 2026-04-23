@@ -213,7 +213,13 @@ export interface OrphanAuditRow {
   id: number
   ts: string
   action: string
-  details: { path?: string; size_bytes?: number; reason?: string } | null
+  details: {
+    path?: string
+    size_bytes?: number
+    reason?: string
+    folder?: string
+    mtime?: string | null
+  } | null
 }
 
 export function useOrphanSweep() {
@@ -221,6 +227,59 @@ export function useOrphanSweep() {
   return useMutation({
     mutationFn: (opts: { dryRun?: boolean } = {}) =>
       rawFetch<OrphanReport>(`/api/v2/orphans/sweep${opts.dryRun ? '?dryRun=true' : ''}`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['orphans'] }),
+  })
+}
+
+export interface OrphanBulkOutcome { path: string; ok: boolean; message?: string }
+export interface OrphanBulkResult { total: number; succeeded: number; outcomes: OrphanBulkOutcome[] }
+export interface OrphanProbeResult {
+  ok: boolean
+  canImport: boolean
+  rejections: string[]
+  seriesTitle?: string | null
+  episodes?: string[]
+  message?: string | null
+}
+
+export function useDeleteOrphans() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (paths: string[]) =>
+      rawFetch<OrphanBulkResult>('/api/v2/orphans/delete', {
+        method: 'POST', body: JSON.stringify({ paths }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['orphans'] }),
+  })
+}
+
+export function useRenameOrphan() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (v: { path: string; newName: string }) =>
+      rawFetch<{ ok: boolean; newPath?: string; message?: string }>(
+        '/api/v2/orphans/rename', { method: 'POST', body: JSON.stringify(v) },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['orphans'] }),
+  })
+}
+
+export function useProbeOrphan() {
+  return useMutation({
+    mutationFn: (path: string) =>
+      rawFetch<OrphanProbeResult>('/api/v2/orphans/probe', {
+        method: 'POST', body: JSON.stringify({ path, newName: '' }),
+      }),
+  })
+}
+
+export function useImportOrphan() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (path: string) =>
+      rawFetch<OrphanBulkOutcome>('/api/v2/orphans/import', {
+        method: 'POST', body: JSON.stringify({ path, newName: '' }),
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['orphans'] }),
   })
 }

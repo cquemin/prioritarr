@@ -299,3 +299,29 @@ data class OrphanAuditRow(
     val action: String,
     val details: kotlinx.serialization.json.JsonElement?,
 )
+
+@Serializable
+data class OrphanPathsRequest(val paths: List<String>)
+
+@Serializable
+data class OrphanPathOutcome(val path: String, val ok: Boolean, val message: String? = null)
+
+@Serializable
+data class OrphanBulkResult(val total: Int, val succeeded: Int, val outcomes: List<OrphanPathOutcome>)
+
+@Serializable
+data class OrphanRenameRequest(val path: String, val newName: String)
+
+@Serializable
+data class OrphanRenameResult(val ok: Boolean, val newPath: String? = null, val message: String? = null)
+
+/** Echoed-back probe result so the UI can decide what to do post-rename. */
+@Serializable
+data class OrphanProbeResult(
+    val ok: Boolean,
+    val canImport: Boolean,
+    val rejections: List<String>,
+    val seriesTitle: String? = null,
+    val episodes: List<String> = emptyList(),
+    val message: String? = null,
+)

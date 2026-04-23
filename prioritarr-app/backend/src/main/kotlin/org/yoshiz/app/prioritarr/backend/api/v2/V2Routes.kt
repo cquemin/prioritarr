@@ -44,6 +44,12 @@ import org.yoshiz.app.prioritarr.backend.schemas.LibrarySyncReport
 import org.yoshiz.app.prioritarr.backend.schemas.ManagedDownloadPreview
 import org.yoshiz.app.prioritarr.backend.schemas.MatchedEpisode
 import org.yoshiz.app.prioritarr.backend.schemas.OrphanAuditRow
+import org.yoshiz.app.prioritarr.backend.schemas.OrphanBulkResult
+import org.yoshiz.app.prioritarr.backend.schemas.OrphanPathOutcome
+import org.yoshiz.app.prioritarr.backend.schemas.OrphanPathsRequest
+import org.yoshiz.app.prioritarr.backend.schemas.OrphanProbeResult
+import org.yoshiz.app.prioritarr.backend.schemas.OrphanRenameRequest
+import org.yoshiz.app.prioritarr.backend.schemas.OrphanRenameResult
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewEntry
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewRequest
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewResponse
@@ -616,6 +622,92 @@ fun Route.v2Routes(state: AppState) {
             )
         }
         call.respond(typed)
+    }
+
+    // ---- Orphan per-file actions ----
+    //
+    // Bulk-delete: ignore ?dryRun, this is operator-initiated. Each
+    // path goes through OrphanReaper.deleteOne which path-validates
+    // against cleanupPaths so the UI can't be tricked into rm-ing
+    // arbitrary files. Per-path outcome lets the UI render mixed
+    // success/failure toasts.
+    post("/orphans/delete") {
+        val req = try { call.receive<OrphanPathsRequest>() }
+        catch (e: Exception) { throw ValidationException("body", "must be {paths:[...]}: ${e.message}") }
+        val outcomes = req.paths.map { p ->
+            val path = java.nio.file.Paths.get(p)
+            val ok = state.orphanReaper.deleteOne(path)
+            OrphanPathOutcome(p, ok, if (ok) "deleted" else "rejected (outside cleanup paths or io error)")
+        }
+        call.respond(OrphanBulkResult(
+            total = outcomes.size,
+            succeeded = outcomes.count { it.ok },
+            outcomes = outcomes,
+        ))
+    }
+
+    // Rename in place. Use after seeing a "Unknown Series" / parse
+    // failure to nudge Sonarr toward a match. Endpoint runs the
+    // rename then returns a fresh probe so the UI can show the new
+    // verdict without a second roundtrip.
+    post("/orphans/rename") {
+        val req = try { call.receive<OrphanRenameRequest>() }
+        catch (e: Exception) { throw ValidationException("body", "must be {path, newName}: ${e.message}") }
+        val from = java.nio.file.Paths.get(req.path)
+        val to = state.orphanReaper.renameOne(from, req.newName)
+        if (to == null) {
+            call.respond(OrphanRenameResult(ok = false, message = "rename rejected — outside cleanup path, illegal name, or io error"))
+            return@post
+        }
+        call.respond(OrphanRenameResult(ok = true, newPath = to.toString()))
+    }
+
+    // Re-probe a single path against Sonarr — runs after rename or
+    // for any stale "kept" entry whose situation may have changed.
+    post("/orphans/probe") {
+        val req = try { call.receive<OrphanRenameRequest>() }  // reuses path field
+        catch (e: Exception) { throw ValidationException("body", "must be {path}: ${e.message}") }
+        val path = java.nio.file.Paths.get(req.path)
+        val probe = state.orphanReaper.probeOne(path)
+        if (probe == null || probe.size == 0) {
+            call.respond(OrphanProbeResult(
+                ok = true, canImport = false,
+                rejections = listOf("Sonarr couldn't parse this file"),
+            ))
+            return@post
+        }
+        val item = probe[0].jsonObject
+        val rej = (item["rejections"] as? kotlinx.serialization.json.JsonArray)
+            ?.map { (it as JsonObject)["reason"]?.jsonPrimitive?.contentOrNull.orEmpty() }
+            ?: emptyList()
+        val seriesTitle = (item["series"] as? JsonObject)?.get("title")?.jsonPrimitive?.contentOrNull
+        val episodes = (item["episodes"] as? kotlinx.serialization.json.JsonArray)
+            ?.mapNotNull { e ->
+                val o = (e as? JsonObject) ?: return@mapNotNull null
+                val s = o["seasonNumber"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return@mapNotNull null
+                val n = o["episodeNumber"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return@mapNotNull null
+                "S%02dE%02d".format(s, n)
+            } ?: emptyList()
+        call.respond(OrphanProbeResult(
+            ok = true,
+            canImport = rej.isEmpty(),
+            rejections = rej,
+            seriesTitle = seriesTitle,
+            episodes = episodes,
+        ))
+    }
+
+    // Trigger a Sonarr ManualImport for a single orphan that the UI
+    // has confirmed (via /orphans/probe) as importable. Used as the
+    // "Import" button on the review row; convenience over running a
+    // whole sweep.
+    post("/orphans/import") {
+        val req = try { call.receive<OrphanRenameRequest>() }
+        catch (e: Exception) { throw ValidationException("body", "must be {path}: ${e.message}") }
+        val path = java.nio.file.Paths.get(req.path)
+        val ok = state.orphanReaper.importOne(path)
+        call.respond(OrphanPathOutcome(path = req.path, ok = ok,
+            message = if (ok) "Sonarr ManualImport queued" else "import failed (probe rejected or io error)"))
     }
 
     // ---- Search ----

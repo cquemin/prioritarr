@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import {
+  useDeleteOrphans,
+  useImportOrphan,
   useLibrarySync,
   useMappings,
   useOrphanSweep,
   useOrphans,
   usePriorityPreview,
+  useProbeOrphan,
   useRefreshMappings,
+  useRenameOrphan,
   useResetSettings,
   useResetThresholds,
   useSaveSettings,
@@ -16,6 +20,7 @@ import {
   useThresholds,
   type EditableSettings,
   type OrphanAuditRow,
+  type OrphanProbeResult,
   type PriorityPreviewEntry,
   type PriorityThresholds,
 } from '../hooks/queries'
@@ -711,6 +716,15 @@ function SeriesSyncRow({ entry, verb }: {
   )
 }
 
+function hr(b: number): string {
+  let n = b
+  for (const u of ['B', 'KB', 'MB', 'GB', 'TB']) {
+    if (n < 1024) return `${n.toFixed(1)}${u}`
+    n /= 1024
+  }
+  return `${n.toFixed(1)}PB`
+}
+
 /**
  * OrphanReaper review surface. The recurring backend job auto-deletes
  * hardlinked-twin orphans and triggers Sonarr ManualImport for
@@ -719,25 +733,29 @@ function SeriesSyncRow({ entry, verb }: {
  *   1. Manual sweep buttons (Preview / Run) for on-demand reaper passes.
  *   2. Last sweep summary (counts + bytes per action class).
  *   3. The "kept" journal — every orphan the reaper couldn't safely
- *      auto-decide on, with the per-file rejection reason from Sonarr,
- *      so the operator can see WHY and act manually.
+ *      auto-decide on, presented as a multi-select table with
+ *      per-row rename / re-probe / import / delete actions and a
+ *      bulk-delete for selected rows.
  */
 function OrphanReaperPanel() {
   const sweep = useOrphanSweep()
   const orphans = useOrphans(500)
 
-  const kept = (orphans.data ?? []).filter((r) => r.action === 'orphan_reaper_keep')
+  // Dedupe by path — the reaper runs hourly so the same orphan can
+  // appear in many audit rows. Show only the most-recent kept entry
+  // per path so the table represents current state.
+  const keptByPath = new Map<string, OrphanAuditRow>()
+  for (const r of orphans.data ?? []) {
+    if (r.action !== 'orphan_reaper_keep') continue
+    const p = r.details?.path
+    if (!p) continue
+    const existing = keptByPath.get(p)
+    if (!existing || existing.ts < r.ts) keptByPath.set(p, r)
+  }
+  const kept = Array.from(keptByPath.values()).sort((a, b) =>
+    (b.details?.size_bytes ?? 0) - (a.details?.size_bytes ?? 0))
   const lastDelete = (orphans.data ?? []).find((r) => r.action === 'orphan_reaper_delete')
   const lastImport = (orphans.data ?? []).find((r) => r.action === 'orphan_reaper_import')
-
-  function hr(b: number): string {
-    let n = b
-    for (const u of ['B', 'KB', 'MB', 'GB', 'TB']) {
-      if (n < 1024) return `${n.toFixed(1)}${u}`
-      n /= 1024
-    }
-    return `${n.toFixed(1)}PB`
-  }
 
   return (
     <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
@@ -796,11 +814,12 @@ function OrphanReaperPanel() {
       )}
 
       {/* Kept journal — orphans the reaper couldn't safely classify.
-          The user reviews each, decides on Delete or "leave alone". */}
+          Multi-select table with per-row rename / probe / import /
+          delete plus a bulk Delete-selected. */}
       <div className="pt-2 border-t border-surface-3">
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-sm font-medium">
-            Needs review ({kept.length})
+            Needs review ({kept.length}{kept.length > 0 && ` · ${hr(kept.reduce((a, r) => a + (r.details?.size_bytes ?? 0), 0))}`})
           </h3>
           <div className="text-xs opacity-60">
             {lastImport && <>last import: {lastImport.ts.slice(0, 19)} · </>}
@@ -810,37 +829,190 @@ function OrphanReaperPanel() {
         {kept.length === 0 ? (
           <p className="text-xs opacity-60">Nothing flagged — every orphan was either deleted or imported.</p>
         ) : (
-          <div className="space-y-1 max-h-96 overflow-auto text-xs font-mono">
-            {kept.map((r) => (
-              <KeptOrphanRow key={r.id} row={r} />
-            ))}
-          </div>
+          <KeptOrphanTable rows={kept} />
         )}
       </div>
     </div>
   )
 }
 
-function KeptOrphanRow({ row }: { row: OrphanAuditRow }) {
-  const path = row.details?.path ?? '?'
+/**
+ * Table view for "kept" orphans. Each row is selectable; bulk delete
+ * acts on the selection. Per-row actions:
+ *   - Rename: prompt for a new filename, server moves file in place
+ *     and runs a fresh Sonarr probe; outcome shown inline.
+ *   - Re-probe: re-ask Sonarr if it can match (no rename needed).
+ *   - Import: queue Sonarr ManualImport (only enabled when probe says
+ *     canImport=true).
+ *   - Delete: filesystem-delete this single orphan.
+ */
+function KeptOrphanTable({ rows }: { rows: OrphanAuditRow[] }) {
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const bulkDelete = useDeleteOrphans()
+  const allPaths = rows.map((r) => r.details?.path).filter(Boolean) as string[]
+
+  const toggle = (p: string) => {
+    const next = new Set(selected)
+    if (next.has(p)) next.delete(p); else next.add(p)
+    setSelected(next)
+  }
+  const toggleAll = () => {
+    if (selected.size === allPaths.length) setSelected(new Set())
+    else setSelected(new Set(allPaths))
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-2 text-xs">
+        <span className="opacity-70">{selected.size} selected</span>
+        <button
+          type="button"
+          disabled={selected.size === 0 || bulkDelete.isPending}
+          onClick={() => {
+            if (!confirm(`Delete ${selected.size} orphan file(s)? This cannot be undone.`)) return
+            bulkDelete.mutate(Array.from(selected), {
+              onSuccess: () => setSelected(new Set()),
+            })
+          }}
+          className="px-2 py-1 rounded bg-red-900/60 hover:bg-red-700 disabled:opacity-40"
+        >
+          {bulkDelete.isPending ? 'Deleting…' : 'Delete selected'}
+        </button>
+        {bulkDelete.data && (
+          <span className="opacity-70">
+            last bulk: {bulkDelete.data.succeeded}/{bulkDelete.data.total} ok
+          </span>
+        )}
+      </div>
+      <div className="bg-surface-0 border border-surface-3 rounded overflow-hidden">
+        <table className="w-full text-xs">
+          <thead className="bg-surface-2 text-left">
+            <tr>
+              <th className="px-2 py-1 w-8">
+                <input
+                  type="checkbox"
+                  checked={selected.size > 0 && selected.size === allPaths.length}
+                  ref={(el) => { if (el) el.indeterminate = selected.size > 0 && selected.size < allPaths.length }}
+                  onChange={toggleAll}
+                />
+              </th>
+              <th className="px-2 py-1">File</th>
+              <th className="px-2 py-1">Folder</th>
+              <th className="px-2 py-1 text-right">Size</th>
+              <th className="px-2 py-1">Downloaded</th>
+              <th className="px-2 py-1">Sonarr says</th>
+              <th className="px-2 py-1 w-48">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <KeptOrphanRow
+                key={r.id}
+                row={r}
+                checked={selected.has(r.details?.path ?? '')}
+                onToggle={() => r.details?.path && toggle(r.details.path)}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function KeptOrphanRow({
+  row, checked, onToggle,
+}: { row: OrphanAuditRow; checked: boolean; onToggle: () => void }) {
+  const path = row.details?.path ?? ''
   const reason = row.details?.reason ?? '?'
   const size = row.details?.size_bytes ?? 0
-  const sizeStr = (() => {
-    let n = size
-    for (const u of ['B', 'KB', 'MB', 'GB', 'TB']) {
-      if (n < 1024) return `${n.toFixed(1)}${u}`
-      n /= 1024
-    }
-    return `${n.toFixed(1)}PB`
-  })()
-  // Trim path to its filename — full path is in tooltip.
-  const name = path.split(/[\\/]/).pop() ?? path
+  const folder = row.details?.folder ?? ''
+  const mtime = row.details?.mtime ?? null
+
+  const rename = useRenameOrphan()
+  const probe = useProbeOrphan()
+  const importIt = useImportOrphan()
+  const deleteOne = useDeleteOrphans()
+  const [latestProbe, setLatestProbe] = useState<OrphanProbeResult | null>(null)
+  const [livePath, setLivePath] = useState(path)
+
+  const display = livePath !== path ? livePath : path
+  const displayName = display.split(/[\\/]/).pop() ?? display
+  const canImport = latestProbe?.canImport ?? false
+
   return (
-    <div className="flex items-center gap-2 py-1 px-2 hover:bg-surface-2 rounded" title={path}>
-      <span className="opacity-50 w-16 text-right">{sizeStr}</span>
-      <span className="flex-1 truncate">{name}</span>
-      <span className="opacity-70 truncate" title={reason}>{reason}</span>
-    </div>
+    <>
+      <tr className="border-t border-surface-3 hover:bg-surface-2 align-top">
+        <td className="px-2 py-1.5">
+          <input type="checkbox" checked={checked} onChange={onToggle} />
+        </td>
+        <td className="px-2 py-1.5 font-mono break-all" title={display}>{displayName}</td>
+        <td className="px-2 py-1.5 opacity-80 font-mono">{folder || '—'}</td>
+        <td className="px-2 py-1.5 text-right opacity-80">{hr(size)}</td>
+        <td className="px-2 py-1.5 opacity-70 font-mono">{mtime?.slice(0, 19) ?? '—'}</td>
+        <td className="px-2 py-1.5 text-amber-400/90">
+          {latestProbe ? (
+            <span className={latestProbe.canImport ? 'text-green-400' : ''}>
+              {latestProbe.canImport
+                ? `OK · ${latestProbe.seriesTitle ?? '?'} (${(latestProbe.episodes ?? []).join(', ') || '?'})`
+                : (latestProbe.rejections ?? []).join('; ') || 'unknown'}
+            </span>
+          ) : (
+            reason
+          )}
+        </td>
+        <td className="px-2 py-1.5">
+          <div className="flex flex-wrap gap-1">
+            <button
+              type="button"
+              onClick={async () => {
+                const next = window.prompt('New filename (same folder):', displayName)
+                if (!next || next === displayName) return
+                const res = await rename.mutateAsync({ path: display, newName: next })
+                if (res.ok && res.newPath) {
+                  setLivePath(res.newPath)
+                  // After rename, re-probe automatically.
+                  const newProbe = await probe.mutateAsync(res.newPath)
+                  setLatestProbe(newProbe)
+                } else {
+                  alert(`Rename failed: ${res.message ?? 'unknown error'}`)
+                }
+              }}
+              disabled={rename.isPending}
+              className="px-1.5 py-0.5 rounded bg-surface-3 hover:bg-accent disabled:opacity-50"
+              title="Rename in place — will re-probe Sonarr after"
+            >Rename</button>
+            <button
+              type="button"
+              onClick={async () => setLatestProbe(await probe.mutateAsync(display))}
+              disabled={probe.isPending}
+              className="px-1.5 py-0.5 rounded bg-surface-3 hover:bg-accent disabled:opacity-50"
+              title="Ask Sonarr again — useful if you fixed something upstream"
+            >Re-probe</button>
+            <button
+              type="button"
+              onClick={async () => {
+                const res = await importIt.mutateAsync(display)
+                if (res.ok) alert('Sonarr ManualImport queued')
+                else alert(`Import failed: ${res.message ?? 'unknown'}`)
+              }}
+              disabled={!canImport || importIt.isPending}
+              className="px-1.5 py-0.5 rounded bg-surface-3 hover:bg-green-700 disabled:opacity-30"
+              title={canImport ? 'Queue Sonarr ManualImport' : 'Re-probe first; only enabled when Sonarr can match'}
+            >Import</button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!confirm(`Delete ${displayName}?`)) return
+                await deleteOne.mutateAsync([display])
+              }}
+              disabled={deleteOne.isPending}
+              className="px-1.5 py-0.5 rounded bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
+            >Delete</button>
+          </div>
+        </td>
+      </tr>
+    </>
   )
 }
 

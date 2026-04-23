@@ -63,6 +63,74 @@ class OrphanReaper(
 ) {
     private val logger = LoggerFactory.getLogger(OrphanReaper::class.java)
 
+    /**
+     * True iff [path] is under one of the configured cleanup roots.
+     * Used by the per-file action endpoints (delete / rename) so the
+     * UI can't be tricked into modifying paths outside the reaper's
+     * jurisdiction.
+     */
+    fun isWithinCleanupPath(path: Path): Boolean {
+        val abs = try { path.toAbsolutePath().normalize() } catch (_: Exception) { return false }
+        return cleanupPaths.any { root ->
+            try {
+                val rootAbs = Paths.get(root).toAbsolutePath().normalize()
+                abs.startsWith(rootAbs)
+            } catch (_: Exception) { false }
+        }
+    }
+
+    /** Single-file delete used by the bulk-delete endpoint. */
+    fun deleteOne(path: Path): Boolean {
+        if (!isWithinCleanupPath(path)) return false
+        return try {
+            deleteRecursive(path)
+            true
+        } catch (_: Exception) { false }
+    }
+
+    /**
+     * Rename [from] in place to a new sibling named [newName]. Returns
+     * the resolved new path on success. Used for the "fix the
+     * filename so Sonarr can match it" flow.
+     */
+    fun renameOne(from: Path, newName: String): Path? {
+        if (!isWithinCleanupPath(from)) return null
+        if (newName.contains('/') || newName.contains('\\') || newName.isBlank()) return null
+        val target = from.parent.resolve(newName)
+        return try {
+            Files.move(from, target)
+            target
+        } catch (_: Exception) { null }
+    }
+
+    /**
+     * Run a fresh Sonarr probe on a single path. Used after rename to
+     * see if Sonarr now accepts the file, and to re-evaluate
+     * previously-kept orphans without waiting for the next sweep.
+     */
+    suspend fun probeOne(path: Path): JsonArray? {
+        if (!isWithinCleanupPath(path)) return null
+        return try { sonarr.manualImportProbe(path.toString()) } catch (_: Exception) { null }
+    }
+
+    /**
+     * Trigger a Sonarr ManualImport for one path. Caller has already
+     * confirmed Sonarr can match it (e.g. via [probeOne] returning a
+     * candidate with no rejections).
+     */
+    suspend fun importOne(path: Path): Boolean {
+        if (!isWithinCleanupPath(path)) return false
+        val probe = probeOne(path) ?: return false
+        if (probe.size == 0) return false
+        val item = (probe[0] as? JsonObject) ?: return false
+        val rej = (item["rejections"] as? JsonArray).orEmpty()
+        if (rej.isNotEmpty()) return false
+        return try {
+            sonarr.triggerManualImport(item)
+            true
+        } catch (_: Exception) { false }
+    }
+
     suspend fun sweep(dryRun: Boolean): OrphanReport {
         val tracked = collectTrackedNames()
         val report = OrphanReport()
@@ -299,25 +367,63 @@ class OrphanReaper(
         size: Long,
         reason: String,
     ) {
+        // mtime = "when did this file's bytes last change" — close
+        // enough to "download date" for the operator's review use case.
+        // For folders we use the most-recently-modified child to
+        // capture when the download finished, not when the folder was
+        // first created.
+        val mtimeIso = readMtimeIso(entry)
+        val folder = entry.parent?.fileName?.toString().orEmpty()
         report.entries += OrphanReport.Entry(
             action = action,
             path = entry.toString(),
             sizeBytes = size,
             reason = reason,
+            mtimeIso = mtimeIso,
+            folder = folder,
         )
         try {
-            val safePath = entry.toString().replace("\\", "\\\\").replace("\"", "\\\"")
-            val safeReason = reason.replace("\\", "\\\\").replace("\"", "\\\"")
+            val safePath = jsonString(entry.toString())
+            val safeReason = jsonString(reason)
+            val safeFolder = jsonString(folder)
+            val safeMtime = mtimeIso?.let { "\"${jsonString(it)}\"" } ?: "null"
             db.appendAudit(
                 action = action,
                 seriesId = null,
                 client = null,
                 clientId = null,
                 details = Json.parseToJsonElement(
-                    """{"path":"$safePath","size_bytes":$size,"reason":"$safeReason"}""",
+                    """{"path":"$safePath","size_bytes":$size,"reason":"$safeReason","folder":"$safeFolder","mtime":$safeMtime}""",
                 ),
             )
         } catch (_: Exception) { /* audit best-effort */ }
+    }
+
+    private fun jsonString(s: String): String =
+        s.replace("\\", "\\\\").replace("\"", "\\\"")
+
+    private fun readMtimeIso(entry: Path): String? {
+        return try {
+            val mtime = if (Files.isDirectory(entry)) {
+                // Walk and take the latest mtime among children — better
+                // proxy for "completed download" than the folder-create
+                // time when the parent was made earlier.
+                var latest = Files.getLastModifiedTime(entry).toMillis()
+                Files.walk(entry).use { stream ->
+                    for (p in stream) {
+                        if (Files.isDirectory(p)) continue
+                        try {
+                            val t = Files.getLastModifiedTime(p).toMillis()
+                            if (t > latest) latest = t
+                        } catch (_: Exception) { /* skip */ }
+                    }
+                }
+                latest
+            } else {
+                Files.getLastModifiedTime(entry).toMillis()
+            }
+            java.time.Instant.ofEpochMilli(mtime).toString()
+        } catch (_: Exception) { null }
     }
 }
 
@@ -341,7 +447,11 @@ data class OrphanReport(
         val path: String,
         val sizeBytes: Long,
         val reason: String = "",
+        /** ISO-8601 of the file's most-recent mtime (parent or any child). */
+        val mtimeIso: String? = null,
+        /** Immediate parent folder name — the path's basename minus the file. */
+        val folder: String = "",
     )
 }
 
-private fun JsonArray?.orEmpty(): JsonArray = this ?: JsonArray(emptyList())
+internal fun JsonArray?.orEmpty(): JsonArray = this ?: JsonArray(emptyList())
