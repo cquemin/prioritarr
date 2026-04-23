@@ -32,10 +32,26 @@ import org.slf4j.LoggerFactory
 private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.Main")
 
 fun main() {
-    val settings = loadSettingsFromEnv()
-    logger.info("prioritarr (kotlin) starting (dry_run={}, test_mode={})", settings.dryRun, settings.testMode)
-
+    val baseSettings = loadSettingsFromEnv()
     val db = Database("/config/state.db")
+
+    // Apply persisted DB overrides on top of the env-loaded baseline.
+    // Edits made via the Settings UI persist here and only take effect
+    // at boot — clients are constructed once and held in AppState.
+    val settings = run {
+        val raw = db.getSettingsOverride() ?: return@run baseSettings
+        try {
+            val patch = kotlinx.serialization.json.Json.decodeFromString(
+                org.yoshiz.app.prioritarr.backend.config.EditableSettings.serializer(),
+                raw,
+            )
+            org.yoshiz.app.prioritarr.backend.config.applySettingsOverride(baseSettings, patch)
+        } catch (e: Exception) {
+            logger.warn("settings override unparseable: {}; using env baseline", e.message)
+            baseSettings
+        }
+    }
+    logger.info("prioritarr (kotlin) starting (dry_run={}, test_mode={})", settings.dryRun, settings.testMode)
 
     val sonarrHttp = defaultJsonClient()
     val tautulliHttp = defaultJsonClient()

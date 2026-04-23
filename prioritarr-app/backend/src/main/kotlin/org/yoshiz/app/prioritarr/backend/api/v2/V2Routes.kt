@@ -58,6 +58,34 @@ private fun PriorityResult.toWire() = PriorityResultWire(priority, label, reason
 
 private fun redactSecret(v: String?): String? = if (v.isNullOrBlank()) v else "***"
 
+/**
+ * Merge a patch onto the existing override blob. For each field, the
+ * patch value wins if non-null; otherwise the existing value (which
+ * may itself be null) is kept. This is what lets the UI send only the
+ * fields the user actually edited without nuking the rest.
+ */
+private fun mergeEditable(
+    existing: org.yoshiz.app.prioritarr.backend.config.EditableSettings,
+    patch: org.yoshiz.app.prioritarr.backend.config.EditableSettings,
+): org.yoshiz.app.prioritarr.backend.config.EditableSettings = existing.copy(
+    sonarrUrl = patch.sonarrUrl ?: existing.sonarrUrl,
+    sonarrApiKey = patch.sonarrApiKey ?: existing.sonarrApiKey,
+    tautulliUrl = patch.tautulliUrl ?: existing.tautulliUrl,
+    tautulliApiKey = patch.tautulliApiKey ?: existing.tautulliApiKey,
+    qbitUrl = patch.qbitUrl ?: existing.qbitUrl,
+    qbitUsername = patch.qbitUsername ?: existing.qbitUsername,
+    qbitPassword = patch.qbitPassword ?: existing.qbitPassword,
+    sabUrl = patch.sabUrl ?: existing.sabUrl,
+    sabApiKey = patch.sabApiKey ?: existing.sabApiKey,
+    plexUrl = patch.plexUrl ?: existing.plexUrl,
+    plexToken = patch.plexToken ?: existing.plexToken,
+    traktClientId = patch.traktClientId ?: existing.traktClientId,
+    traktAccessToken = patch.traktAccessToken ?: existing.traktAccessToken,
+    dryRun = patch.dryRun ?: existing.dryRun,
+    logLevel = patch.logLevel ?: existing.logLevel,
+    uiOrigin = patch.uiOrigin ?: existing.uiOrigin,
+)
+
 fun Route.v2Routes(state: AppState) {
     // ---- SSE ----
     eventsRoute(state)
@@ -426,12 +454,85 @@ fun Route.v2Routes(state: AppState) {
             sabApiKey = "***",
             plexUrl = s.plexUrl,
             plexToken = redactSecret(s.plexToken),
+            traktClientId = s.traktClientId,
+            traktAccessToken = redactSecret(s.traktAccessToken),
             apiKey = redactSecret(s.apiKey),
             uiOrigin = s.uiOrigin,
             dryRun = s.dryRun,
             logLevel = s.logLevel,
             testMode = s.testMode,
+            hasOverrides = state.db.getSettingsOverride() != null,
         ))
+    }
+
+    // Persist editable settings (URLs / creds / dryRun / logLevel /
+    // uiOrigin). Stored as a JSON-blob override on top of the env
+    // baseline; the new values only take effect after a container
+    // restart because clients are constructed once at boot. The
+    // response echoes back the merged-and-redacted settings the UI
+    // will see at GET time.
+    //
+    // Field-level merge semantics: any field omitted from the body
+    // (or sent as null) is treated as "no change" — the existing
+    // override or baseline value is preserved. This lets the UI keep
+    // secret fields blank to mean "don't touch".
+    post("/settings") {
+        val patch = try {
+            call.receive<org.yoshiz.app.prioritarr.backend.config.EditableSettings>()
+        } catch (e: Exception) {
+            throw ValidationException("body", "invalid EditableSettings: ${e.message}")
+        }
+        // Merge with the existing override so partial updates accumulate.
+        val existing = state.db.getSettingsOverride()?.let { raw ->
+            try {
+                Json.decodeFromString(
+                    org.yoshiz.app.prioritarr.backend.config.EditableSettings.serializer(),
+                    raw,
+                )
+            } catch (_: Exception) { null }
+        } ?: org.yoshiz.app.prioritarr.backend.config.EditableSettings()
+        val merged = mergeEditable(existing, patch)
+        state.db.setSettingsOverride(
+            Json.encodeToString(
+                org.yoshiz.app.prioritarr.backend.config.EditableSettings.serializer(),
+                merged,
+            ),
+        )
+        state.eventBus.publish(
+            "settings-updated",
+            kotlinx.serialization.json.JsonNull,
+        )
+        // Echo back the *running* settings (which still reflect the
+        // pre-restart values). The UI uses hasOverrides to surface
+        // "restart to apply".
+        val s = state.settings
+        call.respond(SettingsRedacted(
+            sonarrUrl = s.sonarrUrl,
+            sonarrApiKey = "***",
+            tautulliUrl = s.tautulliUrl,
+            tautulliApiKey = "***",
+            qbitUrl = s.qbitUrl,
+            qbitUsername = s.qbitUsername,
+            qbitPassword = redactSecret(s.qbitPassword),
+            sabUrl = s.sabUrl,
+            sabApiKey = "***",
+            plexUrl = s.plexUrl,
+            plexToken = redactSecret(s.plexToken),
+            traktClientId = s.traktClientId,
+            traktAccessToken = redactSecret(s.traktAccessToken),
+            apiKey = redactSecret(s.apiKey),
+            uiOrigin = s.uiOrigin,
+            dryRun = s.dryRun,
+            logLevel = s.logLevel,
+            testMode = s.testMode,
+            hasOverrides = true,
+        ))
+    }
+
+    delete("/settings") {
+        state.db.clearSettingsOverride()
+        state.eventBus.publish("settings-reset", kotlinx.serialization.json.JsonNull)
+        call.respond(ActionResult(ok = true, message = "override cleared (restart to apply)"))
     }
 
     // ---- Mappings ----
@@ -454,11 +555,17 @@ fun Route.v2Routes(state: AppState) {
     post("/sync") {
         val dryRun = call.request.queryParameters["dryRun"]?.equals("true", ignoreCase = true)
             ?: state.settings.dryRun
+        // Optional cap on the number of series visited per call. The
+        // sandbox preview button uses limit=20 so the dry-run completes
+        // in seconds instead of minutes; a real (non-dry) sync is
+        // intended to walk everything and so is unbounded by default.
+        val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceAtLeast(1)
         val all = state.db.q.listSeriesCache().executeAsList()
+        val targets = if (limit != null) all.take(limit) else all
         val perSeries = mutableListOf<SeriesSyncReport>()
         var plexTotal = 0
         var traktTotal = 0
-        for (row in all) {
+        for (row in targets) {
             val r = state.crossSourceSync.syncSeries(row.id, dryRun = dryRun)
             perSeries += r
             plexTotal += r.plexAdded

@@ -5,11 +5,14 @@ import {
   useMappings,
   usePriorityPreview,
   useRefreshMappings,
+  useResetSettings,
   useResetThresholds,
+  useSaveSettings,
   useSaveThresholds,
   useSeriesList,
   useSettings,
   useThresholds,
+  type EditableSettings,
   type PriorityPreviewEntry,
   type PriorityThresholds,
 } from '../hooks/queries'
@@ -52,14 +55,7 @@ export function SettingsPage() {
   return (
     <div className="p-6 space-y-6">
       <h1 className="text-2xl font-semibold">Settings</h1>
-      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-        {s && Object.entries(s).map(([k, v]) => (
-          <div key={k} className="flex justify-between border-b border-surface-3 last:border-0 py-1">
-            <span className="opacity-60 font-mono">{k}</span>
-            <span className="font-mono break-all">{String(v ?? '—')}</span>
-          </div>
-        ))}
-      </div>
+      <ServiceCredentialsPanel current={s} />
 
       <ThresholdsPanel />
 
@@ -374,6 +370,186 @@ function SandboxCard({ entry, loading = false }: { entry: PriorityPreviewEntry; 
 }
 
 /**
+ * Editable upstream-service credentials + a few app-level toggles.
+ *
+ * Stored as a DB override on top of the env baseline. Changes only
+ * take effect after a container restart because clients are
+ * constructed once at boot and held in AppState.
+ *
+ * Secret fields show as a masked placeholder; leaving them blank on
+ * save means "no change" (the existing value persists). Typing
+ * anything overwrites.
+ */
+function ServiceCredentialsPanel({ current }: { current: any }) {
+  const save = useSaveSettings()
+  const reset = useResetSettings()
+  // Empty draft — only fields the user actually touches get sent.
+  const [draft, setDraft] = useState<EditableSettings>({})
+  const [revealSecrets, setRevealSecrets] = useState(false)
+
+  if (!current) {
+    return (
+      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4">
+        <h2 className="font-semibold">Service credentials</h2>
+        <p className="text-xs opacity-70 mt-1">Loading…</p>
+      </div>
+    )
+  }
+
+  const dirty = Object.keys(draft).length > 0
+  const fields: Array<{
+    key: keyof EditableSettings
+    label: string
+    placeholder?: string
+    secret?: boolean
+    type?: 'text' | 'url' | 'checkbox' | 'select'
+    options?: string[]
+  }> = [
+    { key: 'sonarrUrl',         label: 'Sonarr URL',           type: 'url' },
+    { key: 'sonarrApiKey',      label: 'Sonarr API key',       secret: true },
+    { key: 'tautulliUrl',       label: 'Tautulli URL',         type: 'url' },
+    { key: 'tautulliApiKey',    label: 'Tautulli API key',     secret: true },
+    { key: 'qbitUrl',           label: 'qBittorrent URL',      type: 'url' },
+    { key: 'qbitUsername',      label: 'qBittorrent username' },
+    { key: 'qbitPassword',      label: 'qBittorrent password', secret: true },
+    { key: 'sabUrl',            label: 'SABnzbd URL',          type: 'url' },
+    { key: 'sabApiKey',         label: 'SABnzbd API key',      secret: true },
+    { key: 'plexUrl',           label: 'Plex URL',             type: 'url' },
+    { key: 'plexToken',         label: 'Plex token',           secret: true },
+    { key: 'traktClientId',     label: 'Trakt client ID' },
+    { key: 'traktAccessToken',  label: 'Trakt access token',   secret: true },
+    { key: 'uiOrigin',          label: 'UI origin (for deep-links)', type: 'url' },
+    { key: 'logLevel',          label: 'Log level', type: 'select', options: ['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE'] },
+    { key: 'dryRun',            label: 'Dry-run (log actions, no upstream writes)', type: 'checkbox' },
+  ]
+
+  const set = (k: keyof EditableSettings, v: string | boolean | null) =>
+    setDraft({ ...draft, [k]: v })
+
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold">Service credentials</h2>
+          <p className="text-xs opacity-70 mt-0.5">
+            Persisted as a DB override on top of the env baseline.
+            Secret fields show <code>***</code> — leave blank to keep,
+            type to overwrite.
+            {current.hasOverrides && (
+              <span className="text-amber-400 ml-2">
+                Override active — restart prioritarr to apply changes.
+              </span>
+            )}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setRevealSecrets(!revealSecrets)}
+            className="px-3 py-1 rounded text-sm bg-surface-3"
+            title="Toggle masked vs unmasked secret inputs (UI-only)"
+          >
+            {revealSecrets ? 'Hide' : 'Show'} secrets
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              if (!confirm('Drop the DB override and revert to env-loaded settings? Restart required.')) return
+              await reset.mutateAsync()
+              setDraft({})
+            }}
+            disabled={reset.isPending || !current.hasOverrides}
+            className="px-3 py-1 rounded text-sm bg-surface-3 disabled:opacity-40"
+          >
+            {reset.isPending ? 'Resetting…' : 'Reset to env'}
+          </button>
+          <button
+            type="button"
+            disabled={!dirty || save.isPending}
+            onClick={async () => {
+              await save.mutateAsync(draft)
+              setDraft({})
+            }}
+            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-40"
+          >
+            {save.isPending ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {fields.map((f) => {
+          const live = (current as any)[f.key]
+          if (f.type === 'checkbox') {
+            const draftVal = draft[f.key] as boolean | undefined
+            const value = draftVal ?? Boolean(live)
+            return (
+              <label key={f.key} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={value}
+                  onChange={(e) => set(f.key, e.target.checked)}
+                />
+                <span>{f.label}</span>
+                {draftVal !== undefined && draftVal !== Boolean(live) && (
+                  <span className="text-amber-400 text-xs">(modified)</span>
+                )}
+              </label>
+            )
+          }
+          if (f.type === 'select') {
+            const draftVal = draft[f.key] as string | undefined
+            const value = draftVal ?? (live ?? '')
+            return (
+              <label key={f.key} className="flex flex-col text-xs space-y-1">
+                <span className="opacity-80">{f.label}</span>
+                <select
+                  value={value}
+                  onChange={(e) => set(f.key, e.target.value)}
+                  className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
+                >
+                  {f.options!.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </label>
+            )
+          }
+          // Text / url / secret string field
+          const draftVal = draft[f.key] as string | undefined
+          const placeholder = f.secret
+            ? (live ? '••••• (leave blank to keep)' : '(not set)')
+            : (live ?? '(not set)')
+          return (
+            <label key={f.key} className="flex flex-col text-xs space-y-1">
+              <span className="opacity-80">
+                {f.label}
+                {draftVal !== undefined && draftVal !== '' && (
+                  <span className="text-amber-400 ml-1">(modified)</span>
+                )}
+              </span>
+              <input
+                type={f.secret && !revealSecrets ? 'password' : (f.type === 'url' ? 'url' : 'text')}
+                value={draftVal ?? ''}
+                onChange={(e) => set(f.key, e.target.value || null)}
+                placeholder={placeholder}
+                className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
+              />
+              {!f.secret && live && draftVal === undefined && (
+                <span className="opacity-50">current: <code>{String(live)}</code></span>
+              )}
+            </label>
+          )
+        })}
+      </div>
+      {save.error && (
+        <div className="text-xs text-red-400 font-mono">
+          {String((save.error as Error).message ?? save.error)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * Library-wide Plex ⇆ Trakt sync. Two buttons: Preview (dry-run, never
  * commits) and Sync (real). Both yield the same shape of report; the
  * "show details" toggle expands a per-series breakdown listing the
@@ -396,12 +572,12 @@ function LibrarySyncPanel() {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => sync.mutate({ dryRun: true })}
+            onClick={() => sync.mutate({ dryRun: true, limit: 20 })}
             disabled={sync.isPending}
             className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50 whitespace-nowrap"
-            title="Run the sync without writing — shows what would be pushed"
+            title="Sample the first 20 series in dry-run mode — completes in seconds"
           >
-            {sync.isPending && sync.variables?.dryRun ? 'Previewing…' : 'Preview (dry-run)'}
+            {sync.isPending && sync.variables?.dryRun ? 'Previewing…' : 'Preview (sample 20)'}
           </button>
           <button
             onClick={() => {
@@ -448,8 +624,12 @@ function LibrarySyncReport({
     <div className="space-y-2">
       <div className="text-sm">
         {report.dryRun && <span className="text-amber-400 mr-2">(dry-run)</span>}
-        {report.totalSeries} series checked ·
-        <span className="text-green-400"> {verb} {report.plexAddedTotal}</span> to Plex,
+        {report.totalSeries} series checked
+        {report.totalSeries <= 20 && report.dryRun && (
+          <span className="opacity-60 ml-1">(sample)</span>
+        )}
+        {' · '}
+        <span className="text-green-400">{verb} {report.plexAddedTotal}</span> to Plex,
         <span className="text-green-400"> {report.traktAddedTotal}</span> to Trakt
         {(skipped > 0 || errored > 0) && (
           <span className="text-amber-400 ml-2">

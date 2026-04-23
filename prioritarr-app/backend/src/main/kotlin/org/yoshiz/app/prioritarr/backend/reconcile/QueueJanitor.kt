@@ -69,7 +69,7 @@ class QueueJanitor(
         val all = (stuckQbit + stuckSabFromQueue + failedSab)
             .sortedBy { it.priority ?: 6 }   // P1 first; null priorities last
         if (all.isEmpty()) {
-            logger.debug("queue-janitor: nothing stuck")
+            logger.info("queue-janitor: swept, nothing stuck (qbit + sab queues clean)")
             return JanitorReport(0, 0, 0)
         }
 

@@ -69,6 +69,17 @@ CREATE TABLE IF NOT EXISTS priority_thresholds_overrides (
     updated_at TEXT NOT NULL
 );
 
+-- Single-row JSON blob of operator-editable Settings overrides
+-- (upstream service URLs/creds, dryRun, logLevel, uiOrigin). Applied
+-- at startup on top of the env-loaded baseline. Edits persist but
+-- only take effect after container restart — clients are constructed
+-- once at boot and held in AppState.
+CREATE TABLE IF NOT EXISTS app_settings_overrides (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 -- Episode read-model for the Series page's global search box. Every
 -- aired episode title is stored once per (series, season, number) so
 -- `WHERE title LIKE '%q%'` returns hits in a single SQL scan. Refreshed
@@ -269,6 +280,23 @@ DELETE FROM series_priority_cache;
 
 deleteAllHeartbeat:
 DELETE FROM heartbeat;
+
+-- ------------------------------------------------------------------
+-- app_settings_overrides
+-- ------------------------------------------------------------------
+
+upsertSettingsOverride:
+INSERT INTO app_settings_overrides (id, payload, updated_at)
+VALUES (1, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+    payload    = excluded.payload,
+    updated_at = excluded.updated_at;
+
+selectSettingsOverride:
+SELECT payload, updated_at FROM app_settings_overrides WHERE id = 1;
+
+deleteSettingsOverride:
+DELETE FROM app_settings_overrides;
 
 -- ------------------------------------------------------------------
 -- episode_cache

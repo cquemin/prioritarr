@@ -90,7 +90,13 @@ data class AuditEntry(
     val details: JsonElement?,
 )
 
-/** Settings with secrets replaced by the literal "***". */
+/**
+ * Settings with secrets replaced by the literal "***".
+ *
+ * `hasOverrides` is true when a DB-persisted override blob exists, so
+ * the UI can show "Reset to defaults" and the "restart required to
+ * apply" warning when the user has just saved.
+ */
 @Serializable
 data class SettingsRedacted(
     val sonarrUrl: String,
@@ -104,11 +110,14 @@ data class SettingsRedacted(
     val sabApiKey: String,
     val plexUrl: String?,
     val plexToken: String?,
+    val traktClientId: String?,
+    val traktAccessToken: String?,
     val apiKey: String?,
     val uiOrigin: String?,
     val dryRun: Boolean,
     val logLevel: String,
     val testMode: Boolean,
+    val hasOverrides: Boolean = false,
 )
 
 @Serializable

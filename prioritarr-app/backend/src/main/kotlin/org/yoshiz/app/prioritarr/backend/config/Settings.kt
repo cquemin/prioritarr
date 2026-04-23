@@ -101,6 +101,64 @@ data class Settings(
     val audit: AuditConfig = AuditConfig(),
 )
 
+/**
+ * Subset of [Settings] safe for runtime editing via the Settings UI.
+ *
+ * Excluded on purpose:
+ *   - `apiKey` (the X-Api-Key for /api/v2 — letting the UI rotate it
+ *     would lock the user out the moment they save)
+ *   - `testMode` (security; env-only)
+ *   - `configPath` (env-only path to YAML)
+ *   - `priorityThresholds`, `intervals`, `cache`, `audit` (each lives
+ *     in its own dedicated UI — thresholds already, intervals/audit
+ *     stay env-controlled for now)
+ *
+ * Every field is nullable: a null in the DB blob means "leave the
+ * baseline alone". A non-null value overrides the baseline. Secrets in
+ * the GET response are masked to "***" so the UI can show them
+ * without leaking them; the UI sends back null (or omits the field)
+ * to mean "no change", and a real string to overwrite.
+ */
+@kotlinx.serialization.Serializable
+data class EditableSettings(
+    val sonarrUrl: String? = null,
+    val sonarrApiKey: String? = null,
+    val tautulliUrl: String? = null,
+    val tautulliApiKey: String? = null,
+    val qbitUrl: String? = null,
+    val qbitUsername: String? = null,
+    val qbitPassword: String? = null,
+    val sabUrl: String? = null,
+    val sabApiKey: String? = null,
+    val plexUrl: String? = null,
+    val plexToken: String? = null,
+    val traktClientId: String? = null,
+    val traktAccessToken: String? = null,
+    val dryRun: Boolean? = null,
+    val logLevel: String? = null,
+    val uiOrigin: String? = null,
+)
+
+/** Apply [override] on top of [base], returning a new [Settings]. */
+fun applySettingsOverride(base: Settings, override: EditableSettings): Settings = base.copy(
+    sonarrUrl = override.sonarrUrl ?: base.sonarrUrl,
+    sonarrApiKey = override.sonarrApiKey ?: base.sonarrApiKey,
+    tautulliUrl = override.tautulliUrl ?: base.tautulliUrl,
+    tautulliApiKey = override.tautulliApiKey ?: base.tautulliApiKey,
+    qbitUrl = override.qbitUrl ?: base.qbitUrl,
+    qbitUsername = override.qbitUsername ?: base.qbitUsername,
+    qbitPassword = override.qbitPassword ?: base.qbitPassword,
+    sabUrl = override.sabUrl ?: base.sabUrl,
+    sabApiKey = override.sabApiKey ?: base.sabApiKey,
+    plexUrl = override.plexUrl ?: base.plexUrl,
+    plexToken = override.plexToken ?: base.plexToken,
+    traktClientId = override.traktClientId ?: base.traktClientId,
+    traktAccessToken = override.traktAccessToken ?: base.traktAccessToken,
+    dryRun = override.dryRun ?: base.dryRun,
+    logLevel = override.logLevel ?: base.logLevel,
+    uiOrigin = override.uiOrigin ?: base.uiOrigin,
+)
+
 private val TRUTHY = setOf("true", "1", "yes")
 
 /** Build a [Settings] from PRIORITARR_* env vars, overlaid with YAML if CONFIG_PATH is set. */

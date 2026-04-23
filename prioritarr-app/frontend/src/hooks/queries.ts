@@ -152,6 +152,49 @@ export function useSettings() {
   })
 }
 
+// Operator-editable settings (URLs, API keys, dryRun, logLevel,
+// uiOrigin). Persisted as a DB override on top of the env baseline;
+// changes only take effect after a container restart because clients
+// are constructed once at boot. Backend exposes:
+//   GET    /api/v2/settings          -> redacted view
+//   POST   /api/v2/settings          -> partial patch (this hook)
+//   DELETE /api/v2/settings          -> clear override (Reset)
+export interface EditableSettings {
+  sonarrUrl?: string | null
+  sonarrApiKey?: string | null
+  tautulliUrl?: string | null
+  tautulliApiKey?: string | null
+  qbitUrl?: string | null
+  qbitUsername?: string | null
+  qbitPassword?: string | null
+  sabUrl?: string | null
+  sabApiKey?: string | null
+  plexUrl?: string | null
+  plexToken?: string | null
+  traktClientId?: string | null
+  traktAccessToken?: string | null
+  dryRun?: boolean | null
+  logLevel?: string | null
+  uiOrigin?: string | null
+}
+
+export function useSaveSettings() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (patch: EditableSettings) =>
+      rawFetch('/api/v2/settings', { method: 'POST', body: JSON.stringify(patch) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }),
+  })
+}
+
+export function useResetSettings() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => rawFetch('/api/v2/settings', { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }),
+  })
+}
+
 export function useMappings() {
   return useQuery({
     queryKey: ['mappings'],
@@ -212,8 +255,13 @@ export function useSeriesSync() {
 export function useLibrarySync() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (opts: { dryRun?: boolean } = {}) =>
-      postJson<LibrarySyncReport>(`/api/v2/sync${opts.dryRun ? '?dryRun=true' : ''}`),
+    mutationFn: (opts: { dryRun?: boolean; limit?: number } = {}) => {
+      const params = new URLSearchParams()
+      if (opts.dryRun) params.set('dryRun', 'true')
+      if (opts.limit) params.set('limit', String(opts.limit))
+      const qs = params.toString()
+      return postJson<LibrarySyncReport>(`/api/v2/sync${qs ? `?${qs}` : ''}`)
+    },
     onSuccess: (_d, opts) => {
       if (opts.dryRun) return
       qc.invalidateQueries({ queryKey: ['series'] })

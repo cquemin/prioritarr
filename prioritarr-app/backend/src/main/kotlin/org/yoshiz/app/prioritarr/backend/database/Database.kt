@@ -194,6 +194,21 @@ class Database(dbPath: String) {
     }
 
     // ------------------------------------------------------------------
+    // app_settings_overrides
+    // ------------------------------------------------------------------
+
+    fun getSettingsOverride(): String? =
+        q.selectSettingsOverride().executeAsOneOrNull()?.payload
+
+    fun setSettingsOverride(payload: String) {
+        q.upsertSettingsOverride(payload, nowIsoOffset())
+    }
+
+    fun clearSettingsOverride() {
+        q.deleteSettingsOverride()
+    }
+
+    // ------------------------------------------------------------------
     // prune
     // ------------------------------------------------------------------
 
