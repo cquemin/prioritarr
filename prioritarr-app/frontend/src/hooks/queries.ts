@@ -406,6 +406,8 @@ export interface PriorityThresholds {
   p3UnwatchedMax: number
   p3DaysSinceWatchMax: number
   p4MinWatched: number
+  p5WhenNothingToDownload: boolean
+  p3DormantReleaseWindowDays: number
 }
 
 async function rawFetch<T>(

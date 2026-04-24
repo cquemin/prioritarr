@@ -244,6 +244,7 @@ class PriorityService(
             lastWatchedAt = lastWatchedAt,
             episodeReleaseDate = episodeReleaseDate,
             previousEpisodeReleaseDate = previousEpisodeReleaseDate,
+            monitoredMissingEpisodes = missing.size,
         )
     }
 

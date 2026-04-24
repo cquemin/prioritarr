@@ -564,6 +564,7 @@ function PriorityReason({ reason, loading }: { reason: string | null; loading: b
   }) as Array<[string, string]>
 
   function dayText(v: string): string {
+    if (v === 'never' || v === 'neverd' || v === '—') return 'never'
     const n = Number(v.replace(/d$/, ''))
     if (!Number.isFinite(n)) return v
     if (n === 0) return 'today'
@@ -573,14 +574,26 @@ function PriorityReason({ reason, loading }: { reason: string | null; loading: b
     return `${n} days ago (~${Math.round(n / 30)} months)`
   }
 
+  function statusText(v: string): string {
+    switch (v) {
+      case 'fully_downloaded': return 'fully downloaded — nothing to fetch'
+      case 'returning':        return 'returning from dormancy'
+      default:                 return v.replace(/_/g, ' ')
+    }
+  }
+
   function humanise(k: string, v: string): [string, string] {
     switch (k) {
       case 'watch':      return ['Watch progress', v]
       case 'unwatched':  return ['Episodes still to watch', v]
       case 'watched':    return ['Episodes watched', v]
+      case 'aired':      return ['Episodes aired', v]
+      case 'missing':    return ['Episodes still to download', v]
+      case 'seasons':    return ['Monitored seasons', v]
       case 'last_watch': return ['Last watched', dayText(v)]
       case 'release':    return ['Latest episode released', dayText(v)]
       case 'hiatus':     return ['On hiatus', v === 'true' ? 'yes' : 'no']
+      case 'status':     return ['Status', statusText(v)]
       default:           return [k.replace(/_/g, ' '), v]
     }
   }

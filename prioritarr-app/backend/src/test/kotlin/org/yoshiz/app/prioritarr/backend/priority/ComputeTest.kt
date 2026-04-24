@@ -6,6 +6,7 @@ import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import kotlin.test.assertTrue
 
 /**
  * Translation of prioritarr/tests/test_priority.py. Every original
@@ -24,6 +25,10 @@ class ComputeTest {
         releaseDaysAgo: Int? = 1,
         prevReleaseDaysAgo: Int? = 8,
         monitoredSeasons: Int = 1,
+        // Default to 1 so tests inherit "there's something to grab"
+        // behaviour and only the specific short-circuit tests pass 0.
+        // Reflects the common scenario the other tests encode.
+        missing: Int = 1,
     ) = SeriesSnapshot(
         seriesId = 1,
         title = "Test",
@@ -34,6 +39,7 @@ class ComputeTest {
         lastWatchedAt = lastWatchDaysAgo?.let { now.minus(Duration.ofDays(it.toLong())) },
         episodeReleaseDate = releaseDaysAgo?.let { now.minus(Duration.ofDays(it.toLong())) },
         previousEpisodeReleaseDate = prevReleaseDaysAgo?.let { now.minus(Duration.ofDays(it.toLong())) },
+        monitoredMissingEpisodes = missing,
     )
 
     // ---------- P1 ----------
@@ -175,6 +181,73 @@ class ComputeTest {
     @Test fun edge_no_previous_release_hiatus_false() {
         assertNotEquals(1, computePriority(
             snap(aired = 20, watched = 20, lastWatchDaysAgo = 2, releaseDaysAgo = 20, prevReleaseDaysAgo = null),
+            t, now
+        ).priority)
+    }
+
+    // ---------- Nothing-to-download short-circuit ----------
+
+    @Test fun nothing_to_download_collapses_to_p5_over_p2() {
+        // Frieren-style: fully watched + fully downloaded but lapsed
+        // more than 14d. Old rule: P2. New rule: P5 because there's
+        // literally nothing Sonarr can grab.
+        val r = computePriority(
+            snap(aired = 12, watched = 12, lastWatchDaysAgo = 30, releaseDaysAgo = 30, missing = 0),
+            t, now
+        )
+        assertEquals(5, r.priority)
+        assertTrue("status=fully_downloaded" in r.reason, "expected fully_downloaded status in reason; got: ${r.reason}")
+    }
+
+    @Test fun nothing_to_download_collapses_to_p5_over_p1() {
+        // Live-following shape (watched today + fresh release) but
+        // nothing missing. The gate fires before P1 so this is P5.
+        assertEquals(5, computePriority(
+            snap(aired = 10, watched = 10, lastWatchDaysAgo = 1, releaseDaysAgo = 2, missing = 0),
+            t, now
+        ).priority)
+    }
+
+    @Test fun nothing_to_download_toggle_off_keeps_engagement_rules() {
+        // With the gate disabled, the series falls through to the
+        // normal engagement evaluation. A caught-up show lapsed 30d
+        // with missing=0 returns to P2.
+        val tOff = t.copy(p5WhenNothingToDownload = false)
+        assertEquals(2, computePriority(
+            snap(aired = 12, watched = 12, lastWatchDaysAgo = 30, releaseDaysAgo = 30, missing = 0),
+            tOff, now
+        ).priority)
+    }
+
+    // ---------- P3 returning from dormancy ----------
+
+    @Test fun p3_dormant_show_with_new_release() {
+        // User finished the show 6 months ago. A new episode just
+        // dropped (missing=1, release=3d). Old rule: P5 (lastWatch too
+        // old for P1/P2/P3). New rule: P3 "returning from dormancy".
+        val r = computePriority(
+            snap(aired = 13, watched = 12, lastWatchDaysAgo = 180, releaseDaysAgo = 3, missing = 1),
+            t, now
+        )
+        assertEquals(3, r.priority)
+        assertTrue("status=returning" in r.reason, "expected returning status; got: ${r.reason}")
+    }
+
+    @Test fun p3_dormant_rescue_window_bounded() {
+        // Same setup but the new episode is 90 days old — outside
+        // p3DormantReleaseWindowDays (60). Falls through to P5.
+        assertEquals(5, computePriority(
+            snap(aired = 13, watched = 12, lastWatchDaysAgo = 180, releaseDaysAgo = 90, missing = 1),
+            t, now
+        ).priority)
+    }
+
+    @Test fun p3_dormant_rescue_requires_prior_engagement() {
+        // User only watched 5 of 13 (38% watched). Not historically
+        // engaged enough (below p2_watch_pct_min). Even with a fresh
+        // release + something missing, stays in P4 (backfill).
+        assertEquals(4, computePriority(
+            snap(aired = 13, watched = 5, lastWatchDaysAgo = 180, releaseDaysAgo = 3, missing = 1),
             t, now
         ).priority)
     }

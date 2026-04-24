@@ -80,6 +80,8 @@ fun applyPatch(base: PriorityThresholds, patch: JsonObject): PriorityThresholds 
         patch[key]?.jsonPrimitive?.doubleOrNull ?: fallback
     fun i(key: String, fallback: Int) =
         patch[key]?.jsonPrimitive?.intOrNull ?: fallback
+    fun b(key: String, fallback: Boolean) =
+        (patch[key] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: fallback
     return PriorityThresholds(
         p1WatchPctMin = d("p1WatchPctMin", base.p1WatchPctMin),
         p1DaysSinceWatchMax = i("p1DaysSinceWatchMax", base.p1DaysSinceWatchMax),
@@ -92,5 +94,7 @@ fun applyPatch(base: PriorityThresholds, patch: JsonObject): PriorityThresholds 
         p3UnwatchedMax = i("p3UnwatchedMax", base.p3UnwatchedMax),
         p3DaysSinceWatchMax = i("p3DaysSinceWatchMax", base.p3DaysSinceWatchMax),
         p4MinWatched = i("p4MinWatched", base.p4MinWatched),
+        p5WhenNothingToDownload = b("p5WhenNothingToDownload", base.p5WhenNothingToDownload),
+        p3DormantReleaseWindowDays = i("p3DormantReleaseWindowDays", base.p3DormantReleaseWindowDays),
     )
 }

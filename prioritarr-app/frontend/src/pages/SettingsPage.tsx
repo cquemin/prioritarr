@@ -29,25 +29,37 @@ import { useAuth } from '../hooks/useAuth'
 
 // Single source of truth for the editable threshold fields so the form
 // and the sandbox know the same set of knobs, labels, and step sizes.
-const THRESHOLD_FIELDS: Array<{
-  key: keyof PriorityThresholds
-  label: string
-  hint: string
-  step: number
-  min: number
-  max?: number
-}> = [
-  { key: 'p1WatchPctMin', label: 'P1 · watch% min', hint: '0–1. watchPct ≥ this OR unwatched ≤ p3_unwatched_max', step: 0.01, min: 0, max: 1 },
-  { key: 'p1DaysSinceWatchMax', label: 'P1 · last watch max (days)', hint: 'Inclusive upper bound for last_watch', step: 1, min: 0 },
+type ThresholdField =
+  | {
+      key: keyof PriorityThresholds
+      kind?: 'number'
+      label: string
+      hint: string
+      step: number
+      min: number
+      max?: number
+    }
+  | {
+      key: keyof PriorityThresholds
+      kind: 'checkbox'
+      label: string
+      hint: string
+    }
+
+const THRESHOLD_FIELDS: ThresholdField[] = [
+  { key: 'p1WatchPctMin', label: 'P1 · watch% min', hint: '0–1. watchPct ≥ this OR unwatched ≤ p3 unwatched max', step: 0.01, min: 0, max: 1 },
+  { key: 'p1DaysSinceWatchMax', label: 'P1 · last watch max (days)', hint: 'Inclusive upper bound for last-watch', step: 1, min: 0 },
   { key: 'p1DaysSinceReleaseMax', label: 'P1 · last release max (days)', hint: 'P1 requires fresh release within this many days', step: 1, min: 0 },
   { key: 'p1HiatusGapDays', label: 'P1 · hiatus gap (days)', hint: 'Gap between last two releases that marks "post-hiatus"', step: 1, min: 0 },
   { key: 'p1HiatusReleaseWindowDays', label: 'P1 · hiatus release window (days)', hint: 'Wider release window used when post-hiatus', step: 1, min: 0 },
-  { key: 'p2WatchPctMin', label: 'P2 · watch% min', hint: '0–1. OR-combined with unwatched ≤ p3_unwatched_max', step: 0.01, min: 0, max: 1 },
+  { key: 'p2WatchPctMin', label: 'P2 · watch% min', hint: '0–1. OR-combined with unwatched ≤ p3 unwatched max', step: 0.01, min: 0, max: 1 },
   { key: 'p2DaysSinceWatchMax', label: 'P2 · last watch max (days)', hint: 'Upper bound for the "lapsed" window', step: 1, min: 0 },
-  { key: 'p3WatchPctMin', label: 'P3 · watch% min', hint: '0–1. OR-combined with unwatched ≤ p3_unwatched_max', step: 0.01, min: 0, max: 1 },
+  { key: 'p3WatchPctMin', label: 'P3 · watch% min', hint: '0–1. OR-combined with unwatched ≤ p3 unwatched max', step: 0.01, min: 0, max: 1 },
   { key: 'p3UnwatchedMax', label: 'P3 · unwatched max', hint: 'Absolute-count gate shared by P1/P2/P3', step: 1, min: 0 },
   { key: 'p3DaysSinceWatchMax', label: 'P3 · last watch max (days)', hint: 'Upper bound for "actively watching"', step: 1, min: 0 },
+  { key: 'p3DormantReleaseWindowDays', label: 'P3 · dormant release window (days)', hint: 'Caught-up show lapsed past the P2 window but a new episode dropped this recently → P3 "returning from dormancy". 0 disables.', step: 1, min: 0 },
   { key: 'p4MinWatched', label: 'P4 · min watched', hint: 'Below this → P5', step: 1, min: 0 },
+  { key: 'p5WhenNothingToDownload', kind: 'checkbox', label: 'Collapse to P5 when nothing to download', hint: 'When every monitored-aired episode has a file, bypass the P1/P2/P3 bands and land in P5. Intended for "caught up, fully downloaded, waiting for next release" shows that shouldn\'t hold a queue slot.' },
 ]
 
 export function SettingsPage() {
@@ -196,23 +208,41 @@ function ThresholdsPanel() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {THRESHOLD_FIELDS.map((f) => (
-          <label key={f.key} className="flex flex-col text-xs space-y-1">
-            <span className="opacity-80">{f.label}</span>
-            <input
-              type="number"
-              value={draft[f.key]}
-              step={f.step}
-              min={f.min}
-              max={f.max}
-              onChange={(e) =>
-                setDraft({ ...draft, [f.key]: e.target.valueAsNumber })
-              }
-              className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
-            />
-            <span className="opacity-50">{f.hint}</span>
-          </label>
-        ))}
+        {THRESHOLD_FIELDS.map((f) => {
+          if (f.kind === 'checkbox') {
+            return (
+              <label key={f.key} className="flex flex-col text-xs space-y-1 justify-between">
+                <span className="opacity-80">{f.label}</span>
+                <div className="flex items-center gap-2 py-1">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(draft[f.key])}
+                    onChange={(e) => setDraft({ ...draft, [f.key]: e.target.checked })}
+                  />
+                  <span className="opacity-80">{draft[f.key] ? 'on' : 'off'}</span>
+                </div>
+                <span className="opacity-50">{f.hint}</span>
+              </label>
+            )
+          }
+          return (
+            <label key={f.key} className="flex flex-col text-xs space-y-1">
+              <span className="opacity-80">{f.label}</span>
+              <input
+                type="number"
+                value={draft[f.key] as number}
+                step={f.step}
+                min={f.min}
+                max={f.max}
+                onChange={(e) =>
+                  setDraft({ ...draft, [f.key]: e.target.valueAsNumber })
+                }
+                className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
+              />
+              <span className="opacity-50">{f.hint}</span>
+            </label>
+          )
+        })}
       </div>
 
       <SandboxPicker

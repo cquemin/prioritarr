@@ -34,6 +34,24 @@ data class PriorityThresholds(
     val p3UnwatchedMax: Int = 3,
     val p3DaysSinceWatchMax: Int = 60,
     val p4MinWatched: Int = 1,
+    /**
+     * When true, a series with zero missing monitored-aired episodes
+     * (every aired episode has a file) short-circuits to P5
+     * regardless of engagement. Meant to suppress "caught up but
+     * lapsed" shows that prioritarr can't actually do anything about
+     * until a new episode drops. Off = keep the old engagement-only
+     * behaviour.
+     */
+    val p5WhenNothingToDownload: Boolean = true,
+    /**
+     * For the "dormant show has new content" band: if the user is
+     * mostly caught up (>= p2_watch_pct_min) AND missing > 0 AND
+     * the latest release lands within this many days, the show is
+     * rescued from P5 into P3 — there's something to grab, user
+     * was historically engaged, just needs prioritarr to kick off a
+     * search. 0 disables the band entirely.
+     */
+    val p3DormantReleaseWindowDays: Int = 60,
 )
 
 /** Scheduler cadences. */
@@ -211,6 +229,8 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 p3UnwatchedMax = o.num("p3_unwatched_max") { it.toInt() } ?: thresholds.p3UnwatchedMax,
                 p3DaysSinceWatchMax = o.num("p3_days_since_watch_max") { it.toInt() } ?: thresholds.p3DaysSinceWatchMax,
                 p4MinWatched = o.num("p4_min_watched") { it.toInt() } ?: thresholds.p4MinWatched,
+                p5WhenNothingToDownload = (o["p5_when_nothing_to_download"] as? Boolean) ?: thresholds.p5WhenNothingToDownload,
+                p3DormantReleaseWindowDays = o.num("p3_dormant_release_window_days") { it.toInt() } ?: thresholds.p3DormantReleaseWindowDays,
             )
         }
         (root["intervals"] as? Map<*, *>)?.let { o ->

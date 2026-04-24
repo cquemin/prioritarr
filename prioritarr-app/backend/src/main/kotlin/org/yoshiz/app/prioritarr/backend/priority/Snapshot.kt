@@ -20,6 +20,13 @@ data class SeriesSnapshot(
     val lastWatchedAt: Instant?,
     val episodeReleaseDate: Instant?,
     val previousEpisodeReleaseDate: Instant?,
+    /**
+     * Count of monitored-aired episodes with no file on disk. The
+     * priority engine gates some bands on this: when zero, there's
+     * literally nothing prioritarr can grab, so the series collapses
+     * to P5 regardless of how engaged the user is.
+     */
+    val monitoredMissingEpisodes: Int = 0,
 )
 
 /** Computed priority for a single series. Mirrors PriorityResult in models.py. */
