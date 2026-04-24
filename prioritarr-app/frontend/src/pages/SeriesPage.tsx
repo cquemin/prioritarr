@@ -26,6 +26,7 @@ import {
   useUntrackDownload,
   type SearchHit,
 } from '../hooks/queries'
+import { navigate, useRoute } from '../hooks/useHashRoute'
 import { PRIORITY_CLASS, PRIORITY_LABELS } from '../lib/priority'
 
 interface SeriesRow {
@@ -45,7 +46,11 @@ interface SeriesRow {
 export function SeriesPage() {
   const { data, isLoading, error } = useSeriesList({ limit: 500 })
   const recompute = useRecomputeSeries()
-  const [openRow, setOpenRow] = useState<SeriesRow | null>(null)
+  // Drawer open/close is driven by the URL — `#/series/123` opens the
+  // drawer for series 123; closing reverts to `#/series`. Browser
+  // Back/Forward just works.
+  const route = useRoute()
+  const openSeriesId = route.page === 'series' ? route.seriesId : null
 
   // Global search — matches series title OR episode name. Debounced so
   // typing fast doesn't spam the /search endpoint.
@@ -159,7 +164,7 @@ export function SeriesPage() {
               onSelect: () => recompute.mutate(row.original.id),
               disabled: recompute.isPending,
             },
-            { label: 'View detail', onSelect: () => setOpenRow(row.original) },
+            { label: 'View detail', onSelect: () => navigate({ page: 'series', seriesId: row.original.id }) },
           ]}
         />
       ),
@@ -207,18 +212,25 @@ export function SeriesPage() {
         data={rows}
         columns={columns}
         rowKey={(r) => r.id}
-        onRowClick={(r) => setOpenRow(r)}
+        onRowClick={(r) => navigate({ page: 'series', seriesId: r.id })}
         emptyMessage="No series — Sonarr library is empty or series cache hasn't refreshed yet."
       />
 
-      {openRow && (
-        <SeriesDetailDrawer
-          row={openRow}
-          onClose={() => setOpenRow(null)}
-          onRecompute={() => recompute.mutate(openRow.id)}
-          isRecomputing={recompute.isPending}
-        />
-      )}
+      {openSeriesId != null && (() => {
+        // The row may not be in the currently-filtered list (e.g. user
+        // navigated directly to a series by URL). Fall back to the
+        // unfiltered full list so the drawer always has a row.
+        const row = allRows.find((r) => r.id === openSeriesId)
+        if (!row) return null
+        return (
+          <SeriesDetailDrawer
+            row={row}
+            onClose={() => navigate({ page: 'series' })}
+            onRecompute={() => recompute.mutate(openSeriesId)}
+            isRecomputing={recompute.isPending}
+          />
+        )
+      })()}
     </div>
   )
 }

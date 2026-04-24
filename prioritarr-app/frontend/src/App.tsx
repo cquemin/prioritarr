@@ -6,13 +6,12 @@ import { AuditPage } from './pages/AuditPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { useEventStream } from './hooks/useEventStream'
 import { useSettings } from './hooks/queries'
+import { navigate, useEnsureHash, useRoute, type Page } from './hooks/useHashRoute'
 
 // Downloads was its own tab; as of the unified-series-view change
 // every download surface lives inside the Series drawer alongside the
 // series it belongs to.
-type View = 'series' | 'audit' | 'settings'
-
-const NAV: Array<{ view: View; icon: React.ReactNode; label: string }> = [
+const NAV: Array<{ view: Page; icon: React.ReactNode; label: string }> = [
   { view: 'series', icon: <Star size={20} />, label: 'Series + Downloads' },
   { view: 'audit', icon: <ClipboardList size={20} />, label: 'Audit' },
   { view: 'settings', icon: <Settings size={20} />, label: 'Settings' },
@@ -39,7 +38,9 @@ function Root() {
 }
 
 function Shell() {
-  const [view, setView] = useState<View>('series')
+  useEnsureHash()
+  const route = useRoute()
+  const view = route.page
   const queryClient = useQueryClient()
   const { status, recent } = useEventStream(queryClient)
   const settings = useSettings()
@@ -57,7 +58,7 @@ function Shell() {
           {NAV.map((n) => (
             <button
               key={n.view}
-              onClick={() => setView(n.view)}
+              onClick={() => navigate({ page: n.view })}
               title={n.label}
               className={`p-3 rounded hover:bg-surface-3 ${view === n.view ? 'bg-surface-3 text-accent' : ''}`}
             >
