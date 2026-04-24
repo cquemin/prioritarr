@@ -1,387 +1,269 @@
 # Prioritarr
 
-Priority-aware download queue orchestrator for Sonarr + qBittorrent + SABnzbd.
+Priority-aware download orchestrator for the Sonarr / qBittorrent / SABnzbd / Plex / Trakt stack.
 
-Automatically prioritizes downloads based on your Plex watch history. Shows you're actively watching get downloaded first; backfill work waits.
+Sonarr downloads *everything*. Prioritarr asks the question Sonarr doesn't — **which downloads should I focus on first?** — and enforces the answer by pausing, boosting, demoting, and cleaning up downloads, searching for missing episodes in priority order, syncing watch state across your sources, and reaping orphan files.
 
-## How it works
+---
 
-Prioritarr sits between Sonarr and your download clients. When Sonarr grabs an episode, prioritarr computes a priority (P1-P5) based on your Plex watch history via Tautulli, then reorders the qBittorrent and SABnzbd queues accordingly.
+## What prioritarr does
 
-### Priority levels
+- **Classifies every series into P1–P5** based on your actual watch behaviour across Plex + Tautulli + Trakt.
+- **Enforces those priorities in qBittorrent and SABnzbd** — P1 downloads first, P4/P5 paused while P1 is in flight.
+- **Runs priority-ordered missing-episode searches** so Sonarr fetches what you'll watch next, not what it sees first.
+- **Detects stale / failed downloads and cleans them up**, re-queuing a fresh search in priority order.
+- **Mirrors watch state between Plex and Trakt** so both sides always agree.
+- **Reaps orphan files in the download folder** — deletes safe ones (already hardlinked into the library), triggers Sonarr to import the ones that were missed, surfaces the rest for manual review with rename / re-probe / delete / import buttons.
+- **Exposes a live UI** at `/prioritarr` with series list, priority detail drawer, Settings with a what-if preview for threshold tweaks, and the orphan-review table.
 
-| Priority | Name | Condition | Example |
-|----------|------|-----------|---------|
-| **P1** | Live-following | >= 90% watched, last watched <= 14 days ago, new episode released <= 7 days (or after hiatus <= 28 days) | Weekly anime you're current on |
-| **P2** | Caught-up but lapsed | >= 90% watched, last watched 14-60 days ago | Show you follow but haven't opened in a few weeks |
-| **P3** | A few unwatched | 1-3 unwatched episodes, last watched <= 60 days ago | A couple episodes behind, still engaged |
-| **P4** | Partial backfill | Some episodes watched, more than 3 unwatched | Catching up on a show you've started |
-| **P5** | Full backfill / dormant | Never watched, or dormant > 60 days | New library additions, old shows |
+---
 
-The decision tree runs top-down (first match wins). All thresholds are configurable in `prioritarr.yaml`.
+## Priority decision graph
 
-**Watch data sources (in order):**
-1. **Plex direct** -- queries Plex for current episode watch status (`viewCount`, `lastViewedAt`). Always accurate, covers periods when Tautulli was offline.
-2. **Tautulli history** -- play-by-play watch history. Tried first by Plex rating key, then by title match (handles Plex server migrations where rating keys changed).
+Series priority is recomputed on demand (when a Sonarr grab fires, when a Plex watched event fires, when thresholds change) and every 30 minutes in the background. The rule is a first-match-wins cascade:
 
-**Series matching (Sonarr to Plex):**
-1. **TVDB ID** -- via Tautulli `get_metadata` GUIDs. Unambiguous, covers 99% of shows.
-2. **Folder path** -- Sonarr series folder name matched against Plex file paths.
-3. **Title** -- normalized title comparison as last resort.
+```mermaid
+flowchart TD
+    START([Series recompute]) --> Snap[Build snapshot:<br/>aired, watched, missing,<br/>lastWatchedAt, release dates]
 
-Matched mappings are persisted in SQLite (`mapping_cache` table) so subsequent refreshes skip the expensive `get_metadata` calls.
+    Snap --> G0{p5 when nothing<br/>to download?<br/>AND missing == 0?}
+    G0 -->|yes| P5A([**P5** Nothing to download])
+
+    G0 -->|no| G1{watchPct ≥ p1 OR<br/>unwatched ≤ p3 max<br/>AND watched > 0<br/>AND lastWatch ≤ p1 days<br/>AND release ≤ p1 days<br/>or in hiatus window}
+    G1 -->|yes| P1([**P1** Live-following])
+
+    G1 -->|no| G2{watchPct ≥ p2 OR<br/>unwatched ≤ p3 max<br/>AND p1 days < lastWatch<br/>≤ p2 days}
+    G2 -->|yes| P2([**P2** Caught-up but lapsed])
+
+    G2 -->|no| G3{watchPct ≥ p3 OR<br/>unwatched ≤ p3 max<br/>AND lastWatch ≤ p3 days}
+    G3 -->|yes| P3A([**P3** A few unwatched])
+
+    G3 -->|no| G3b{missing > 0<br/>AND watchPct ≥ p2<br/>AND release ≤ p3 dormant<br/>window days<br/>AND lastWatch > p3 days}
+    G3b -->|yes| P3B([**P3** Returning from dormancy])
+
+    G3b -->|no| G4{watched ≥ p4 min<br/>AND NOT everEngaged}
+    G4 -->|yes| P4([**P4** Partial backfill])
+
+    G4 -->|no| P5B([**P5** Full backfill / dormant])
+
+    classDef p1 fill:#ef4444,color:white
+    classDef p2 fill:#f59e0b,color:white
+    classDef p3 fill:#10b981,color:white
+    classDef p4 fill:#3b82f6,color:white
+    classDef p5 fill:#6b7280,color:white
+    class P1 p1
+    class P2 p2
+    class P3A,P3B p3
+    class P4 p4
+    class P5A,P5B p5
+```
+
+**Engagement gates are OR-combined** on `watchPct` and absolute `unwatched` count so neither short shows (a few unwatched = low pct) nor long shows (a few unwatched = high pct) get stuck in the wrong band.
+
+**Operational gates** wrap the engagement rules so the priority reflects what prioritarr can *do*, not just how engaged the user is: if every aired episode has a file on disk, there's nothing to grab regardless of engagement (→ P5). If the user was dormant but a new episode just landed, the show gets rescued from P5 to P3.
+
+**Every threshold is editable live** in Settings → Priority thresholds, with a sandbox that recomputes priority for up to 3 series against your draft values before you save.
 
 ### Queue enforcement
 
-**SABnzbd** -- maps directly to SAB's native priority system:
+**qBittorrent** — uses pause/resume since qBit allows 40+ concurrent downloads:
 
-| Prioritarr | SAB |
-|------------|-----|
+| Highest active priority | Action |
+|------------------------|--------|
+| P1 in flight | Pause P4 + P5 torrents; boost P1 to top |
+| P2 in flight (no P1) | Pause P5 torrents |
+| Only P3/P4/P5 | Nothing paused |
+
+Torrents paused by prioritarr are tracked (`paused_by_us` flag); user-paused torrents are never touched. Automatic resume when higher-priority work finishes.
+
+**SABnzbd** — direct mapping to SAB's native priority bucket:
+
+| Prioritarr | SAB bucket |
+|------------|------------|
 | P1 | Force (bypasses pauses) |
 | P2 | High |
 | P3 | Normal |
 | P4 | Low |
 | P5 | Low (pushed to bottom) |
 
-**qBittorrent** -- uses pause/resume since qBit allows 40+ concurrent downloads:
+---
 
-| Highest active priority | Action |
-|------------------------|--------|
-| P1 in flight | Pause P4 + P5 torrents |
-| P2 in flight (no P1) | Pause P5 torrents |
-| Only P3/P4/P5 | Nothing paused |
+## Background jobs
 
-Torrents paused by prioritarr are tracked (`paused_by_us` flag) and automatically resumed when higher-priority work finishes. User-paused torrents are never touched.
+| Job | Cadence | What it does |
+|-----|---------|--------------|
+| **Priority refresh** | 30 min | Walks every monitored series, recomputes priority, updates cache. |
+| **Queue reconcile** | 15 min | Syncs `managed_downloads` with qBit + SAB state, applies pause-band rules. |
+| **Backfill sweep** | 2 h | Queries Sonarr for missing episodes, triggers up to N searches in P1-first order. |
+| **Cutoff sweep** | 24 h | Same but for cutoff-unmet episodes (upgrade candidates). |
+| **Queue janitor** | 30 min | Detects stalled/failed downloads, removes + blocklists, re-queues search. |
+| **Orphan reaper** | 60 min | Sweeps download folders, classifies orphans as delete/import/keep. |
+| **Mapping refresh** | 60 min | Refreshes Sonarr ↔ Plex series mapping (TVDB id / folder path / title fallback). |
+| **Series cache** | 5 min | Local read-model of Sonarr /series for fast UI queries. |
+| **Episode cache** | 60 min | Pulls every monitored episode title into a local table; feeds the global search box. |
 
-### Backfill search ordering
+Every job is wrapped in a supervisor coroutine — a crash in one doesn't kill the others.
 
-Prioritarr takes over Sonarr's missing-episode search scheduling. Every 2 hours, it queries Sonarr for missing episodes, groups by series, computes priority, and triggers searches in P1-first order (max 10 per sweep, 30s between each).
+---
 
-## Setup
+## Watch sources
 
-### Prerequisites
+Three pluggable providers, merged by union (a rewatch in any source counts as watched):
 
-- Docker + Docker Compose
-- Sonarr v4
-- qBittorrent and/or SABnzbd
-- Plex Media Server
-- Tautulli (can restore from existing config or fresh install)
+- **Tautulli** — play-by-play history via Tautulli's API. Matches via Plex rating key first, then title.
+- **Plex direct** — live `viewCount` / `lastViewedAt` straight from Plex Media Server. Use case: Tautulli was offline or installed after the fact, but Plex still remembers.
+- **Trakt** — user-wide watch history via OAuth device-code flow. Falls back to account-wide `/sync/history` when Trakt's per-show endpoint 5xx's.
 
-### 1. Docker Compose
+All three are **optional**. Prioritarr runs fine with any one of them.
 
-Add to your `docker-compose.yml`:
+### Cross-source sync (Plex ⇆ Trakt)
+
+Per-series or library-wide button in Settings. Symmetric diff — pushes any episodes Plex has but Trakt doesn't (and vice versa) so both sides converge. Idempotent. Dry-run mode samples the first 20 series so the preview completes in seconds. After running, a detail view per series shows exactly which SxxExx pairs moved in each direction.
+
+The drawer for each series surfaces a **"Watched on" table** with per-provider episode counts and last-watched timestamps. The "Sync Plex ⇆ Trakt" button only appears when the counts disagree; when they match it reads "✓ All sources synchronised".
+
+---
+
+## Orphan reaper
+
+Classifies every file in the download folders (configurable paths for qBit and SAB) against tracked torrents/jobs + Sonarr's view:
+
+- **DELETE** — hardlink count > 1 (twin in library survives) *or* Sonarr says `"Not an upgrade"` (better copy already imported). Zero-risk on the playable file.
+- **IMPORT** — Sonarr's manualimport returns the orphan with no rejection. Fires `ManualImport` command; Sonarr moves/hardlinks into the library and the next sweep DELETEs the stale copy.
+- **KEEP** — anything else (unparseable filename, unknown series, sample detection failure). Audit-logged; visible in Settings → Orphan reaper as a multi-select table with **Rename** (server moves in place + auto re-probes Sonarr), **Re-probe**, **Import** (only enabled when probe says it's importable), and single / bulk **Delete**.
+
+---
+
+## UI highlights
+
+- **Series list** — Priority chip + title (with "N dl" / "N paused" chips). Click a row to open the detail drawer.
+- **Global search** — searches series titles *and* monitored episode titles (SQL-side on the local episode cache). Matched episode shown under the title in the results.
+- **Detail drawer** — priority chip, humanised "Why this priority" table, per-source Watched on table, downloads with inline pause/resume/boost/demote/untrack, external deep links (Sonarr / Trakt / Tautulli / Plex / qBit / SAB), recent audit, identifiers. Skeleton while detail endpoint loads.
+- **URLs** — hash-based routing. Every page + drawer has a shareable URL (`…/prioritarr/#/series/123`).
+- **Settings** — editable service URLs + credentials (restart required to take effect on clients), priority thresholds with a live sandbox, cross-source sync, orphan reaper, library-wide search/mapping refresh.
+
+---
+
+## Setup (short version)
+
+Add to your docker-compose:
 
 ```yaml
 prioritarr-app:
   image: ghcr.io/cquemin/prioritarr-app:latest
-  container_name: prioritarr-app
   volumes:
-    - /path/to/docker/config/prioritarr-app:/config
+    - /path/to/config:/config
+    - ${DATADIR}:/storage              # needed for the orphan reaper
+    - ${MOVIEDIR}:/movie_storage       # optional, for movie-folder cleanup
   environment:
-    PRIORITARR_SONARR_URL: http://sonarr:8989         # include /sonarr if using URL base
+    PRIORITARR_SONARR_URL: http://sonarr:8989
     PRIORITARR_SONARR_API_KEY: ${SONARR_API_KEY}
     PRIORITARR_TAUTULLI_URL: http://tautulli:8181
     PRIORITARR_TAUTULLI_API_KEY: ${TAUTULLI_API_KEY}
-    PRIORITARR_QBIT_URL: http://vpn:8080               # or wherever qBit WebUI is
+    PRIORITARR_QBIT_URL: http://vpn:8080
     PRIORITARR_QBIT_USERNAME: ${QBIT_USERNAME}
     PRIORITARR_QBIT_PASSWORD: ${QBIT_PASSWORD}
     PRIORITARR_SAB_URL: http://sabnzbd:8080
     PRIORITARR_SAB_API_KEY: ${SAB_API_KEY}
-    PRIORITARR_PLEX_URL: http://plex:32400              # optional, for direct watch status
-    PRIORITARR_PLEX_TOKEN: ${PLEX_TOKEN}                # optional
-    PRIORITARR_API_KEY: ${PRIORITARR_API_KEY}           # required to access /api/v2/*
-    PRIORITARR_DRY_RUN: "true"                          # start in dry-run!
-    PRIORITARR_LOG_LEVEL: INFO                          # DEBUG for verbose
-    TZ: ${TZ}
-  healthcheck:
-    test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
-    interval: 30s
-    timeout: 5s
-    retries: 3
-    start_period: 60s
-  labels:
-    - autoheal=true
-  depends_on:
-    sonarr:
-      condition: service_healthy
-    tautulli:
-      condition: service_healthy
-  restart: unless-stopped
+    PRIORITARR_PLEX_URL: http://plex:32400            # optional
+    PRIORITARR_PLEX_TOKEN: ${PLEX_TOKEN}              # optional
+    PRIORITARR_TRAKT_CLIENT_ID: ${TRAKT_CLIENT_ID}    # optional
+    PRIORITARR_TRAKT_ACCESS_TOKEN: ${TRAKT_ACCESS}    # optional
+    PRIORITARR_API_KEY: ${PRIORITARR_API_KEY}
+    PRIORITARR_DRY_RUN: "true"                        # start here!
+  ports:
+    - "8000:8000"
 ```
 
-### 3. Configure webhooks
+Webhooks: Sonarr's **On Grab** to `/api/sonarr/on-grab`, Tautulli's **Watched** to `/api/plex-event`. Run in `DRY_RUN=true` first; flip to false when the logs look right.
 
-**Sonarr** -- Settings > Connect > Add > Webhook:
-- Name: `Prioritarr`
-- On Grab: enabled (everything else disabled)
-- URL: `http://prioritarr:8000/api/sonarr/on-grab`
-- Method: POST
+Trakt OAuth: POST `/oauth/device/code` with your client id, visit the returned `verification_url` with the `user_code`, poll `/oauth/device/token` until approved. Paste the `access_token` into env.
 
-**Tautulli** -- Settings > Notification Agents > Add > Webhook:
-- Webhook URL: `http://prioritarr:8000/api/plex-event`
-- Triggers: Watched
-- Body (Watched):
-```json
-{
-  "event": "watched",
-  "user": "{user}",
-  "grandparent_title": "{show_name}",
-  "grandparent_rating_key": "{grandparent_rating_key}",
-  "parent_media_index": "{season_num}",
-  "media_index": "{episode_num}",
-  "rating_key": "{rating_key}"
+---
+
+## Extending prioritarr
+
+### New watch source (e.g. BetaSeries)
+
+Already pluggable. Implement `WatchHistoryProvider` and register it in `Main.kt`:
+
+```kotlin
+interface WatchHistoryProvider {
+    val name: String
+    suspend fun historyFor(ref: SeriesRef): Result<List<WatchEvent>>
 }
+
+// SeriesRef carries the ids you might need to look the series up with:
+// seriesId (Sonarr), title, tvdbId. Pick whichever identifier your
+// source speaks. WatchEvent is (season, episode, watchedAt, source,
+// absoluteEpisode?) — you emit one per watched episode.
 ```
 
-### 4. Deploy
+The merge step unions across providers and dedupes by (season, episode) with latest-wins on `watchedAt`. A provider that returns `Result.failure(...)` is silently ignored; priority only degrades to `dependency_unreachable` when *every* configured provider fails.
 
-```bash
-# Start in dry-run mode first
-docker-compose up -d prioritarr
+### New downloader (e.g. Transmission, NZBGet)
 
-# Watch the logs
-docker logs -f prioritarr
-```
+Today the code calls `QBitClient` and `SABClient` concretely. Adding a third downloader means:
 
-### 5. Go live
+1. Create a client with the same surface (`getTorrents/getQueue`, `pause/resume`, `setPriority`, `delete`).
+2. Add a `managed_downloads.client` discriminator value and wire it through the reconciler's client switch + enforcement `PAUSED_STATES` union.
+3. If it has a distinct priority model, extend `computeSabPriority` / `PRIORITY_MAP`.
 
-Once you're satisfied with the dry-run output:
+A future refactor would extract a `DownloadClient` interface — the surface is small, the existing two implementations already share naming. Open PR if you start this.
 
-```bash
-# Set PRIORITARR_DRY_RUN=false in your .env or compose
-docker-compose up -d prioritarr
-```
+### New media tracker (e.g. Radarr for movies)
 
-## Monitoring via logs
+Currently tightly coupled to Sonarr's series/episode model. Adding Radarr needs a broader refactor:
 
-Prioritarr logs structured JSON to stdout. Use `docker logs prioritarr` to monitor.
+1. Abstract a `MediaCatalog` interface with `getAll()`, `getItem(id)`, `getChildren(id)` (episodes for series, releases for movies) — or separate `SeriesCatalog` / `MovieCatalog` interfaces.
+2. Generalise `SeriesSnapshot` → `MediaSnapshot<T>` so priority compute works on both.
+3. Add movie-aware branches to the pause-band rules (single-file downloads vs multi-episode).
 
-### Key log messages to look for
+This is meaningful work; happy to scope a design if interest.
 
-**Startup:**
-```
-prioritarr (kotlin) starting (dry_run=false, test_mode=false)
-Plex direct client configured at http://plex:32400
-```
+---
 
-**Mapping refresh (hourly):**
-```
-refreshMappings: 424 sonarr series, 223 plex shows, 221 matched (cached=221, tvdb=0, path=0, title=0, unmatched=2)
-```
-- `cached` = loaded from the SQLite `mapping_cache` table (fast)
-- `tvdb` = matched by TVDB ID this cycle
-- `unmatched` = Plex shows with no Sonarr match (normal for non-Sonarr content)
+## Configuration reference
 
-**OnGrab webhook (when Sonarr grabs an episode):**
-```
-[grab] Attack on Titan -> P1 via qbit/ABCDEF12 (episodes: [101])
-[grab] Bungo Stray Dogs -> P5 via sab/SABnzbd_nzo_ (episodes: [38269]) [DRY RUN]
-```
+### Env vars
 
-**Plex watched event:**
-```
-[watched] cache invalidated for series 42 (Plex episode finished)
-```
+All prefixed `PRIORITARR_`. Required: `SONARR_URL`, `SONARR_API_KEY`, `TAUTULLI_URL`, `TAUTULLI_API_KEY`, `QBIT_URL`, `SAB_URL`, `SAB_API_KEY`. Optional: `API_KEY` (locks `/api/v2/*`), `PLEX_URL` + `PLEX_TOKEN`, `TRAKT_CLIENT_ID` + `TRAKT_ACCESS_TOKEN`, `DRY_RUN`, `LOG_LEVEL`, `UI_ORIGIN`.
 
-**Reconcile loop (every 15 min):**
-```
-[qbit] reconcile: 979 items in client queue
-[qbit] adopted orphan abc123def4 -> series 42, assigned P1
-[qbit] priority changed abc123def4: P5 -> P1 (watch=95%, last_watch=2d...)
-```
+### Priority thresholds
 
-**Queue enforcement:**
-```
-[qbit] PAUSE xyz789ghi0 (P5 torrent, higher priority active)
-[qbit] RESUME xyz789ghi0 (no longer needs to be paused)
-[qbit] TOP_PRIORITY abc123def4 (P1 item)
-[sab] SET_PRIORITY SABnzbd_nzo_ -> Force (P1)
-```
-
-**Plex direct fallback:**
-```
-_build_series_snapshot: 'One Piece' Plex direct has more data (plex=84 vs tautulli=0 watched), using Plex
-_build_series_snapshot: 'One Piece' Plex has newer watch date (plex=2026-04-07 vs tautulli=2022-01-09)
-```
-
-**Backfill sweep (every 2h):**
-```
-[backfill] 1000 missing episodes across 137 series (max 10 searches this sweep)
-[backfill] priority breakdown: P1=2, P3=5, P4=10, P5=120
-[backfill] triggered search: series 42 (P1 Live-following)
-```
-
-### Log levels
-
-- `INFO` (default) -- all meaningful events: grabs, priority decisions, enforcement actions, sweeps
-- `DEBUG` -- adds per-item reconcile details, cache hits, Plex fallback decisions
-- `WARNING` -- dependency timeouts, stale heartbeats
-- `ERROR` -- API failures, exceptions
-
-Set via `PRIORITARR_LOG_LEVEL` environment variable.
-
-## Configuration
-
-All thresholds are in `prioritarr.yaml` (mounted at `/config/prioritarr.yaml`):
+Editable live via Settings → Priority thresholds, or pre-seeded via YAML at `$PRIORITARR_CONFIG_PATH`:
 
 ```yaml
 priority_thresholds:
-  p1_watch_pct_min: 0.90        # minimum % of monitored episodes watched for P1/P2
-  p1_days_since_watch_max: 14   # P1: must have watched within this many days
-  p1_days_since_release_max: 7  # P1: episode released within this many days
-  p1_hiatus_gap_days: 14        # gap between episodes to qualify as hiatus
-  p1_hiatus_release_window_days: 28  # P1 window extended to this for post-hiatus
-  p2_days_since_watch_max: 60   # P2: watched within 14-60 days
-  p3_unwatched_max: 3           # P3: max unwatched episodes
-  p3_days_since_watch_max: 60   # P3: must have watched within 60 days
-  p4_min_watched: 1             # P4: at least 1 episode watched
+  p1_watch_pct_min: 0.90
+  p1_days_since_watch_max: 14
+  p1_days_since_release_max: 7
+  p1_hiatus_gap_days: 14
+  p1_hiatus_release_window_days: 28
+  p2_watch_pct_min: 0.80
+  p2_days_since_watch_max: 60
+  p3_watch_pct_min: 0.75
+  p3_unwatched_max: 3
+  p3_days_since_watch_max: 60
+  p3_dormant_release_window_days: 60   # P3 "returning from dormancy" window
+  p4_min_watched: 1
+  p5_when_nothing_to_download: true    # short-circuit to P5 when missing == 0
+```
 
+### Job intervals
+
+```yaml
 intervals:
   reconcile_minutes: 15
   backfill_sweep_hours: 2
   cutoff_sweep_hours: 24
   backfill_max_searches_per_sweep: 10
-  backfill_delay_between_searches_seconds: 30
   cutoff_max_searches_per_sweep: 5
-
-cache:
-  priority_ttl_minutes: 60      # how long priority decisions are cached
-
-audit:
-  retention_days: 90            # audit log retention
-  webhook_dedupe_hours: 24      # webhook dedup window
+  backfill_delay_between_searches_seconds: 30
 ```
 
-## API endpoints
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/health` | GET | Liveness probe (Docker healthcheck / autoheal) |
-| `/ready` | GET | Readiness check with dependency status |
-| `/api/sonarr/on-grab` | POST | Sonarr OnGrab webhook receiver |
-| `/api/plex-event` | POST | Tautulli Watched notification receiver |
-
-## Development
-
-```bash
-# Install dev dependencies
-pip install -r requirements-dev.txt
-
-# Run tests
-make test
-
-# Run locally
-make run
-```
-
-## Architecture
-
-```
-Sonarr OnGrab webhook -----> prioritarr <----- Tautulli Watched webhook
-                                |
-                    +-----------+-----------+
-                    |           |           |
-                 Sonarr     Tautulli     Plex
-                 (series,   (watch      (direct watch
-                  episodes,  history)    status fallback)
-                  queue)
-                    |
-          +---------+---------+
-          |                   |
-      qBittorrent          SABnzbd
-      (pause/resume)       (priority levels)
-              |
-            SQLite
-     (state + mapping_cache)
-```
-
-## Contract Testing
-
-Prioritarr has a black-box HTTP contract test suite that locks the API surface. All tests run against the single `prioritarr-app` image via the mocks in `contract-tests/mocks/`.
-
-### Running locally against the Kotlin backend
-
-Restart the container with `PRIORITARR_TEST_MODE=true`:
-
-```bash
-docker run -d --name prioritarr-app \
-  -e PRIORITARR_TEST_MODE=true \
-  -e PRIORITARR_DRY_RUN=true \
-  -e PRIORITARR_API_KEY=ci-test-key \
-  # ... rest of env vars ...
-  ghcr.io/cquemin/prioritarr-app:latest
-```
-
-Then install and run:
-
-```bash
-cd contract-tests
-pip install -r requirements.txt
-CONTRACT_TEST_BASE_URL=http://localhost:8000 \
-CONTRACT_TEST_API_KEY=ci-test-key \
-  pytest -v
-```
-
-### Running against mocked upstream services
-
-`contract-tests/mocks/` contains WireMock stubs — use them when a live Sonarr/Tautulli/Plex stack isn't available:
-
-```bash
-cd contract-tests/mocks
-docker compose up -d
-# Point prioritarr at http://localhost:9001..9005 and launch as above.
-```
-
-### Regenerating `openapi.json`
-
-The OpenAPI spec is committed at the repo root and verified in CI. The Kotlin backend serves the committed file verbatim — there is no runtime generator. Edit `openapi.json` by hand to add/modify endpoints, then let CI diff the committed spec against the live server.
-
-### `PRIORITARR_TEST_MODE` safety
-
-`PRIORITARR_TEST_MODE=true` mounts destructive endpoints at `/api/v1/_testing/*` (reset all state, force stale heartbeat, inject series mappings). **Never enable this in production.** The default is `false`.
-
-### Web UI (Spec D)
-
-`ghcr.io/cquemin/prioritarr-app:latest` bundles a React-based operator console served at `/` on the same port as the API. Point a browser at the container, enter the API key you set via `PRIORITARR_API_KEY`, and you get:
-
-- **Series** — sortable list of every Sonarr series with its current priority, inline Recompute.
-- **Downloads** — every tracked managed download across qBit + SAB with pause/resume/boost/demote/untrack buttons.
-- **Audit** — filterable chronological log of every priority recompute, webhook, and cache invalidation.
-- **Settings** — runtime config (secrets redacted) + mapping refresh + log-out.
-- **Live updates** via SSE — priority recomputes, actions, and mapping refreshes show up in the list without a page reload. Small dot on the left rail flips red when the SSE stream drops.
-
-Frontend source + dev instructions in [`prioritarr-app/frontend/README.md`](prioritarr-app/frontend/README.md).
-
-### v2 API surface (Spec C)
-
-The `prioritarr-app` (Kotlin) backend adds a `/api/v2/*` read + control API for the upcoming UI. Every v2 endpoint requires authentication via `X-Api-Key: <key>` (or `Authorization: Bearer <key>`); the key comes from `PRIORITARR_API_KEY`. If unset, auth is disabled and a startup WARN is logged — dev mode only.
-
-Error bodies on `/api/v2/*` follow RFC 7807 Problem Details (`application/problem+json`). Webhooks (`/api/sonarr/on-grab`, `/api/plex-event`) keep the always-200 contract from Spec A and never emit an error body.
-
-Pagination uses arr-style envelope: `?offset=0&limit=50`, response wraps `records` in `{records, totalRecords, offset, limit}`.
-
-Real-time updates are available via Server-Sent Events at `GET /api/v2/events` — event types include `priority-recomputed`, `download-action`, `download-untracked`, `mapping-refreshed`, and a 30s `heartbeat`. Reconnect with `Last-Event-ID: <id>` to replay events you missed within the 1000-event ring buffer.
-
-Running contract tests against a v2-enabled backend requires `CONTRACT_TEST_API_KEY`:
-
-```bash
-CONTRACT_TEST_BASE_URL=http://localhost:8001 \
-CONTRACT_TEST_API_KEY=your-key \
-  pytest contract-tests/
-```
-
-### Spec §4 response-example corrections
-
-The original spec (`docs/specs/2026-04-14-prioritarr-api-contract-v1-design.md`) shows a handful of example response bodies that don't match the live backend. The code and the contract tests are the source of truth; a follow-up will correct the spec examples. The actual responses are:
-
-| Endpoint | Case | Wire format |
-|----------|------|-------------|
-| `POST /api/sonarr/on-grab` | Non-Grab | `{"status":"ignored","eventType":"<type>"}` |
-| `POST /api/sonarr/on-grab` | Processed | `{"status":"processed","priority":N,"label":"..."}` |
-| `POST /api/sonarr/on-grab` | Duplicate | `{"status":"duplicate","priority":N,"label":"..."}` |
-| `POST /api/plex-event` | Unmatched | `{"status":"unmatched","plex_key":"<key>"}` |
-| `POST /api/plex-event` | Matched | `{"status":"ok","series_id":N}` |
+---
 
 ## License
 
-MIT
+MIT.
