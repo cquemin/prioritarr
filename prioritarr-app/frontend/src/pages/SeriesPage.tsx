@@ -110,7 +110,10 @@ export function SeriesPage() {
         )
       },
       sortingFn: (a, b) => (a.original.priority ?? 99) - (b.original.priority ?? 99),
-      size: 60,
+      // w-[1%] + whitespace-nowrap is the standard "shrink column to
+      // its content" trick with `table-layout: auto` — keeps the
+      // Priority column just wide enough for the P1 chip.
+      meta: { cellClassName: 'w-[1%] whitespace-nowrap' },
     },
     {
       accessorKey: 'title',
@@ -147,7 +150,7 @@ export function SeriesPage() {
       header: '',
       enableSorting: false,
       enableColumnFilter: false,
-      size: 40,
+      meta: { cellClassName: 'w-[1%] whitespace-nowrap' },
       cell: ({ row }) => (
         <KebabMenu
           items={[

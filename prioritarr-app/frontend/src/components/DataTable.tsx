@@ -82,8 +82,13 @@ export function DataTable<T>(props: DataTableProps<T>) {
               {hg.headers.map((h) => {
                 const col = h.column
                 const sortDir = col.getIsSorted()
+                // Optional per-column width/class, carried on the
+                // column definition's `meta.cellClassName`. Use it for
+                // narrow-content columns (Priority chip, kebab cell)
+                // via e.g. `meta: { cellClassName: 'w-[1%] whitespace-nowrap' }`.
+                const extraClass = (col.columnDef.meta as { cellClassName?: string } | undefined)?.cellClassName ?? ''
                 return (
-                  <th key={h.id} className="px-4 py-2 align-top">
+                  <th key={h.id} className={`px-4 py-2 align-top ${extraClass}`}>
                     <div className="flex flex-col gap-1">
                       <button
                         type="button"
@@ -150,11 +155,14 @@ function DataTableRow<T>({
         onRowClick?.(row.original)
       }}
     >
-      {row.getVisibleCells().map((cell) => (
-        <td key={cell.id} className="px-4 py-2 align-middle">
-          {flexRender(cell.column.columnDef.cell, cell.getContext())}
-        </td>
-      ))}
+      {row.getVisibleCells().map((cell) => {
+        const extraClass = (cell.column.columnDef.meta as { cellClassName?: string } | undefined)?.cellClassName ?? ''
+        return (
+          <td key={cell.id} className={`px-4 py-2 align-middle ${extraClass}`}>
+            {flexRender(cell.column.columnDef.cell, cell.getContext())}
+          </td>
+        )
+      })}
     </tr>
   )
 }
