@@ -234,6 +234,15 @@ LIMIT :lim;
 pruneAudit:
 DELETE FROM audit_log WHERE ts < ?;
 
+-- Substring-match on action (parameter is a LIKE pattern with % as
+-- needed). Used by the /orphans endpoint to pull only reaper rows
+-- out of an audit_log dominated by high-frequency priority_set events.
+listAuditByActionPrefix:
+SELECT * FROM audit_log
+WHERE action LIKE ?
+ORDER BY ts DESC
+LIMIT ?;
+
 -- ------------------------------------------------------------------
 -- heartbeat
 -- ------------------------------------------------------------------

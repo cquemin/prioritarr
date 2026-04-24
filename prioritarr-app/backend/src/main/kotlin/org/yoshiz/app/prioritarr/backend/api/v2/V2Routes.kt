@@ -608,11 +608,11 @@ fun Route.v2Routes(state: AppState) {
 
     get("/orphans") {
         val limit = (call.request.queryParameters["limit"]?.toLongOrNull() ?: 500L).coerceIn(1, 5000)
-        // Show every orphan_reaper_* audit action from the last sweep set.
-        val rows = state.db.q.listAuditFiltered(seriesId = null, action = null, since = null, lim = limit)
-            .executeAsList()
-            .filter { it.action.startsWith("orphan_reaper_") }
-        // Bundle into a typed envelope so the UI can read fields directly.
+        // SQL-side LIKE on action prefix — filtering in-memory on
+        // listAuditFiltered would miss every reaper row whenever the
+        // top-N audit rows are dominated by high-frequency events
+        // like priority_set.
+        val rows = state.db.q.listAuditByActionPrefix("orphan_reaper_%", limit).executeAsList()
         val typed = rows.map { r ->
             OrphanAuditRow(
                 id = r.id,

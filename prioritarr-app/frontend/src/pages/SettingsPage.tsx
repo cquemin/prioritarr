@@ -157,8 +157,8 @@ function ThresholdsPanel() {
 
   return (
     <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
           <h2 className="font-semibold">Priority thresholds</h2>
           <p className="text-xs opacity-70 mt-0.5">
             OR-gated: a series counts as "engaged" when either the watch-percent
@@ -194,7 +194,7 @@ function ThresholdsPanel() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {THRESHOLD_FIELDS.map((f) => (
           <label key={f.key} className="flex flex-col text-xs space-y-1">
             <span className="opacity-80">{f.label}</span>
@@ -438,8 +438,8 @@ function ServiceCredentialsPanel({ current }: { current: any }) {
 
   return (
     <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
           <h2 className="font-semibold">Service credentials</h2>
           <p className="text-xs opacity-70 mt-0.5">
             Persisted as a DB override on top of the env baseline.
@@ -571,8 +571,8 @@ function LibrarySyncPanel() {
 
   return (
     <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
           <h2 className="font-semibold">Cross-source watch sync (Plex ⇆ Trakt)</h2>
           <p className="text-xs opacity-70 mt-0.5">
             Mirrors watch state both ways for every series — episodes
@@ -759,8 +759,8 @@ function OrphanReaperPanel() {
 
   return (
     <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
           <h2 className="font-semibold">Orphan reaper</h2>
           <p className="text-xs opacity-70 mt-0.5">
             Sweeps the configured download folders, classifying each
@@ -884,8 +884,8 @@ function KeptOrphanTable({ rows }: { rows: OrphanAuditRow[] }) {
           </span>
         )}
       </div>
-      <div className="bg-surface-0 border border-surface-3 rounded overflow-hidden">
-        <table className="w-full text-xs">
+      <div className="bg-surface-0 border border-surface-3 rounded overflow-x-auto">
+        <table className="w-full text-xs min-w-max">
           <thead className="bg-surface-2 text-left">
             <tr>
               <th className="px-2 py-1 w-8">

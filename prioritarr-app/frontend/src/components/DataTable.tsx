@@ -74,8 +74,8 @@ export function DataTable<T>(props: DataTableProps<T>) {
   }, [selection, data]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="bg-surface-1 rounded-lg border border-surface-3 overflow-hidden">
-      <table className="w-full text-sm">
+    <div className="bg-surface-1 rounded-lg border border-surface-3 overflow-x-auto">
+      <table className="w-full text-sm min-w-max">
         <thead className="bg-surface-2 text-left">
           {table.getHeaderGroups().map((hg) => (
             <tr key={hg.id}>

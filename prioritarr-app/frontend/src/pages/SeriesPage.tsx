@@ -88,10 +88,15 @@ export function SeriesPage() {
     ? allRows.filter((r) => searchHitsBySeriesId.has(r.id))
     : allRows
 
+  // Minimal 2-column layout: priority chip + title. Everything else
+  // (clients, paused counts, download count, cached-at) lives in the
+  // detail drawer you see on row-click. Keeps the table readable on
+  // narrow viewports and doesn't force horizontal scroll for
+  // secondary metadata.
   const columns: ColumnDef<SeriesRow>[] = [
     {
       accessorKey: 'priority',
-      header: 'Priority',
+      header: 'P',
       cell: ({ row }) => {
         const p = row.original.priority
         if (!p) return <span className="opacity-40">—</span>
@@ -105,18 +110,28 @@ export function SeriesPage() {
         )
       },
       sortingFn: (a, b) => (a.original.priority ?? 99) - (b.original.priority ?? 99),
+      size: 60,
     },
     {
       accessorKey: 'title',
-      header: 'Title',
+      header: 'Series',
       cell: ({ row }) => {
-        const hit = searchHitsBySeriesId.get(row.original.id)
+        const r = row.original
+        const hit = searchHitsBySeriesId.get(r.id)
         const matched = hit?.matchedEpisode
+        const chips: string[] = []
+        if (r.managedDownloadCount > 0) chips.push(`${r.managedDownloadCount} dl`)
+        if (r.pausedCount > 0) chips.push(`${r.pausedCount} paused`)
         return (
           <div className="space-y-0.5">
-            <span className="font-medium">{row.original.title}</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-medium">{r.title}</span>
+              {chips.map((c) => (
+                <span key={c} className="px-1.5 py-0.5 text-[10px] bg-surface-3 rounded opacity-70">{c}</span>
+              ))}
+            </div>
             {matched && (
-              <div className="text-xs opacity-70">
+              <div className="text-xs opacity-70 truncate">
                 <span className="font-mono">S{String(matched.season).padStart(2, '0')}E{String(matched.number).padStart(2, '0')}</span>
                 <span className="mx-1 opacity-50">·</span>
                 <span className="italic">{matched.title}</span>
@@ -128,53 +143,11 @@ export function SeriesPage() {
       filterFn: 'includesString',
     },
     {
-      id: 'clients',
-      accessorFn: (r) => r.clients.join(','),
-      header: 'Client',
-      cell: ({ row }) => {
-        const cs = row.original.clients
-        if (cs.length === 0) return <span className="opacity-40">—</span>
-        return (
-          <div className="flex gap-1">
-            {cs.map((c) => (
-              <span key={c} className="px-1.5 py-0.5 text-xs bg-surface-3 rounded font-mono">{c}</span>
-            ))}
-          </div>
-        )
-      },
-      filterFn: 'includesString',
-    },
-    {
-      id: 'paused',
-      header: 'Paused',
-      cell: ({ row }) => {
-        const { managedDownloadCount: n, pausedCount: p } = row.original
-        if (n === 0) return <span className="opacity-40">—</span>
-        if (p === 0) return <span className="opacity-60">no</span>
-        if (p === n) return <span className="text-amber-400">all ({p})</span>
-        return <span className="text-amber-400">{p} of {n}</span>
-      },
-      sortingFn: (a, b) => a.original.pausedCount - b.original.pausedCount,
-    },
-    {
-      accessorKey: 'computedAt',
-      header: 'Cached',
-      cell: ({ row }) => (
-        <span className="opacity-70 text-xs">
-          {row.original.computedAt?.slice(0, 19) ?? '—'}
-        </span>
-      ),
-    },
-    {
-      accessorKey: 'managedDownloadCount',
-      header: 'Downloads',
-      cell: ({ row }) => <span>{row.original.managedDownloadCount}</span>,
-    },
-    {
       id: '__actions',
       header: '',
       enableSorting: false,
       enableColumnFilter: false,
+      size: 40,
       cell: ({ row }) => (
         <KebabMenu
           items={[
