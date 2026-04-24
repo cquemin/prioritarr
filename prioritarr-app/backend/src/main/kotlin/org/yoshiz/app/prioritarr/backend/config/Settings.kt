@@ -66,6 +66,40 @@ data class Intervals(
 
 data class CacheConfig(val priorityTtlMinutes: Int = 60)
 
+/**
+ * Bandwidth-aware enforcement knobs. Controls when + whether to
+ * pause lower-priority torrents in favour of higher-priority ones
+ * based on the actual link utilisation, not just priority alone.
+ *
+ * Effective cap is picked at each reconcile tick:
+ *   quiet mode enabled  -> quiet_mode_max_mbps
+ *   inside peak window  -> peak_hours_max_mbps (when set)
+ *   otherwise           -> min(max_mbps, observed_peak_mbps * 1.1)
+ *
+ * Set max_mbps = 0 to disable the whole feature (reverts to the
+ * original simple pause-band rule).
+ */
+@kotlinx.serialization.Serializable
+data class BandwidthSettings(
+    /** Your line's advertised/real capacity in megabits per second. 0 disables the feature. */
+    val maxMbps: Int = 0,
+    /** Rolling observed peak the policy may auto-calibrate against. Filled by the telemetry layer; ignored when 0. */
+    val observedPeakMbps: Int = 0,
+    /** Utilisation at which we start considering pausing lower bands (default 90%). */
+    val utilisationThresholdPct: Double = 0.90,
+    /** If a lower-band torrent would finish inside this window, don't interrupt it. */
+    val etaBufferMinutes: Int = 10,
+    /** When P1's observed speed stays below this, it's peer-limited; pausing P4/P5 wouldn't help. */
+    val p1MinSpeedKbps: Int = 100,
+    /** Peak-hours profile. "HH:MM" start/end (inclusive-exclusive); null disables. */
+    val peakHoursStart: String? = null,
+    val peakHoursEnd: String? = null,
+    val peakHoursMaxMbps: Int? = null,
+    /** Manual "I'm streaming / on a call" override; when on, caps at [quietModeMaxMbps]. */
+    val quietModeEnabled: Boolean = false,
+    val quietModeMaxMbps: Int = 100,
+)
+
 data class AuditConfig(
     val retentionDays: Int = 90,
     val webhookDedupeHours: Int = 24,
@@ -117,6 +151,7 @@ data class Settings(
     val intervals: Intervals = Intervals(),
     val cache: CacheConfig = CacheConfig(),
     val audit: AuditConfig = AuditConfig(),
+    val bandwidth: BandwidthSettings = BandwidthSettings(),
 
     /** Paths swept by the OrphanReaper. Empty list disables the reaper. */
     val orphanReaperPaths: List<String> = listOf(
@@ -210,6 +245,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
     var intervals = Intervals()
     var cache = CacheConfig()
     var audit = AuditConfig()
+    var bandwidth = BandwidthSettings()
 
     if (configPath != null && File(configPath).exists()) {
         @Suppress("UNCHECKED_CAST")
@@ -252,6 +288,19 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 webhookDedupeHours = o.num("webhook_dedupe_hours") { it.toInt() } ?: audit.webhookDedupeHours,
             )
         }
+        (root["bandwidth"] as? Map<*, *>)?.let { o ->
+            bandwidth = bandwidth.copy(
+                maxMbps = o.num("max_mbps") { it.toInt() } ?: bandwidth.maxMbps,
+                utilisationThresholdPct = o.num("utilisation_threshold_pct") { it.toDouble() } ?: bandwidth.utilisationThresholdPct,
+                etaBufferMinutes = o.num("eta_buffer_minutes") { it.toInt() } ?: bandwidth.etaBufferMinutes,
+                p1MinSpeedKbps = o.num("p1_min_speed_kbps") { it.toInt() } ?: bandwidth.p1MinSpeedKbps,
+                peakHoursStart = o["peak_hours_start"] as? String ?: bandwidth.peakHoursStart,
+                peakHoursEnd = o["peak_hours_end"] as? String ?: bandwidth.peakHoursEnd,
+                peakHoursMaxMbps = o.num("peak_hours_max_mbps") { it.toInt() } ?: bandwidth.peakHoursMaxMbps,
+                quietModeEnabled = (o["quiet_mode_enabled"] as? Boolean) ?: bandwidth.quietModeEnabled,
+                quietModeMaxMbps = o.num("quiet_mode_max_mbps") { it.toInt() } ?: bandwidth.quietModeMaxMbps,
+            )
+        }
     }
 
     val dryRun = (env("DRY_RUN", "true") ?: "true").lowercase() !in setOf("false", "0", "no")
@@ -281,5 +330,6 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         intervals = intervals,
         cache = cache,
         audit = audit,
+        bandwidth = bandwidth,
     )
 }

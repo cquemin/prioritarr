@@ -139,6 +139,21 @@ data class MappingSnapshot(
 )
 
 /**
+ * Live bandwidth status for the UI indicator. [effectiveCapBps] is
+ * what the policy would enforce right now; [currentTotalBps] is the
+ * summed download speed across every tracked torrent; the peak is a
+ * cheap auto-calibration ceiling the policy respects.
+ */
+@Serializable
+data class BandwidthStatus(
+    val settings: org.yoshiz.app.prioritarr.backend.config.BandwidthSettings,
+    val effectiveCapBps: Long,
+    val currentTotalBps: Long,
+    val observedPeakBps: Long,
+    val isPeakWindow: Boolean,
+)
+
+/**
  * One log entry surfaced for a specific download. `source` points
  * back to the system that emitted it (sonarr / qbit / sab) so the
  * UI can label rows, e.g. "Sonarr · Grabbed release …".

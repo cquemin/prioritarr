@@ -303,6 +303,53 @@ export function useOrphans(limit = 500) {
   })
 }
 
+// Bandwidth-aware enforcement. Live-editable; takes effect on the
+// next reconcile tick (no restart).
+export interface BandwidthSettings {
+  maxMbps: number
+  observedPeakMbps: number
+  utilisationThresholdPct: number
+  etaBufferMinutes: number
+  p1MinSpeedKbps: number
+  peakHoursStart?: string | null
+  peakHoursEnd?: string | null
+  peakHoursMaxMbps?: number | null
+  quietModeEnabled: boolean
+  quietModeMaxMbps: number
+}
+export interface BandwidthStatus {
+  settings: BandwidthSettings
+  effectiveCapBps: number
+  currentTotalBps: number
+  observedPeakBps: number
+  isPeakWindow: boolean
+}
+
+export function useBandwidth() {
+  return useQuery({
+    queryKey: ['bandwidth'],
+    queryFn: () => rawFetch<BandwidthStatus>('/api/v2/settings/bandwidth'),
+    refetchInterval: 10_000,
+  })
+}
+export function useSaveBandwidth() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (next: BandwidthSettings) =>
+      rawFetch<BandwidthStatus>('/api/v2/settings/bandwidth', {
+        method: 'POST', body: JSON.stringify(next),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['bandwidth'] }),
+  })
+}
+export function useResetBandwidth() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => rawFetch<BandwidthStatus>('/api/v2/settings/bandwidth', { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['bandwidth'] }),
+  })
+}
+
 export function useResetSettings() {
   const qc = useQueryClient()
   return useMutation({

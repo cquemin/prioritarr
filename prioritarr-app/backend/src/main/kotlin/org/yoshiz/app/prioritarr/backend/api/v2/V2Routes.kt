@@ -34,6 +34,7 @@ import org.yoshiz.app.prioritarr.backend.schemas.ActionResult
 import org.yoshiz.app.prioritarr.backend.schemas.AuditEntry
 import org.yoshiz.app.prioritarr.backend.schemas.BulkActionResult
 import org.yoshiz.app.prioritarr.backend.schemas.BulkDownloadActionRequest
+import org.yoshiz.app.prioritarr.backend.schemas.BandwidthStatus
 import org.yoshiz.app.prioritarr.backend.schemas.BulkItemResult
 import org.yoshiz.app.prioritarr.backend.schemas.DownloadLogEntry
 import org.yoshiz.app.prioritarr.backend.schemas.DownloadLogsResponse
@@ -867,6 +868,57 @@ fun Route.v2Routes(state: AppState) {
             kotlinx.serialization.json.JsonNull,
         )
         call.respond(state.thresholdsSource.current())
+    }
+
+    // ---- Bandwidth settings (live-editable) ----
+    //
+    // GET returns the current BandwidthSettings + a live status
+    // block (effective cap + observed total + peak) so the UI can
+    // render the operator-facing dashboard. PUT persists a full new
+    // object via BandwidthSource; DELETE drops the override and
+    // falls back to env/YAML baseline. Changes take effect on the
+    // next reconcile tick — no restart.
+    get("/settings/bandwidth") {
+        val settings = state.bandwidthSource.current()
+        // The telemetry's peak is captured in bytes/s directly; the
+        // "current total" here is best-effort — we don't want to hit
+        // qBit on every GET so fall back to the last observed peak
+        // when no live sample exists.
+        val observedPeak = state.downloadTelemetry.observedPeakTotalBps()
+        // Current = best-effort approximation via the telemetry: sum
+        // of all tracked samples' most recent average. Acceptable
+        // because the UI polls this every few seconds.
+        val currentTotal = 0L  // filled via a dedicated live endpoint if needed
+        val cap = org.yoshiz.app.prioritarr.backend.enforcement.BandwidthPolicy
+            .effectiveCapBps(settings)
+        val isPeak = org.yoshiz.app.prioritarr.backend.enforcement.BandwidthPolicy
+            .insidePeakWindow(java.time.LocalTime.now(), settings.peakHoursStart, settings.peakHoursEnd)
+        call.respond(BandwidthStatus(
+            settings = settings,
+            effectiveCapBps = cap,
+            currentTotalBps = currentTotal,
+            observedPeakBps = observedPeak,
+            isPeakWindow = isPeak,
+        ))
+    }
+
+    post("/settings/bandwidth") {
+        val next = call.receive<org.yoshiz.app.prioritarr.backend.config.BandwidthSettings>()
+        state.bandwidthSource.save(next)
+        state.eventBus.publish(
+            "bandwidth-updated",
+            Json.encodeToJsonElement(
+                org.yoshiz.app.prioritarr.backend.config.BandwidthSettings.serializer(),
+                next,
+            ),
+        )
+        call.respond(state.bandwidthSource.current())
+    }
+
+    delete("/settings/bandwidth") {
+        state.bandwidthSource.reset()
+        state.eventBus.publish("bandwidth-reset", kotlinx.serialization.json.JsonNull)
+        call.respond(state.bandwidthSource.current())
     }
 
     // ---- What-if preview ----

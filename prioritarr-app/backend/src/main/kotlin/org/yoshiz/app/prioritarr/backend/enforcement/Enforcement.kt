@@ -15,6 +15,20 @@ data class QBitDownloadView(
     val priority: Int,
     val state: String,
     val pausedByUs: Boolean,
+    /** qBit's reported ETA in seconds, null if unknown/stalled. Used by the bandwidth-aware skip logic. */
+    val etaSeconds: Long? = null,
+)
+
+/**
+ * Contextual data the bandwidth-aware path uses to decide whether a
+ * pause is actually useful. [shouldPauseLowBand] is consulted before
+ * emitting a pause action — if it returns false, the pause is
+ * skipped (e.g. P1 is peer-limited or the candidate is close to
+ * finishing). Pass nulls / a no-op to disable the feature entirely
+ * and revert to the original priority-only rule.
+ */
+data class EnforcementContext(
+    val shouldPauseLowBand: (candidate: QBitDownloadView) -> Boolean = { true },
 )
 
 /**
@@ -38,7 +52,10 @@ data class QBitDownloadView(
  * that matters is the setManagedPaused(0) side-effect in the reconcile
  * handler.
  */
-fun computeQBitPauseActions(downloads: Collection<QBitDownloadView>): List<QBitAction> {
+fun computeQBitPauseActions(
+    downloads: Collection<QBitDownloadView>,
+    ctx: EnforcementContext = EnforcementContext(),
+): List<QBitAction> {
     val activePriorities = downloads
         .filter { it.state !in PAUSED_OR_ERRORED }
         .map { it.priority }
@@ -56,7 +73,13 @@ fun computeQBitPauseActions(downloads: Collection<QBitDownloadView>): List<QBitA
     for (d in downloads) {
         val isPaused = d.state in PAUSED_STATES
         if (d.priority in pauseLevels && !isPaused) {
-            actions += QBitAction(d.hash, "pause")
+            // Bandwidth context hook — skip the pause when the higher
+            // band is peer-limited (freeing bandwidth wouldn't help)
+            // or the candidate is close to finishing. The default
+            // predicate returns true, preserving old behaviour.
+            if (ctx.shouldPauseLowBand(d)) {
+                actions += QBitAction(d.hash, "pause")
+            }
         } else if (d.priority !in pauseLevels && d.pausedByUs) {
             // Either actually paused (resume truly un-pauses) or state
             // drifted already (resume is a no-op but the DB flag gets

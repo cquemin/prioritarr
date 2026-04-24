@@ -2,6 +2,8 @@ package org.yoshiz.app.prioritarr.backend.app
 
 import io.ktor.client.HttpClient
 import org.yoshiz.app.prioritarr.backend.clients.DownloadClient
+import org.yoshiz.app.prioritarr.backend.enforcement.BandwidthSource
+import org.yoshiz.app.prioritarr.backend.enforcement.DownloadTelemetry
 import org.yoshiz.app.prioritarr.backend.clients.QBitClient
 import org.yoshiz.app.prioritarr.backend.clients.SABClient
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
@@ -36,6 +38,10 @@ data class AppState(
      * (Transmission, NZBGet) means dropping it into this map.
      */
     val downloadClients: Map<String, DownloadClient>,
+    /** Rolling qBit speed samples used by the bandwidth-aware enforcement. */
+    val downloadTelemetry: DownloadTelemetry,
+    /** Live-editable bandwidth settings. Reconciler reads this each tick. */
+    val bandwidthSource: BandwidthSource,
     val mappings: MappingState,
     val priorityService: PriorityService,
     val thresholdsSource: ThresholdsSource,

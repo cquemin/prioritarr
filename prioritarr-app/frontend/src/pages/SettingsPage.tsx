@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import {
+  useBandwidth,
   useDeleteOrphans,
   useImportOrphan,
   useLibrarySync,
@@ -8,6 +9,8 @@ import {
   useOrphanSweep,
   useOrphans,
   usePriorityPreview,
+  useResetBandwidth,
+  useSaveBandwidth,
   useProbeOrphan,
   useRefreshMappings,
   useRenameOrphan,
@@ -18,6 +21,7 @@ import {
   useSeriesList,
   useSettings,
   useThresholds,
+  type BandwidthSettings,
   type EditableSettings,
   type OrphanAuditRow,
   type OrphanProbeResult,
@@ -100,6 +104,8 @@ export function SettingsPage() {
           </div>
         )}
       </div>
+
+      <BandwidthPanel />
 
       <LibrarySyncPanel />
 
@@ -1047,6 +1053,176 @@ function KeptOrphanRow({
         </td>
       </tr>
     </>
+  )
+}
+
+/**
+ * Bandwidth-aware enforcement panel. Surfaces the live effective cap
+ * + observed speed alongside the configuration form. Quiet-mode
+ * toggle is split out as a one-click button — it's the setting a
+ * user reaches for most often ("I'm starting a movie", "on a call").
+ */
+function BandwidthPanel() {
+  const live = useBandwidth()
+  const save = useSaveBandwidth()
+  const reset = useResetBandwidth()
+  const [draft, setDraft] = useState<BandwidthSettings | null>(null)
+
+  useEffect(() => {
+    if (live.data) setDraft(live.data.settings)
+  }, [live.data])
+
+  if (live.isLoading || !draft || !live.data) {
+    return (
+      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4">
+        <h2 className="font-semibold">Bandwidth</h2>
+        <p className="text-xs opacity-70 mt-1">Loading…</p>
+      </div>
+    )
+  }
+
+  const disabled = draft.maxMbps <= 0
+  const mbps = (bps: number) => (bps / 125_000).toFixed(1)
+  const dirty = JSON.stringify(draft) !== JSON.stringify(live.data.settings)
+
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <h2 className="font-semibold">Bandwidth-aware enforcement</h2>
+          <p className="text-xs opacity-70 mt-0.5">
+            Instead of pausing P4/P5 on sight, prioritarr only pauses
+            when (a) the queue is near your line's capacity AND (b)
+            the higher band would actually benefit AND (c) the
+            candidate isn't close to finishing. Set max = 0 to
+            disable and fall back to the naive rule.
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+          <button
+            type="button"
+            onClick={async () => {
+              const next: BandwidthSettings = { ...draft, quietModeEnabled: !draft.quietModeEnabled }
+              setDraft(next)
+              await save.mutateAsync(next)
+            }}
+            disabled={save.isPending}
+            className={`px-3 py-1 rounded text-sm whitespace-nowrap ${
+              draft.quietModeEnabled ? 'bg-amber-700 hover:bg-amber-600' : 'bg-surface-3 hover:bg-surface-2'
+            }`}
+            title="Toggle quiet mode — caps the queue while you're on a call or streaming"
+          >
+            {draft.quietModeEnabled ? '🤫 Quiet mode ON' : 'Quiet mode'}
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              if (!confirm('Reset bandwidth settings to env/YAML baseline?')) return
+              await reset.mutateAsync()
+            }}
+            disabled={reset.isPending}
+            className="px-3 py-1 rounded text-sm bg-surface-3 disabled:opacity-50"
+          >
+            {reset.isPending ? 'Resetting…' : 'Reset'}
+          </button>
+          <button
+            type="button"
+            disabled={!dirty || save.isPending}
+            onClick={() => save.mutate(draft)}
+            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-40"
+          >
+            {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-surface-0 border border-surface-3 rounded p-3">
+        <div>
+          <div className="opacity-60">Effective cap</div>
+          <div className="font-mono text-sm">
+            {disabled ? '—' : live.data.effectiveCapBps > 0 ? `${mbps(live.data.effectiveCapBps)} Mbps` : 'n/a'}
+          </div>
+        </div>
+        <div>
+          <div className="opacity-60">Current total</div>
+          <div className="font-mono text-sm">{mbps(live.data.currentTotalBps)} Mbps</div>
+        </div>
+        <div>
+          <div className="opacity-60">24h peak observed</div>
+          <div className="font-mono text-sm">{mbps(live.data.observedPeakBps)} Mbps</div>
+        </div>
+        <div>
+          <div className="opacity-60">State</div>
+          <div className="font-mono text-sm">
+            {disabled ? 'disabled' : draft.quietModeEnabled ? 'quiet' : live.data.isPeakWindow ? 'peak hours' : 'normal'}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <NumberField label="Line capacity (Mbps)" hint="0 = disabled. Set to your advertised/real line speed."
+          value={draft.maxMbps} min={0} step={1}
+          onChange={(v) => setDraft({ ...draft, maxMbps: v })} />
+        <NumberField label="Utilisation threshold"
+          hint="Fraction of the cap at which pausing lower bands becomes worthwhile."
+          value={draft.utilisationThresholdPct} min={0.1} max={1} step={0.05}
+          onChange={(v) => setDraft({ ...draft, utilisationThresholdPct: v })} />
+        <NumberField label="ETA buffer (minutes)"
+          hint="If a lower-band torrent would finish within this window, don't interrupt."
+          value={draft.etaBufferMinutes} min={0} step={1}
+          onChange={(v) => setDraft({ ...draft, etaBufferMinutes: v })} />
+        <NumberField label="P1 min speed (kbps)"
+          hint="Below this, P1 is peer-limited; pausing P4/P5 won't help → skip."
+          value={draft.p1MinSpeedKbps} min={0} step={10}
+          onChange={(v) => setDraft({ ...draft, p1MinSpeedKbps: v })} />
+        <NumberField label="Quiet-mode cap (Mbps)"
+          hint="Applied when Quiet mode is on."
+          value={draft.quietModeMaxMbps} min={1} step={5}
+          onChange={(v) => setDraft({ ...draft, quietModeMaxMbps: v })} />
+        <TextField label="Peak hours start (HH:MM)"
+          hint="Start of the evening / streaming window; leave blank to disable."
+          value={draft.peakHoursStart ?? ''}
+          onChange={(v) => setDraft({ ...draft, peakHoursStart: v || null })} />
+        <TextField label="Peak hours end (HH:MM)"
+          hint="Wraps over midnight fine (e.g. 22:00 → 02:00)."
+          value={draft.peakHoursEnd ?? ''}
+          onChange={(v) => setDraft({ ...draft, peakHoursEnd: v || null })} />
+        <NumberField label="Peak-hours cap (Mbps)"
+          hint="Cap that applies inside the window. Blank / 0 → fall back to line capacity."
+          value={draft.peakHoursMaxMbps ?? 0} min={0} step={5}
+          onChange={(v) => setDraft({ ...draft, peakHoursMaxMbps: v || null })} />
+      </div>
+    </div>
+  )
+}
+
+function NumberField({ label, hint, value, min, max, step, onChange }: {
+  label: string; hint: string; value: number; min?: number; max?: number; step?: number;
+  onChange: (v: number) => void
+}) {
+  return (
+    <label className="flex flex-col text-xs space-y-1">
+      <span className="opacity-80">{label}</span>
+      <input type="number" value={value} min={min} max={max} step={step}
+        onChange={(e) => onChange(e.target.valueAsNumber)}
+        className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm" />
+      <span className="opacity-50">{hint}</span>
+    </label>
+  )
+}
+
+function TextField({ label, hint, value, onChange }: {
+  label: string; hint: string; value: string; onChange: (v: string) => void
+}) {
+  return (
+    <label className="flex flex-col text-xs space-y-1">
+      <span className="opacity-80">{label}</span>
+      <input type="text" value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="HH:MM"
+        className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm" />
+      <span className="opacity-50">{hint}</span>
+    </label>
   )
 }
 

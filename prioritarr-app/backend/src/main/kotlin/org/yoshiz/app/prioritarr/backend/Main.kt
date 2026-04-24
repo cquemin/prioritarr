@@ -141,6 +141,10 @@ fun main() {
         qbit = qbit,
         sab = sab,
         downloadClients = mapOf(qbit.clientName to qbit, sab.clientName to sab),
+        downloadTelemetry = org.yoshiz.app.prioritarr.backend.enforcement.DownloadTelemetry(),
+        bandwidthSource = org.yoshiz.app.prioritarr.backend.enforcement.DbBandwidthSource(
+            db = db, baseline = settings.bandwidth,
+        ),
         mappings = mappings,
         priorityService = priorityService,
         thresholdsSource = thresholdsSource,
@@ -208,7 +212,13 @@ fun main() {
         while (isActive) {
             try {
                 val lookup = org.yoshiz.app.prioritarr.backend.reconcile.fetchSonarrQueueLookup(sonarr)
-                org.yoshiz.app.prioritarr.backend.reconcile.reconcileQbit(qbit, db, lookup, priorityService, settings.dryRun)
+                org.yoshiz.app.prioritarr.backend.reconcile.reconcileQbit(
+                    qbit, db, lookup, priorityService, settings.dryRun,
+                    // Read from the live source so quiet-mode toggles + line
+                    // cap changes take effect on the next tick without restart.
+                    bandwidth = state.bandwidthSource.current(),
+                    telemetry = state.downloadTelemetry,
+                )
                 org.yoshiz.app.prioritarr.backend.reconcile.reconcileSab(sab, db, lookup, priorityService, settings.dryRun)
             } catch (e: Exception) { logger.warn("reconcile: {}", e.message) }
             delay(intervals.reconcileMinutes * 60L * 1000L)

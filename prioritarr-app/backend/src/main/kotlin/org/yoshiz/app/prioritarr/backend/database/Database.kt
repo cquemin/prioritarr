@@ -209,6 +209,21 @@ class Database(dbPath: String) {
     }
 
     // ------------------------------------------------------------------
+    // app_bandwidth_overrides
+    // ------------------------------------------------------------------
+
+    fun getBandwidthOverride(): String? =
+        q.selectBandwidthOverride().executeAsOneOrNull()?.payload
+
+    fun setBandwidthOverride(payload: String) {
+        q.upsertBandwidthOverride(payload, nowIsoOffset())
+    }
+
+    fun clearBandwidthOverride() {
+        q.deleteBandwidthOverride()
+    }
+
+    // ------------------------------------------------------------------
     // prune
     // ------------------------------------------------------------------
 

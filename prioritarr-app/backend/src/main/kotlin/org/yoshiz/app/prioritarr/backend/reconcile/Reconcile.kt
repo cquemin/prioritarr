@@ -56,12 +56,32 @@ suspend fun reconcileQbit(
     sonarrQueueLookup: Map<String, Pair<Long, Long>>,
     priorityService: PriorityService,
     dryRun: Boolean,
+    bandwidth: org.yoshiz.app.prioritarr.backend.config.BandwidthSettings =
+        org.yoshiz.app.prioritarr.backend.config.BandwidthSettings(),
+    telemetry: org.yoshiz.app.prioritarr.backend.enforcement.DownloadTelemetry? = null,
 ) {
     val torrents = try {
         qbit.getTorrents()
     } catch (e: Exception) {
         logger.warn("[qbit] reconcile: get torrents failed: ${e.message}")
         return
+    }
+    // Feed observed speeds into the telemetry cache so the bandwidth
+    // policy's rolling averages stay fresh. Separate from enforcement
+    // so the data path is observable even when the feature is off.
+    if (telemetry != null) {
+        var total = 0L
+        val seen = HashSet<String>()
+        for (t in torrents) {
+            val obj = t.jsonObject
+            val hash = obj["hash"]?.jsonPrimitive?.contentOrNull ?: continue
+            val speed = obj["dlspeed"]?.jsonPrimitive?.longOrNull ?: 0L
+            telemetry.recordSample(hash, speed)
+            total += speed
+            seen += hash
+        }
+        telemetry.recordPeakTotal(total)
+        telemetry.prune(seen)
     }
     reconcileImpl(
         clientName = "qbit",
@@ -71,7 +91,9 @@ suspend fun reconcileQbit(
         db = db,
         sonarrQueueLookup = sonarrQueueLookup,
         priorityService = priorityService,
-        applyEnforcement = { if (!dryRun) applyQbitEnforcement(qbit, db, torrents) },
+        applyEnforcement = {
+            if (!dryRun) applyQbitEnforcement(qbit, db, torrents, bandwidth, telemetry)
+        },
     )
 }
 
@@ -199,21 +221,56 @@ private suspend fun applyQbitEnforcement(
     qbit: QBitClient,
     db: Database,
     queueItems: JsonArray,
+    bandwidth: org.yoshiz.app.prioritarr.backend.config.BandwidthSettings =
+        org.yoshiz.app.prioritarr.backend.config.BandwidthSettings(),
+    telemetry: org.yoshiz.app.prioritarr.backend.enforcement.DownloadTelemetry? = null,
 ) {
     val managed = db.listManagedDownloads("qbit")
     val views = managed.map { row ->
-        val state = queueItems
+        val qItem = queueItems
             .map { it.jsonObject }
             .firstOrNull { it["hash"]?.jsonPrimitive?.contentOrNull == row.client_id }
-            ?.get("state")?.jsonPrimitive?.contentOrNull ?: "downloading"
+        val state = qItem?.get("state")?.jsonPrimitive?.contentOrNull ?: "downloading"
+        val eta = qItem?.get("eta")?.jsonPrimitive?.longOrNull
         QBitDownloadView(
             hash = row.client_id,
             priority = row.current_priority.toInt(),
             state = state,
             pausedByUs = row.paused_by_us == 1L,
+            etaSeconds = eta,
         )
     }
-    val actions = computeQBitPauseActions(views)
+
+    // Build the bandwidth-aware predicate. Skip the pause when:
+    //   - A P1 download is currently peer-limited (pausing others
+    //     wouldn't help it go faster), OR
+    //   - The candidate-for-pause is within the ETA buffer of
+    //     finishing (wastes more than it frees).
+    // When the feature is disabled (maxMbps <= 0), the predicate is a
+    // no-op and every eligible torrent gets paused as before.
+    val ctx = if (bandwidth.maxMbps <= 0) {
+        org.yoshiz.app.prioritarr.backend.enforcement.EnforcementContext()
+    } else {
+        val policy = org.yoshiz.app.prioritarr.backend.enforcement.BandwidthPolicy
+        val totalBps = queueItems.sumOf { it.jsonObject["dlspeed"]?.jsonPrimitive?.longOrNull ?: 0L }
+        val p1Hashes = views.filter { it.priority == 1 }.map { it.hash }
+        val p1AvgBps = p1Hashes
+            .mapNotNull { telemetry?.averageBps(it) }
+            .maxOrNull()
+        val p1PeerLimited = policy.p1IsPeerLimited(bandwidth, p1AvgBps)
+        val overUtilised = policy.utilisationExceedsThreshold(bandwidth, totalBps)
+        org.yoshiz.app.prioritarr.backend.enforcement.EnforcementContext(
+            shouldPauseLowBand = { candidate ->
+                when {
+                    p1PeerLimited -> false
+                    !overUtilised -> false   // plenty of headroom; no need to pause
+                    policy.closeToFinish(bandwidth, candidate.etaSeconds) -> false
+                    else -> true
+                }
+            },
+        )
+    }
+    val actions = computeQBitPauseActions(views, ctx)
     if (actions.isNotEmpty()) logger.info("[qbit] enforcement: {} actions to apply", actions.size)
     for (action in actions) {
         val priority = views.first { it.hash == action.hash }.priority
