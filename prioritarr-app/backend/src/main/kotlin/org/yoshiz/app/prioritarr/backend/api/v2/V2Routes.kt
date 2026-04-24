@@ -14,6 +14,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -171,14 +172,69 @@ fun Route.v2Routes(state: AppState) {
             // back to null fields.
             val liveByClientId: Map<String, LiveDownloadState> = fetchLiveStates(state, managed)
 
+            // Fetch episodes once so we can (a) resolve episodeIds to
+            // SxxExx + title labels and (b) pick the "next wanted"
+            // episode for the drawer's no-downloads fallback.
+            val episodes = try { state.sonarr.getEpisodes(id) } catch (_: Exception) { kotlinx.serialization.json.JsonArray(emptyList()) }
+            val episodeById: Map<Long, kotlinx.serialization.json.JsonObject> = episodes
+                .mapNotNull { el ->
+                    val obj = el.jsonObject
+                    val epId = obj["id"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+                    epId to obj
+                }.toMap()
+            fun labelFor(epId: Long): String? {
+                val ep = episodeById[epId] ?: return null
+                val s = ep["seasonNumber"]?.jsonPrimitive?.longOrNull?.toInt() ?: return null
+                val n = ep["episodeNumber"]?.jsonPrimitive?.longOrNull?.toInt() ?: return null
+                val t = ep["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                return if (t.isNotBlank()) "S%02dE%02d %s".format(s, n, t) else "S%02dE%02d".format(s, n)
+            }
+            val nextWanted: org.yoshiz.app.prioritarr.backend.schemas.WantedEpisodeWire? = run {
+                // Prefer the earliest aired+monitored+!hasFile (real
+                // backfill candidate); fall back to the earliest
+                // unaired monitored episode (upcoming release).
+                val now = java.time.Instant.now()
+                val monitored = episodes.mapNotNull { el ->
+                    val obj = el.jsonObject
+                    if (obj["monitored"]?.jsonPrimitive?.booleanOrNull != true) return@mapNotNull null
+                    val s = obj["seasonNumber"]?.jsonPrimitive?.longOrNull?.toInt() ?: return@mapNotNull null
+                    if (s == 0) return@mapNotNull null
+                    obj
+                }
+                fun airInstant(obj: kotlinx.serialization.json.JsonObject): java.time.Instant? =
+                    obj["airDateUtc"]?.jsonPrimitive?.contentOrNull
+                        ?.let { runCatching { java.time.OffsetDateTime.parse(it).toInstant() }.getOrNull() }
+                val aired = monitored.filter {
+                    val t = airInstant(it) ?: return@filter false
+                    t <= now && it["hasFile"]?.jsonPrimitive?.booleanOrNull != true
+                }.sortedBy { airInstant(it) }
+                val upcoming = monitored.filter {
+                    val t = airInstant(it) ?: return@filter false
+                    t > now
+                }.sortedBy { airInstant(it) }
+                val chosen = aired.firstOrNull() ?: upcoming.firstOrNull()
+                chosen?.let { obj ->
+                    val s = obj["seasonNumber"]!!.jsonPrimitive.content.toInt()
+                    val n = obj["episodeNumber"]!!.jsonPrimitive.content.toInt()
+                    org.yoshiz.app.prioritarr.backend.schemas.WantedEpisodeWire(
+                        season = s,
+                        number = n,
+                        title = obj["title"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        airDateUtc = obj["airDateUtc"]?.jsonPrimitive?.contentOrNull,
+                        hasFile = obj["hasFile"]?.jsonPrimitive?.booleanOrNull == true,
+                    )
+                }
+            }
+
             val downloadWires = managed.map { row ->
                 val live = liveByClientId[row.client + ":" + row.client_id]
+                val epIds = parseEpisodeIds(row.episode_ids)
                 ManagedDownloadWire(
                     client = row.client,
                     clientId = row.client_id,
                     seriesId = row.series_id,
                     seriesTitle = title,
-                    episodeIds = parseEpisodeIds(row.episode_ids),
+                    episodeIds = epIds,
                     initialPriority = row.initial_priority.toInt(),
                     currentPriority = row.current_priority.toInt(),
                     pausedByUs = row.paused_by_us == 1L,
@@ -187,6 +243,7 @@ fun Route.v2Routes(state: AppState) {
                     liveState = live?.state,
                     liveErrorMessage = live?.errorMessage,
                     clientUrl = buildClientDeepLink(state.settings.uiOrigin, row.client, row.client_id),
+                    episodeLabels = epIds.mapNotNull { labelFor(it) },
                 )
             }
 
@@ -223,6 +280,7 @@ fun Route.v2Routes(state: AppState) {
                 recentAudit = state.db.listAudit(seriesId = id, limit = 10),
                 downloads = downloadWires,
                 externalLinks = links,
+                nextWantedEpisode = nextWanted,
             ))
         }
 

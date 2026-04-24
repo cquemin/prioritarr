@@ -40,6 +40,22 @@ data class SeriesDetail(
     val downloads: List<ManagedDownloadWire>,
     /** Pre-computed external URLs. Fields that can't be constructed for this deploy are null. */
     val externalLinks: ExternalLinks,
+    /**
+     * Next aired-and-missing (or next unaired) monitored episode for
+     * the series. Surfaces in the drawer when there's nothing
+     * currently downloading — so the UI can read "up next: S02E03"
+     * instead of "nothing happening." Null if nothing's coming.
+     */
+    val nextWantedEpisode: WantedEpisodeWire? = null,
+)
+
+@Serializable
+data class WantedEpisodeWire(
+    val season: Int,
+    val number: Int,
+    val title: String,
+    val airDateUtc: String?,
+    val hasFile: Boolean,
 )
 
 /**
@@ -88,6 +104,12 @@ data class ManagedDownloadWire(
     val liveErrorMessage: String? = null,
     /** Download client deep-link URL for this item, when one can be constructed. */
     val clientUrl: String? = null,
+    /**
+     * Human-readable labels for each episodeId (e.g. "S02E01 Barrier
+     * Day"). Parallel to [episodeIds] — same order. Resolved
+     * server-side so the UI doesn't need a second lookup.
+     */
+    val episodeLabels: List<String> = emptyList(),
 )
 
 @Serializable

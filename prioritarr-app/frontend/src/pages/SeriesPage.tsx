@@ -309,6 +309,15 @@ interface DownloadDto {
   liveState?: string | null
   liveErrorMessage?: string | null
   clientUrl?: string | null
+  episodeLabels?: string[]
+}
+
+interface WantedEpisodeDto {
+  season: number
+  number: number
+  title: string
+  airDateUtc?: string | null
+  hasFile: boolean
 }
 
 
@@ -425,12 +434,26 @@ function SeriesDetailDrawer({
           the user sees there's more coming. */}
       {detail.isLoading && !d && <DrawerLoadingSkeleton />}
 
+      {downloads.length === 0 && d?.nextWantedEpisode && (
+        <DetailField label="Next to download">
+          <NextWantedCard wanted={d.nextWantedEpisode as WantedEpisodeDto} />
+        </DetailField>
+      )}
+
       {downloads.length > 0 && (
         <DetailField label={`Downloads (${downloads.length})`}>
-          <div className="space-y-2">
+          {/* Multiple downloads = horizontal scroll carousel so each
+              card stays at a comfortable width. Single download =
+              stacked (no horizontal scroll overhead). */}
+          <div className={downloads.length > 1
+            ? "flex gap-2 overflow-x-auto pb-1 snap-x"
+            : "space-y-2"}>
             {downloads.map((dl) => (
-              <DownloadCard
+              <div
                 key={`${dl.client}-${dl.clientId}`}
+                className={downloads.length > 1 ? "min-w-[320px] max-w-[380px] flex-shrink-0 snap-start" : undefined}
+              >
+              <DownloadCard
                 dl={dl}
                 isPending={action.isPending || untrack.isPending}
                 onAction={(a) => action.mutate({ client: dl.client, clientId: dl.clientId, action: a })}
@@ -439,6 +462,7 @@ function SeriesDetailDrawer({
                   untrack.mutate({ client: dl.client, clientId: dl.clientId })
                 }}
               />
+              </div>
             ))}
           </div>
         </DetailField>
@@ -577,11 +601,23 @@ function DownloadCard({
           {dl.liveErrorMessage}
         </div>
       )}
+      {/* Episode labels are the most important thing on this card —
+          promote them above the rest. Shows "S02E01 Barrier Day"
+          instead of "[8341]". Wraps if a multi-ep pack. */}
+      {(dl.episodeLabels ?? []).length > 0 ? (
+        <div className="text-xs flex flex-wrap gap-1">
+          {(dl.episodeLabels ?? []).map((lbl) => (
+            <span key={lbl} className="px-1.5 py-0.5 rounded bg-surface-3/70 font-mono">{lbl}</span>
+          ))}
+        </div>
+      ) : dl.episodeIds.length > 0 ? (
+        <div className="text-xs opacity-70 font-mono">
+          {dl.episodeIds.length} episode{dl.episodeIds.length === 1 ? '' : 's'} (ids: {dl.episodeIds.join(', ')})
+        </div>
+      ) : null}
       <div className="text-xs grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 opacity-90">
         <span className="text-text-muted">Client state</span>
         <span className="font-mono">{dl.liveState ?? 'unknown'}</span>
-        <span className="text-text-muted">Episodes</span>
-        <span className="font-mono">{dl.episodeIds.join(', ') || '—'}</span>
         <span className="text-text-muted">First seen</span>
         <span className="font-mono">{dl.firstSeenAt.slice(0, 19)}</span>
         <span className="text-text-muted">Last reconciled</span>
@@ -650,6 +686,33 @@ function DownloadCard({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Compact card for the "Next to download" slot when a series has
+ * nothing currently being grabbed. Surfaces the earliest aired +
+ * missing episode (true backfill candidate), or the next unaired
+ * monitored episode if the library is fully up to date. Gives the
+ * user a reason to keep the drawer open rather than a blank area.
+ */
+function NextWantedCard({ wanted }: { wanted: WantedEpisodeDto }) {
+  const aired = wanted.airDateUtc ? new Date(wanted.airDateUtc) : null
+  const now = new Date()
+  const inPast = aired !== null && aired.getTime() < now.getTime()
+  const label = `S${String(wanted.season).padStart(2, '0')}E${String(wanted.number).padStart(2, '0')}`
+  return (
+    <div className="bg-surface-2 border border-surface-3 rounded-md p-3 flex items-center gap-3 flex-wrap">
+      <span className="px-2 py-0.5 text-xs bg-surface-3 rounded font-mono">{label}</span>
+      <span className="text-sm font-medium break-words flex-1 min-w-0">{wanted.title || '(untitled)'}</span>
+      <span className={`text-xs ${inPast ? 'text-amber-400' : 'text-green-400'}`}>
+        {aired
+          ? inPast
+            ? `aired ${aired.toISOString().slice(0, 10)} · waiting for grab`
+            : `airs ${aired.toISOString().slice(0, 10)}`
+          : 'air date unknown'}
+      </span>
     </div>
   )
 }
