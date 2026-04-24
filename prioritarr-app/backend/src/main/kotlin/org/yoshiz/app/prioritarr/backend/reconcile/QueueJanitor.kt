@@ -68,10 +68,6 @@ class QueueJanitor(
 
         val all = (stuckQbit + stuckSabFromQueue + failedSab)
             .sortedBy { it.priority ?: 6 }   // P1 first; null priorities last
-        if (all.isEmpty()) {
-            logger.info("queue-janitor: swept, nothing stuck (qbit + sab queues clean)")
-            return JanitorReport(0, 0, 0)
-        }
 
         var cleaned = 0
         var researched = 0
@@ -85,12 +81,131 @@ class QueueJanitor(
             // don't refuse later items in the same batch.
             if (!dryRun && item.episodeIds.isNotEmpty()) delay(perItemPauseMillis)
         }
+
+        // Client-side ghost sweep — catches downloads that fell
+        // through the stuck-detection net. A qBit torrent / SAB job
+        // that isn't in Sonarr's queue, isn't in our managed_downloads
+        // table, and whose file isn't hardlinked into the library is
+        // a genuine orphan: safe to delete on both sides.
+        val ghosts = findClientGhosts()
+        for (ghost in ghosts) {
+            if (dryRun) {
+                logger.info("queue-janitor: ghost in {} client_id={} [DRY RUN]", ghost.client, ghost.clientId)
+            } else {
+                logger.info("queue-janitor: deleting ghost from {} client_id={}", ghost.client, ghost.clientId)
+                try {
+                    when (ghost.client) {
+                        "qbit" -> qbit.delete(listOf(ghost.clientId), deleteFiles = true)
+                        "sab" -> {
+                            try { sab.deleteFromQueue(ghost.clientId, delFiles = true) }
+                            catch (_: Exception) { sab.deleteFromHistory(ghost.clientId, delFiles = true) }
+                        }
+                    }
+                    cleaned++
+                } catch (e: Exception) {
+                    logger.warn("queue-janitor: ghost delete failed {}/{}: {}",
+                        ghost.client, ghost.clientId, e.message)
+                }
+            }
+        }
+
+        if (all.isEmpty() && ghosts.isEmpty()) {
+            logger.info("queue-janitor: swept, nothing stuck and no ghosts")
+            return JanitorReport(0, 0, 0)
+        }
+
         logger.info(
-            "queue-janitor: scanned={} cleaned={} re_searched={} dryRun={}",
-            all.size, cleaned, researched, dryRun,
+            "queue-janitor: scanned={} cleaned={} re_searched={} ghosts={} dryRun={}",
+            all.size, cleaned, researched, ghosts.size, dryRun,
         )
-        return JanitorReport(scanned = all.size, cleaned = cleaned, researched = researched)
+        return JanitorReport(scanned = all.size + ghosts.size, cleaned = cleaned, researched = researched)
     }
+
+    /**
+     * Find qBit torrents + SAB jobs that:
+     *   1. aren't in Sonarr's queue (no pending grab record), AND
+     *   2. aren't in our managed_downloads (reconciler doesn't track), AND
+     *   3. don't have a hardlink twin in the library (file bytes are
+     *      not already safely imported elsewhere).
+     *
+     * Point (3) is the safety guard — if the file IS imported, an
+     * earlier pass should delete it via the priority-downgrade flow
+     * or OrphanReaper. A genuine ghost has bytes on disk only in the
+     * download location.
+     */
+    private suspend fun findClientGhosts(): List<Ghost> {
+        val sonarrDownloadIds: Set<String> = try {
+            sonarr.getQueue().mapNotNull { el ->
+                (el as? kotlinx.serialization.json.JsonObject)
+                    ?.get("downloadId")?.jsonPrimitive?.contentOrNull?.lowercase()
+            }.toSet()
+        } catch (e: Exception) {
+            logger.warn("queue-janitor: sonarr queue fetch failed, skipping ghost sweep: {}", e.message)
+            return emptyList()
+        }
+        val managedQbit = db.listManagedDownloads("qbit").map { it.client_id.lowercase() }.toSet()
+        val managedSab = db.listManagedDownloads("sab").map { it.client_id }.toSet()
+
+        val ghosts = mutableListOf<Ghost>()
+
+        // qBit — inspect each torrent's content_path to check the
+        // hardlink count. nlink > 1 means the file is safely imported
+        // somewhere else and it's still not safe to delete here (we
+        // want to be really conservative). An nlink == 1 ghost is
+        // holding its only copy and the janitor can reap it.
+        try {
+            for (t in qbit.getTorrents()) {
+                val obj = t.jsonObject
+                val hash = obj["hash"]?.jsonPrimitive?.contentOrNull?.lowercase() ?: continue
+                if (hash in sonarrDownloadIds || hash in managedQbit) continue
+                val contentPath = obj["content_path"]?.jsonPrimitive?.contentOrNull ?: continue
+                if (hasHardlinkTwinOutsideDownloads(contentPath)) continue
+                ghosts += Ghost(client = "qbit", clientId = hash)
+            }
+        } catch (e: Exception) {
+            logger.warn("queue-janitor: qbit ghost scan failed: {}", e.message)
+        }
+
+        // SAB — downloadIds in Sonarr's queue use the same format SAB
+        // emits (SABnzbd_nzo_xxx). Matching is case-sensitive per SAB.
+        try {
+            for (s in sab.getQueue()) {
+                val obj = (s as? kotlinx.serialization.json.JsonObject) ?: continue
+                val nzo = obj["nzo_id"]?.jsonPrimitive?.contentOrNull ?: continue
+                if (nzo.lowercase() in sonarrDownloadIds || nzo in managedSab) continue
+                ghosts += Ghost(client = "sab", clientId = nzo)
+            }
+        } catch (e: Exception) {
+            logger.warn("queue-janitor: sab ghost scan failed: {}", e.message)
+        }
+
+        return ghosts
+    }
+
+    /**
+     * True when the file at [contentPath] has at least one hardlink
+     * OUTSIDE any configured download folder — i.e. it's been
+     * imported into the library and is safe from a download-side
+     * delete. Folders resolve to the largest child file.
+     */
+    private fun hasHardlinkTwinOutsideDownloads(contentPath: String): Boolean {
+        return try {
+            val p = java.nio.file.Paths.get(contentPath)
+            if (!java.nio.file.Files.exists(p)) return false
+            val target = if (java.nio.file.Files.isDirectory(p)) {
+                java.nio.file.Files.walk(p).use { s ->
+                    s.filter { !java.nio.file.Files.isDirectory(it) }
+                        .max(Comparator.comparingLong { java.nio.file.Files.size(it) })
+                        .orElse(null)
+                }
+            } else p
+            if (target == null) return false
+            val links = (java.nio.file.Files.getAttribute(target, "unix:nlink") as? Number)?.toInt() ?: 1
+            links > 1
+        } catch (_: Exception) { false }
+    }
+
+    private data class Ghost(val client: String, val clientId: String)
 
     private suspend fun findStuckQbit(now: Instant): List<StuckItem> {
         val torrents = try {
