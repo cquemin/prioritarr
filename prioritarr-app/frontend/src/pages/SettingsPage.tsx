@@ -166,7 +166,8 @@ function ThresholdsPanel() {
             allowance. Edits take effect on next refresh (cache is cleared on save).
           </p>
         </div>
-        <div className="flex gap-2">
+        {/* Action buttons stack vertically full-width on mobile, row on sm+. */}
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
           <button
             type="button"
             onClick={async () => {
@@ -452,7 +453,8 @@ function ServiceCredentialsPanel({ current }: { current: any }) {
             )}
           </p>
         </div>
-        <div className="flex gap-2">
+        {/* Action buttons stack vertically full-width on mobile, row on sm+. */}
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
           <button
             type="button"
             onClick={() => setRevealSecrets(!revealSecrets)}
@@ -580,7 +582,8 @@ function LibrarySyncPanel() {
             Sequential (one HTTP call per series). Safe to re-run.
           </p>
         </div>
-        <div className="flex gap-2">
+        {/* Action buttons stack vertically full-width on mobile, row on sm+. */}
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
           <button
             onClick={() => sync.mutate({ dryRun: true, limit: 20 })}
             disabled={sync.isPending}
@@ -770,7 +773,8 @@ function OrphanReaperPanel() {
             judgement). Runs hourly; sweep on demand below.
           </p>
         </div>
-        <div className="flex gap-2">
+        {/* Action buttons stack vertically full-width on mobile, row on sm+. */}
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
           <button
             onClick={() => sweep.mutate({ dryRun: true })}
             disabled={sweep.isPending}
