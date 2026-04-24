@@ -57,4 +57,14 @@ interface DownloadClient {
      * decision based on the active-queue band rule.
      */
     suspend fun applyPriority(clientId: String, prioritarrPriority: Int)
+
+    /**
+     * Fully remove a download from the client. [deleteFiles]=true
+     * also reclaims the bytes from disk — the common case, because
+     * once a user asks to delete a "ghost" download they almost
+     * always want its partial file gone too. Leaving [deleteFiles]=
+     * false is for the rare case of "I already moved the file
+     * somewhere and just want the client to stop tracking it."
+     */
+    suspend fun deleteOne(clientId: String, deleteFiles: Boolean = true)
 }

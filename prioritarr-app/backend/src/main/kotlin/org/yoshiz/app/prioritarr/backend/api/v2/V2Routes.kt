@@ -448,7 +448,15 @@ fun Route.v2Routes(state: AppState) {
                     "resume" -> dc.resumeOne(clientId)
                     "boost" -> dc.boostOne(clientId)
                     "demote" -> dc.demoteOne(clientId)
-                    else -> throw ValidationException("action", "must be pause|resume|boost|demote")
+                    // "delete" removes from the client AND deletes the
+                    // file bytes on disk. Also clears the managed_downloads
+                    // row so the UI stops listing it. Destructive — the UI
+                    // gates this behind a confirmation.
+                    "delete" -> {
+                        dc.deleteOne(clientId, deleteFiles = true)
+                        state.db.deleteManagedDownload(client, clientId)
+                    }
+                    else -> throw ValidationException("action", "must be pause|resume|boost|demote|delete")
                 }
             } catch (e: ValidationException) { throw e }
             catch (e: Exception) {
@@ -490,8 +498,8 @@ fun Route.v2Routes(state: AppState) {
             if (req.items.isEmpty()) {
                 throw ValidationException("items", "must contain at least one {client, clientId}")
             }
-            if (req.action !in setOf("pause", "resume", "boost", "demote", "untrack")) {
-                throw ValidationException("action", "must be pause|resume|boost|demote|untrack")
+            if (req.action !in setOf("pause", "resume", "boost", "demote", "delete", "untrack")) {
+                throw ValidationException("action", "must be pause|resume|boost|demote|delete|untrack")
             }
 
             val results = req.items.map { ref ->
@@ -1147,6 +1155,10 @@ private suspend fun applyDownloadAction(
             "resume" -> dc.resumeOne(clientId)
             "boost" -> dc.boostOne(clientId)
             "demote" -> dc.demoteOne(clientId)
+            "delete" -> {
+                dc.deleteOne(clientId, deleteFiles = true)
+                state.db.deleteManagedDownload(client, clientId)
+            }
             else -> return BulkItemResult(client, clientId, ok = false, message = "unknown action: $action")
         }
     } catch (e: Exception) {

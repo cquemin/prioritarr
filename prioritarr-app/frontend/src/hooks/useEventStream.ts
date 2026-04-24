@@ -50,6 +50,17 @@ export function useEventStream(queryClient: QueryClient) {
           if (appEvent.id != null) localStorage.setItem(LAST_EVENT_ID_KEY, String(appEvent.id))
           setRecent((prev) => [appEvent, ...prev].slice(0, 20))
 
+          // Extract seriesId from the payload when present — webhook
+          // events that affect a specific series include it so we
+          // can narrow the cache invalidation to the matching
+          // useSeries(id) query instead of blowing the whole list.
+          const seriesId =
+            typeof appEvent.payload === 'object' &&
+            appEvent.payload !== null &&
+            'series_id' in (appEvent.payload as any)
+              ? (appEvent.payload as any).series_id
+              : null
+
           switch (appEvent.type) {
             case 'priority-recomputed':
               queryClient.invalidateQueries({ queryKey: ['series'] })
@@ -57,6 +68,37 @@ export function useEventStream(queryClient: QueryClient) {
             case 'download-action':
             case 'download-untracked':
               queryClient.invalidateQueries({ queryKey: ['downloads'] })
+              if (seriesId != null) queryClient.invalidateQueries({ queryKey: ['series', seriesId] })
+              break
+            // Sonarr webhook: episode imported. The priority engine's
+            // "has file" tally changed for this series — recompute
+            // and re-fetch the drawer.
+            case 'episode-imported':
+            case 'episode-deleted':
+              queryClient.invalidateQueries({ queryKey: ['series'] })
+              if (seriesId != null) {
+                queryClient.invalidateQueries({ queryKey: ['series', seriesId] })
+                queryClient.invalidateQueries({ queryKey: ['watch-status', seriesId] })
+              }
+              break
+            case 'series-removed':
+              // Series gone from Sonarr — flush the cache entries that
+              // referenced it so the UI drops it immediately instead
+              // of polling for a 404.
+              queryClient.invalidateQueries({ queryKey: ['series'] })
+              if (seriesId != null) queryClient.invalidateQueries({ queryKey: ['series', seriesId] })
+              break
+            // SAB post-processing webhook: a job transitioned into
+            // Completed / Failed. Downloads list needs a refresh so
+            // the pill updates.
+            case 'download-completed':
+            case 'download-failed':
+              queryClient.invalidateQueries({ queryKey: ['downloads'] })
+              queryClient.invalidateQueries({ queryKey: ['series'] })
+              break
+            case 'import-failed':
+              // Surface via the event ticker only; no query to
+              // invalidate because the state hasn't changed.
               break
             case 'mapping-refreshed':
               queryClient.invalidateQueries({ queryKey: ['mappings'] })

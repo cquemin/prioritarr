@@ -28,6 +28,8 @@ class QBitClient(
     override suspend fun resumeOne(clientId: String) = resume(listOf(clientId))
     override suspend fun boostOne(clientId: String) = topPriority(listOf(clientId))
     override suspend fun demoteOne(clientId: String) = bottomPriority(listOf(clientId))
+    override suspend fun deleteOne(clientId: String, deleteFiles: Boolean) =
+        delete(listOf(clientId), deleteFiles = deleteFiles)
 
     /**
      * For qBit, the prioritarr label translates to a pause/resume

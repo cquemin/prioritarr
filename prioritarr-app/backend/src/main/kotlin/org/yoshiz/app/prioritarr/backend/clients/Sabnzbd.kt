@@ -32,6 +32,17 @@ class SABClient(
     override suspend fun applyPriority(clientId: String, prioritarrPriority: Int) {
         setPriority(clientId, PRIORITY_MAP[prioritarrPriority] ?: 0)
     }
+    override suspend fun deleteOne(clientId: String, deleteFiles: Boolean) {
+        // SAB keeps an nzo in either the queue or the history; try
+        // queue first since that's where active items live, fall back
+        // to history for already-finished/failed jobs. Either path
+        // honours del_files so the partial data on disk gets swept.
+        try {
+            deleteFromQueue(clientId, delFiles = deleteFiles)
+        } catch (_: Exception) {
+            deleteFromHistory(clientId, delFiles = deleteFiles)
+        }
+    }
 
     private val root: String = baseUrl.trimEnd('/')
 

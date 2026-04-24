@@ -163,28 +163,133 @@ fun Application.prioritarrModule(state: AppState) {
             val payload = appJson.parseToJsonElement(raw) as JsonObject
             val eventType = payload["eventType"]?.jsonPrimitive?.contentOrNull ?: "unknown"
 
-            if (eventType != "Grab") {
-                call.respond(OnGrabIgnored(eventType = eventType))
+            // Route by eventType. Grab is the original flow; the other
+            // events fire SSE notifications so the UI's drawer can
+            // invalidate its detail query without waiting for the
+            // next poll. Test events just 200 so Sonarr's "Test
+            // connection" button succeeds.
+            when (eventType) {
+                "Grab" -> {
+                    val event = parseOnGrabPayload(payload)
+                    val priorityResult = state.priorityService.priorityForSeries(event.seriesId)
+                    // handleOnGrab does its own dedupe + upsert + audit.
+                    val processed = handleOnGrab(
+                        event, state.db, priorityResult.priority, dryRun = state.settings.dryRun
+                    )
+                    if (processed) {
+                        call.respond(OnGrabProcessed(priority = priorityResult.priority, label = priorityResult.label))
+                    } else {
+                        call.respond(OnGrabDuplicate(priority = priorityResult.priority, label = priorityResult.label))
+                    }
+                }
+
+                // Episode imported — Sonarr moved the downloaded file
+                // into the library. Invalidate the priority cache so
+                // the drawer's "Why this priority" recomputes with the
+                // new hasFile state, then push an SSE event.
+                "Download" -> {
+                    val seriesId = (payload["series"] as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                    val episodes = (payload["episodes"] as? kotlinx.serialization.json.JsonArray).orEmpty()
+                        .mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull?.toLongOrNull() }
+                    if (seriesId != null) {
+                        state.db.invalidatePriorityCache(seriesId)
+                        state.eventBus.publish(
+                            "episode-imported",
+                            kotlinx.serialization.json.Json.parseToJsonElement(
+                                """{"series_id":$seriesId,"episode_ids":${episodes}}""",
+                            ),
+                        )
+                        logger.info("[sonarr-webhook] Download: series {} episodes {}", seriesId, episodes)
+                    }
+                    call.respond(OnGrabIgnored(eventType = eventType))
+                }
+
+                // Episode file deleted — user removed via Sonarr UI or
+                // the watched-archiver. Push so any open drawer re-fetches.
+                "EpisodeFileDelete" -> {
+                    val seriesId = (payload["series"] as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                    if (seriesId != null) {
+                        state.eventBus.publish(
+                            "episode-deleted",
+                            kotlinx.serialization.json.Json.parseToJsonElement("""{"series_id":$seriesId}"""),
+                        )
+                        logger.info("[sonarr-webhook] EpisodeFileDelete: series {}", seriesId)
+                    }
+                    call.respond(OnGrabIgnored(eventType = eventType))
+                }
+
+                // Series removed — clear priority cache + any managed
+                // downloads that may still reference it.
+                "SeriesDelete" -> {
+                    val seriesId = (payload["series"] as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                    if (seriesId != null) {
+                        state.db.invalidatePriorityCache(seriesId)
+                        state.eventBus.publish(
+                            "series-removed",
+                            kotlinx.serialization.json.Json.parseToJsonElement("""{"series_id":$seriesId}"""),
+                        )
+                        logger.info("[sonarr-webhook] SeriesDelete: series {}", seriesId)
+                    }
+                    call.respond(OnGrabIgnored(eventType = eventType))
+                }
+
+                // Import failed — surface in the UI so operator can
+                // investigate. Usually means Sonarr couldn't match
+                // the file or a permission / path issue occurred.
+                "ManualInteractionRequired" -> {
+                    val seriesId = (payload["series"] as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                    val msg = payload["message"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    state.eventBus.publish(
+                        "import-failed",
+                        kotlinx.serialization.json.Json.parseToJsonElement(
+                            """{"series_id":${seriesId ?: "null"},"message":"${msg.replace("\"", "\\\"")}"}""",
+                        ),
+                    )
+                    logger.warn("[sonarr-webhook] ManualInteractionRequired: series {} msg={}", seriesId, msg)
+                    call.respond(OnGrabIgnored(eventType = eventType))
+                }
+
+                // Test + everything else: 200 so Sonarr's test button
+                // succeeds and new event types don't 500.
+                else -> {
+                    call.respond(OnGrabIgnored(eventType = eventType))
+                }
+            }
+        }
+
+        // SAB post-processing webhook. Configure SAB with a
+        // "Post-Processing Script" that curls this endpoint on
+        // completion (wrapper script in /config/scripts/). Fields
+        // we care about: nzo_id, status (Completed / Failed),
+        // fail_message, category. Emits download-completed or
+        // download-failed so the UI flips the state promptly
+        // rather than waiting for the 15-min reconcile.
+        post("/api/sab/webhook") {
+            val raw = try { call.receiveText() } catch (_: Exception) { "" }
+            val nzoId = call.request.queryParameters["nzo_id"]
+                ?: call.request.queryParameters["nzo"]
+                ?: runCatching { (appJson.parseToJsonElement(raw) as JsonObject)["nzo_id"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+            val status = call.request.queryParameters["status"]
+                ?: runCatching { (appJson.parseToJsonElement(raw) as JsonObject)["status"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+            val failMessage = call.request.queryParameters["fail_message"]
+                ?: runCatching { (appJson.parseToJsonElement(raw) as JsonObject)["fail_message"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+            if (nzoId == null) {
+                call.respond(io.ktor.http.HttpStatusCode.BadRequest, OnGrabIgnored(eventType = "sab:missing_nzo_id"))
                 return@post
             }
-
-            val event = parseOnGrabPayload(payload)
-            val priorityResult = state.priorityService.priorityForSeries(event.seriesId)
-
-            // handleOnGrab handles dedupe + upsert + audit internally; the
-            // return value distinguishes processed (true) from duplicate
-            // (false). Don't peek the dedupe ourselves — the previous
-            // "peek then insert again" pattern inserted the row twice,
-            // making handleOnGrab's own dedupe check fail, short-circuit,
-            // and skip the audit write.
-            val processed = handleOnGrab(
-                event, state.db, priorityResult.priority, dryRun = state.settings.dryRun
-            )
-            if (processed) {
-                call.respond(OnGrabProcessed(priority = priorityResult.priority, label = priorityResult.label))
-            } else {
-                call.respond(OnGrabDuplicate(priority = priorityResult.priority, label = priorityResult.label))
+            val eventName = when {
+                status.equals("Failed", ignoreCase = true) -> "download-failed"
+                status.equals("Completed", ignoreCase = true) -> "download-completed"
+                else -> "download-status-update"
             }
+            state.eventBus.publish(
+                eventName,
+                kotlinx.serialization.json.Json.parseToJsonElement(
+                    """{"nzo_id":"${nzoId.replace("\"","\\\"")}","status":"${status ?: ""}","fail_message":"${(failMessage ?: "").replace("\"","\\\"")}"}""",
+                ),
+            )
+            logger.info("[sab-webhook] {} nzo={} status={}", eventName, nzoId, status)
+            call.respond(OnGrabProcessed(priority = 0, label = eventName))
         }
 
         post("/api/plex-event") {

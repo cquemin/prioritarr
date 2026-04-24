@@ -77,13 +77,14 @@ export function useDownloadLogs(client: string, clientId: string, enabled: boole
 export function useDownloadAction() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (v: { client: string; clientId: string; action: 'pause' | 'resume' | 'boost' | 'demote' }) => {
-      const { data, error } = await apiClient.POST(
-        '/api/v2/downloads/{client}/{clientId}/actions/{action}',
-        { params: { path: v } },
+    mutationFn: async (v: { client: string; clientId: string; action: 'pause' | 'resume' | 'boost' | 'demote' | 'delete' }) => {
+      // Bypass the openapi-typed client — `delete` was added to the
+      // backend but the openapi.json regen is its own PR. Raw fetch
+      // keeps us unblocked without schema churn.
+      return rawFetch<unknown>(
+        `/api/v2/downloads/${v.client}/${encodeURIComponent(v.clientId)}/actions/${v.action}`,
+        { method: 'POST' },
       )
-      if (error) throw error
-      return data
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['downloads'] }),
   })

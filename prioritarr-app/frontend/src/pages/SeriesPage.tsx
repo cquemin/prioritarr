@@ -605,9 +605,21 @@ function DownloadCard({
           {showLogs ? 'Hide logs' : 'Logs'}
         </button>
         <button
-          onClick={onUntrack}
+          onClick={() => {
+            if (!confirm('Delete this download AND its file bytes on disk? This cannot be undone.')) return
+            onAction('delete' as any)
+          }}
           disabled={isPending}
           className="px-2 py-1 rounded bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
+          title="Remove from the client and delete the partial/complete file on disk"
+        >
+          Delete + files
+        </button>
+        <button
+          onClick={onUntrack}
+          disabled={isPending}
+          className="px-2 py-1 rounded bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
+          title="Stop managing this download; leave it alone in the client"
         >
           Untrack
         </button>
