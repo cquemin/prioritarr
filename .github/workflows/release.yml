@@ -1,15 +1,18 @@
 name: Build and Push Docker Image
 
+# Push + release triggers temporarily disabled — local Docker builds
+# are the deploy path while iterating. Re-enable by uncommenting the
+# release / push blocks below.
 on:
-  release:
-    types: [published]
-  push:
-    branches: [main]
-    paths:
-      - 'prioritarr-app/**'
-      - 'contract-tests/**'
-      - 'openapi.json'
-      - '.github/workflows/**'
+  # release:
+  #   types: [published]
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - 'prioritarr-app/**'
+  #     - 'contract-tests/**'
+  #     - 'openapi.json'
+  #     - '.github/workflows/**'
   workflow_dispatch:
 
 env:
