@@ -342,6 +342,25 @@ async function postJson<T>(path: string): Promise<T> {
   return (await res.json()) as T
 }
 
+// Per-provider watch status for a single series. Drives the drawer's
+// "watched on" breakdown and the "sync available / all in sync" gate.
+export interface ProviderWatchStatus {
+  source: string
+  ok: boolean
+  watchedEpisodeCount: number
+  lastWatchedAt: string | null
+  errorMessage?: string | null
+}
+
+export function useWatchStatus(seriesId: number | null) {
+  return useQuery({
+    queryKey: ['watch-status', seriesId],
+    queryFn: () =>
+      rawFetch<ProviderWatchStatus[]>(`/api/v2/series/${seriesId}/watch-status`),
+    enabled: seriesId != null,
+  })
+}
+
 export function useSeriesSync() {
   const qc = useQueryClient()
   return useMutation({

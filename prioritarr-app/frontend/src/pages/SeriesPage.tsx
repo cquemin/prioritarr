@@ -10,7 +10,7 @@
 
 import { type ColumnDef } from '@tanstack/react-table'
 import { ExternalLink, Search, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 
 import { DataTable } from '../components/DataTable'
 import { KebabMenu } from '../components/KebabMenu'
@@ -24,6 +24,8 @@ import {
   useSeriesList,
   useSeriesSync,
   useUntrackDownload,
+  useWatchStatus,
+  type ProviderWatchStatus,
   type SearchHit,
 } from '../hooks/queries'
 import { navigate, useRoute } from '../hooks/useHashRoute'
@@ -131,15 +133,15 @@ export function SeriesPage() {
         if (r.managedDownloadCount > 0) chips.push(`${r.managedDownloadCount} dl`)
         if (r.pausedCount > 0) chips.push(`${r.pausedCount} paused`)
         return (
-          <div className="space-y-0.5">
+          <div className="space-y-0.5 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-medium">{r.title}</span>
+              <span className="font-medium break-words">{r.title}</span>
               {chips.map((c) => (
                 <span key={c} className="px-1.5 py-0.5 text-[10px] bg-surface-3 rounded opacity-70">{c}</span>
               ))}
             </div>
             {matched && (
-              <div className="text-xs opacity-70 truncate">
+              <div className="text-xs opacity-70 break-words">
                 <span className="font-mono">S{String(matched.season).padStart(2, '0')}E{String(matched.number).padStart(2, '0')}</span>
                 <span className="mx-1 opacity-50">·</span>
                 <span className="italic">{matched.title}</span>
@@ -275,6 +277,14 @@ function SeriesDetailDrawer({
   const action = useDownloadAction()
   const untrack = useUntrackDownload()
   const sync = useSeriesSync()
+  const watchStatus = useWatchStatus(row.id)
+
+  // Sync button should only show when a delta exists between watch
+  // providers. If every source reports the same episode count we're
+  // already in sync; the button is replaced with a short "synchronised"
+  // info text instead.
+  const okStatuses = (watchStatus.data ?? []).filter((s) => s.ok)
+  const syncNeeded = okStatuses.length > 1 && new Set(okStatuses.map((s) => s.watchedEpisodeCount)).size > 1
 
   const titleNode = sonarrUrl ? (
     <a
@@ -306,15 +316,21 @@ function SeriesDetailDrawer({
           >
             {isRecomputing ? 'Recomputing…' : 'Recompute priority'}
           </button>
-          <button
-            type="button"
-            onClick={() => sync.mutate({ id: row.id })}
-            disabled={sync.isPending}
-            className="px-3 py-1.5 rounded bg-surface-3 text-sm disabled:opacity-50"
-            title="Sync watch state between Plex and Trakt (mirror missing episodes)"
-          >
-            {sync.isPending ? 'Syncing…' : 'Sync Plex ⇆ Trakt'}
-          </button>
+          {syncNeeded ? (
+            <button
+              type="button"
+              onClick={() => sync.mutate({ id: row.id })}
+              disabled={sync.isPending}
+              className="px-3 py-1.5 rounded bg-surface-3 text-sm disabled:opacity-50"
+              title="Push missing episodes across Plex ⇆ Trakt so both sides agree"
+            >
+              {sync.isPending ? 'Syncing…' : 'Sync Plex ⇆ Trakt'}
+            </button>
+          ) : okStatuses.length > 0 ? (
+            <span className="px-3 py-1.5 text-xs text-green-400 opacity-80 self-center">
+              ✓ All sources synchronised
+            </span>
+          ) : null}
           <button
             type="button"
             onClick={onClose}
@@ -340,20 +356,21 @@ function SeriesDetailDrawer({
       </DetailField>
 
       <DetailField label="Why this priority">
-        {row.reason ?? d?.priority?.reason ? (
-          <span className="font-mono text-xs leading-relaxed whitespace-pre-wrap">
-            {row.reason ?? d?.priority?.reason}
-          </span>
-        ) : detail.isLoading ? (
-          <span className="opacity-60">Loading…</span>
-        ) : (
-          <span className="opacity-60">No reason available — priority hasn't been computed.</span>
-        )}
+        <PriorityReason reason={row.reason ?? d?.priority?.reason ?? null} loading={detail.isLoading} />
+      </DetailField>
+
+      <DetailField label="Watched on">
+        <WatchStatusTable data={watchStatus.data ?? null} loading={watchStatus.isLoading} />
       </DetailField>
 
       <DetailField label="Cache expires">
         <span className="opacity-80 text-xs">{d?.cacheExpiresAt?.slice(0, 19) ?? '—'}</span>
       </DetailField>
+
+      {/* Below this line is data that only arrives from the detail
+          endpoint. Show a pulsing skeleton while it's in flight so
+          the user sees there's more coming. */}
+      {detail.isLoading && !d && <DrawerLoadingSkeleton />}
 
       {downloads.length > 0 && (
         <DetailField label={`Downloads (${downloads.length})`}>
@@ -522,6 +539,121 @@ function DetailField({ label, children }: { label: string; children: React.React
     <div>
       <div className="text-xs uppercase tracking-wider text-text-muted mb-1">{label}</div>
       <div>{children}</div>
+    </div>
+  )
+}
+
+/**
+ * Humanised decomposition of the raw reason string the priority
+ * engine emits (e.g. "watch=85%, unwatched=2, last_watch=0d,
+ * release=3d, hiatus=false"). Each key gets a plain-English label
+ * and a value that reads naturally — "today" instead of "0d",
+ * "yes" / "no" for hiatus, etc. Rendered as a two-column list.
+ */
+function PriorityReason({ reason, loading }: { reason: string | null; loading: boolean }) {
+  if (loading && !reason) {
+    return <div className="h-4 w-48 rounded bg-surface-3 animate-pulse" />
+  }
+  if (!reason) return <span className="opacity-60">No reason available — priority hasn't been computed.</span>
+
+  // Parse the comma-separated k=v pairs; unknown keys are surfaced
+  // raw so we never hide data we don't yet recognise.
+  const entries = reason.split(',').map((s) => s.trim()).map((s) => {
+    const eq = s.indexOf('=')
+    return eq < 0 ? [s, ''] : [s.slice(0, eq).trim(), s.slice(eq + 1).trim()]
+  }) as Array<[string, string]>
+
+  function dayText(v: string): string {
+    const n = Number(v.replace(/d$/, ''))
+    if (!Number.isFinite(n)) return v
+    if (n === 0) return 'today'
+    if (n === 1) return 'yesterday'
+    if (n < 7) return `${n} days ago`
+    if (n < 30) return `${n} days ago (~${Math.round(n / 7)} weeks)`
+    return `${n} days ago (~${Math.round(n / 30)} months)`
+  }
+
+  function humanise(k: string, v: string): [string, string] {
+    switch (k) {
+      case 'watch':      return ['Watch progress', v]
+      case 'unwatched':  return ['Episodes still to watch', v]
+      case 'watched':    return ['Episodes watched', v]
+      case 'last_watch': return ['Last watched', dayText(v)]
+      case 'release':    return ['Latest episode released', dayText(v)]
+      case 'hiatus':     return ['On hiatus', v === 'true' ? 'yes' : 'no']
+      default:           return [k.replace(/_/g, ' '), v]
+    }
+  }
+
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+      {entries.map(([k, v]) => {
+        const [label, value] = humanise(k, v)
+        return (
+          <React.Fragment key={k}>
+            <dt className="text-text-muted">{label}</dt>
+            <dd>{value}</dd>
+          </React.Fragment>
+        )
+      })}
+    </dl>
+  )
+}
+
+/**
+ * Per-source watch state table. One row per configured provider
+ * (tautulli / plex / trakt) with how many episodes it says are
+ * watched + when the latest watch happened. Unreachable providers
+ * render as "unavailable" with the error message visible on hover.
+ */
+function WatchStatusTable({ data, loading }: { data: ProviderWatchStatus[] | null; loading: boolean }) {
+  if (loading && !data) {
+    return (
+      <div className="space-y-1">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="h-4 rounded bg-surface-3 animate-pulse" />
+        ))}
+      </div>
+    )
+  }
+  if (!data || data.length === 0) return <span className="opacity-60 text-xs">No watch sources configured.</span>
+
+  return (
+    <div className="text-xs">
+      <div className="grid grid-cols-[auto_1fr_auto] gap-x-3 gap-y-1">
+        <span className="text-text-muted font-medium">Source</span>
+        <span className="text-text-muted font-medium">Watched</span>
+        <span className="text-text-muted font-medium">Last</span>
+        {data.map((s) => (
+          <React.Fragment key={s.source}>
+            <span className="capitalize">{s.source}</span>
+            {s.ok ? (
+              <span>{s.watchedEpisodeCount} {s.watchedEpisodeCount === 1 ? 'episode' : 'episodes'}</span>
+            ) : (
+              <span className="text-amber-400" title={s.errorMessage ?? 'provider unavailable'}>unavailable</span>
+            )}
+            <span className="opacity-70 font-mono">{s.lastWatchedAt?.slice(0, 10) ?? '—'}</span>
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Pulsing placeholder shown while the detail endpoint is in flight.
+ * Covers the downloads / links / audit section so the user sees
+ * something's coming rather than an abrupt empty area.
+ */
+function DrawerLoadingSkeleton() {
+  return (
+    <div className="space-y-3">
+      {[60, 40, 80].map((w, i) => (
+        <div key={i} className="space-y-1.5">
+          <div className="h-3 w-24 rounded bg-surface-3 animate-pulse" />
+          <div className={`h-16 rounded bg-surface-2 animate-pulse`} style={{ width: `${w}%` }} />
+        </div>
+      ))}
     </div>
   )
 }

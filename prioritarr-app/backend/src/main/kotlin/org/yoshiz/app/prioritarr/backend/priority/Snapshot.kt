@@ -40,3 +40,17 @@ data class PriorityPreview(
     val result: PriorityResult,
     val thresholds: org.yoshiz.app.prioritarr.backend.config.PriorityThresholds,
 )
+
+/**
+ * Watched-episode count per watch-history provider, per series.
+ * [ok]=false with [errorMessage] when the provider's fetch blew up;
+ * the UI still renders the row with a visible "unreachable" state.
+ */
+@kotlinx.serialization.Serializable
+data class ProviderWatchStatus(
+    val source: String,
+    val ok: Boolean,
+    val watchedEpisodeCount: Int,
+    val lastWatchedAt: String?,
+    val errorMessage: String? = null,
+)

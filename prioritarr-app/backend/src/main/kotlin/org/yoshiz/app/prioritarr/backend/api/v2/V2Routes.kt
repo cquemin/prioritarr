@@ -212,6 +212,17 @@ fun Route.v2Routes(state: AppState) {
             ))
         }
 
+        // Per-provider watch status — how many episodes each watch
+        // source (tautulli / plex / trakt) thinks are watched, plus
+        // latest watched timestamp. Drives the drawer's watch-status
+        // table and the sync-button "needed vs. in sync" decision.
+        get("/{id}/watch-status") {
+            val id = call.parameters["id"]?.toLongOrNull()
+                ?: throw ValidationException("id", "must be a number")
+            val statuses = state.priorityService.perProviderWatchStatus(id)
+            call.respond(statuses)
+        }
+
         // Per-series cross-source sync. Symmetric: pushes any episodes
         // Plex has watched but Trakt doesn't (and vice versa) so both
         // sides agree on the watch set. Idempotent — re-running is a

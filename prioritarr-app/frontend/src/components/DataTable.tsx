@@ -75,7 +75,7 @@ export function DataTable<T>(props: DataTableProps<T>) {
 
   return (
     <div className="bg-surface-1 rounded-lg border border-surface-3 overflow-x-auto">
-      <table className="w-full text-sm min-w-max">
+      <table className="w-full text-sm">
         <thead className="bg-surface-2 text-left">
           {table.getHeaderGroups().map((hg) => (
             <tr key={hg.id}>

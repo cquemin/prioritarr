@@ -87,6 +87,53 @@ class PriorityService(
      * compute — it hits Sonarr + watch providers — so previews have
      * the same data freshness as the real pipeline.
      */
+    /**
+     * Per-provider snapshot of "how many episodes does each source
+     * think are watched for this series, and when was the latest."
+     * Powers the drawer's watch-status table and the sync button's
+     * "all sources in sync" vs "N out of sync" condition.
+     *
+     * Each provider's fetch can independently fail; a failed fetch is
+     * surfaced with ok=false + errorMessage so the UI can distinguish
+     * "unreachable" from "0 watched".
+     */
+    suspend fun perProviderWatchStatus(seriesId: Long): List<ProviderWatchStatus> {
+        val series = try { sonarr.getSeries(seriesId) } catch (_: Exception) { return emptyList() }
+        val title = series["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val tvdb = series["tvdbId"]?.jsonPrimitive?.longOrNull
+        val ref = SeriesRef(seriesId = seriesId, title = title, tvdbId = tvdb?.takeIf { it > 0 })
+
+        return coroutineScope {
+            watchProviders.map { p ->
+                async {
+                    val result = p.historyFor(ref)
+                    val events = result.getOrNull()
+                    if (events == null) {
+                        ProviderWatchStatus(
+                            source = p.name,
+                            ok = false,
+                            watchedEpisodeCount = 0,
+                            lastWatchedAt = null,
+                            errorMessage = result.exceptionOrNull()?.message,
+                        )
+                    } else {
+                        // Dedupe by (season, episode) — a provider may
+                        // log the same episode twice (rewatch).
+                        val watched = events.map { it.season to it.episode }.toSet().size
+                        val latest = events.maxByOrNull { it.watchedAt }?.watchedAt?.toString()
+                        ProviderWatchStatus(
+                            source = p.name,
+                            ok = true,
+                            watchedEpisodeCount = watched,
+                            lastWatchedAt = latest,
+                            errorMessage = null,
+                        )
+                    }
+                }
+            }.awaitAll()
+        }
+    }
+
     suspend fun preview(seriesId: Long, overrides: PriorityThresholds): PriorityPreview? {
         val snap = try { buildSnapshot(seriesId) } catch (_: Exception) { null } ?: return null
         val result = computePriority(snap, overrides)
