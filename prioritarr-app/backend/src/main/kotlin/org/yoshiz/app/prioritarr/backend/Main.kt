@@ -140,6 +140,7 @@ fun main() {
         tautulli = tautulli,
         qbit = qbit,
         sab = sab,
+        downloadClients = mapOf(qbit.clientName to qbit, sab.clientName to sab),
         mappings = mappings,
         priorityService = priorityService,
         thresholdsSource = thresholdsSource,

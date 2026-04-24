@@ -364,29 +364,23 @@ fun Route.v2Routes(state: AppState) {
                 return@post
             }
 
-            when (client) {
-                "qbit" -> when (action) {
-                    "pause" -> state.qbit.pause(listOf(clientId))
-                    "resume" -> state.qbit.resume(listOf(clientId))
-                    "boost" -> state.qbit.topPriority(listOf(clientId))
-                    "demote" -> state.qbit.bottomPriority(listOf(clientId))
+            // Dispatch via the DownloadClient registry so adding a
+            // third downloader (Transmission/NZBGet) doesn't require
+            // touching this switch — new clients register themselves
+            // in AppState.downloadClients and flow through here.
+            val dc = state.downloadClients[client]
+                ?: throw ValidationException("client", "unknown client '$client' (known: ${state.downloadClients.keys.joinToString()})")
+            try {
+                when (action) {
+                    "pause" -> dc.pauseOne(clientId)
+                    "resume" -> dc.resumeOne(clientId)
+                    "boost" -> dc.boostOne(clientId)
+                    "demote" -> dc.demoteOne(clientId)
                     else -> throw ValidationException("action", "must be pause|resume|boost|demote")
                 }
-                "sab" -> {
-                    val sabPriority = when (action) {
-                        "pause" -> SABClient.PRIORITY_MAP[5] ?: -1
-                        "resume" -> SABClient.PRIORITY_MAP[3] ?: 0
-                        "boost" -> 2 // Force
-                        "demote" -> -1 // Low
-                        else -> throw ValidationException("action", "must be pause|resume|boost|demote")
-                    }
-                    try {
-                        state.sab.setPriority(clientId, sabPriority)
-                    } catch (e: Exception) {
-                        throw UpstreamUnreachableException("sab", e.message.orEmpty())
-                    }
-                }
-                else -> throw ValidationException("client", "must be qbit or sab, got $client")
+            } catch (e: ValidationException) { throw e }
+            catch (e: Exception) {
+                throw UpstreamUnreachableException(client, e.message.orEmpty())
             }
 
             if (action == "pause") {
@@ -1009,26 +1003,15 @@ private suspend fun applyDownloadAction(
         return BulkItemResult(client, clientId, ok = true, message = "dry-run: $action")
     }
 
+    val dc = state.downloadClients[client]
+        ?: return BulkItemResult(client, clientId, ok = false, message = "unknown client: $client")
     try {
-        when (client) {
-            "qbit" -> when (action) {
-                "pause" -> state.qbit.pause(listOf(clientId))
-                "resume" -> state.qbit.resume(listOf(clientId))
-                "boost" -> state.qbit.topPriority(listOf(clientId))
-                "demote" -> state.qbit.bottomPriority(listOf(clientId))
-                else -> return BulkItemResult(client, clientId, ok = false, message = "unknown action: $action")
-            }
-            "sab" -> {
-                val sabPriority = when (action) {
-                    "pause" -> SABClient.PRIORITY_MAP[5] ?: -1
-                    "resume" -> SABClient.PRIORITY_MAP[3] ?: 0
-                    "boost" -> 2 // Force
-                    "demote" -> -1 // Low
-                    else -> return BulkItemResult(client, clientId, ok = false, message = "unknown action: $action")
-                }
-                state.sab.setPriority(clientId, sabPriority)
-            }
-            else -> return BulkItemResult(client, clientId, ok = false, message = "unknown client: $client")
+        when (action) {
+            "pause" -> dc.pauseOne(clientId)
+            "resume" -> dc.resumeOne(clientId)
+            "boost" -> dc.boostOne(clientId)
+            "demote" -> dc.demoteOne(clientId)
+            else -> return BulkItemResult(client, clientId, ok = false, message = "unknown action: $action")
         }
     } catch (e: Exception) {
         return BulkItemResult(client, clientId, ok = false, message = "upstream: ${e.message}")

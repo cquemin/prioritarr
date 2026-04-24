@@ -1,6 +1,7 @@
 package org.yoshiz.app.prioritarr.backend.app
 
 import io.ktor.client.HttpClient
+import org.yoshiz.app.prioritarr.backend.clients.DownloadClient
 import org.yoshiz.app.prioritarr.backend.clients.QBitClient
 import org.yoshiz.app.prioritarr.backend.clients.SABClient
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
@@ -28,6 +29,13 @@ data class AppState(
     val tautulli: TautulliClient,
     val qbit: QBitClient,
     val sab: SABClient,
+    /**
+     * Map of clientName -> DownloadClient so routes and the bulk
+     * endpoint can dispatch generically. Populated in Main.kt from
+     * the concrete qbit + sab instances; adding a third downloader
+     * (Transmission, NZBGet) means dropping it into this map.
+     */
+    val downloadClients: Map<String, DownloadClient>,
     val mappings: MappingState,
     val priorityService: PriorityService,
     val thresholdsSource: ThresholdsSource,

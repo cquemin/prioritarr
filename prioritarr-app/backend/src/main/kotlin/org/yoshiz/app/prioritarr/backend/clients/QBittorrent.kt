@@ -21,7 +21,36 @@ class QBitClient(
     private val username: String = "",
     private val password: String = "",
     private val http: HttpClient,
-) {
+) : DownloadClient {
+    override val clientName: String = "qbit"
+
+    override suspend fun pauseOne(clientId: String) = pause(listOf(clientId))
+    override suspend fun resumeOne(clientId: String) = resume(listOf(clientId))
+    override suspend fun boostOne(clientId: String) = topPriority(listOf(clientId))
+    override suspend fun demoteOne(clientId: String) = bottomPriority(listOf(clientId))
+
+    /**
+     * For qBit, the prioritarr label translates to a pause/resume
+     * decision: P1 boosted + unpaused, P4/P5 paused (when higher
+     * bands are actively downloading the caller is expected to fire
+     * this per-download; the global pause-band calculation lives in
+     * [org.yoshiz.app.prioritarr.backend.enforcement.computeQBitPauseActions]).
+     */
+    override suspend fun applyPriority(clientId: String, prioritarrPriority: Int) {
+        when (prioritarrPriority) {
+            1 -> topPriority(listOf(clientId))
+            2, 3 -> resume(listOf(clientId))
+            4, 5 -> {
+                // Caller (usually the reconciler) decides whether to actually
+                // pause based on the active-queue band rule. The interface
+                // contract is "translate P to client model" — for qBit at
+                // P4/P5 the translation is "demote to bottom"; the reconciler
+                // fires a pause separately when the band calls for it.
+                bottomPriority(listOf(clientId))
+            }
+        }
+    }
+
     private val root: String = baseUrl.trimEnd('/')
     @Volatile private var authenticated: Boolean = false
 

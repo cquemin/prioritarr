@@ -13,7 +13,26 @@ class SABClient(
     private val baseUrl: String,
     private val apiKey: String,
     private val http: HttpClient,
-) {
+) : DownloadClient {
+    override val clientName: String = "sab"
+
+    override suspend fun pauseOne(clientId: String) {
+        setPriority(clientId, PRIORITY_MAP[5] ?: -1)
+    }
+    override suspend fun resumeOne(clientId: String) {
+        // SAB has no strict "resume"; normal priority is the default.
+        setPriority(clientId, PRIORITY_MAP[3] ?: 0)
+    }
+    override suspend fun boostOne(clientId: String) {
+        setPriority(clientId, 2)  // Force — bypasses queue-pauses
+    }
+    override suspend fun demoteOne(clientId: String) {
+        setPriority(clientId, -1)  // Low
+    }
+    override suspend fun applyPriority(clientId: String, prioritarrPriority: Int) {
+        setPriority(clientId, PRIORITY_MAP[prioritarrPriority] ?: 0)
+    }
+
     private val root: String = baseUrl.trimEnd('/')
 
     suspend fun getQueue(): JsonArray {

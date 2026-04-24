@@ -1,35 +1,42 @@
 package org.yoshiz.app.prioritarr.backend.clients
 
+import kotlinx.serialization.json.JsonArray
+
 /**
- * Common surface for download clients (qBittorrent, SABnzbd, and
- * future additions like Transmission / NZBGet). **Not** currently
- * used as a call-site abstraction — the reconciler and route
- * handlers still call [QBitClient] and [SABClient] concretely — but
- * documents the minimal operations any new downloader must support
- * to slot in.
+ * Common surface for single-item download-client actions. Covers the
+ * verbs the UI and bulk endpoints fire: pause, resume, boost, demote,
+ * delete, and a per-client translation of the prioritarr P1–P5 label.
  *
- * When adding a third downloader:
- *   1. Implement this interface on the new client.
- *   2. Add a [managed_downloads.client] discriminator value
- *      (e.g. "transmission") throughout reconcile / route switches.
- *   3. If the new downloader has a distinct priority model, extend
- *      the PRIORITY_MAP pattern on [SABClient.Companion].
+ * **Not** unified at the enforcement-strategy level — qBit uses
+ * pause-band semantics (needs global knowledge of the active queue),
+ * SAB uses priority buckets (per-item). Each client owns its own
+ * reconciler (`reconcileQbit`, `reconcileSab`) and the enforcement
+ * logic stays there. The interface lets route handlers and the bulk
+ * endpoint dispatch by client name without switching on hardcoded
+ * strings.
  *
- * A future PR can swap the concrete call sites over to this
- * interface so reconcile + routes become source-agnostic. Kept as
- * a documentation interface until then to avoid churning the
- * existing implementations.
+ * ### Adding a third downloader (e.g. Transmission, NZBGet)
+ *
+ *   1. Implement this interface on the new client class. Match the
+ *      `clientName` on every call site that stores a discriminator
+ *      (managed_downloads.client, audit entries, UI chips).
+ *   2. Add a `reconcileTransmission` (or similar) function mirroring
+ *      the existing pattern in `reconcile/` — the enforcement strategy
+ *      is client-specific (band vs. bucket vs. other).
+ *   3. Wire the new instance into [AppState.downloadClients] from
+ *      Main.kt, keyed on its `clientName`. Routes pick it up
+ *      automatically.
+ *   4. Extend `managed_downloads` access patterns if the client has a
+ *      different id shape (qBit: infohash, SAB: nzo_id — both are
+ *      just strings so no migration is usually needed).
  */
 interface DownloadClient {
-    /** Stable identifier used as the `client` discriminator in the DB + UI. */
-    val clientName: String
-
     /**
-     * Snapshot of every job/torrent the downloader tracks, in a
-     * client-specific JSON shape. The reconciler pattern-matches on
-     * fields it cares about (hash/nzo_id, state, priority, paused).
+     * Stable identifier used as the `managed_downloads.client`
+     * discriminator, in audit entries, and as the lookup key in
+     * [AppState.downloadClients]. Lowercase, no spaces.
      */
-    suspend fun listDownloads(): kotlinx.serialization.json.JsonArray
+    val clientName: String
 
     /** Pause a specific download by its client-side id. */
     suspend fun pauseOne(clientId: String)
@@ -37,11 +44,17 @@ interface DownloadClient {
     /** Resume a previously-paused download. */
     suspend fun resumeOne(clientId: String)
 
+    /** Move to top of the client's native ordering. */
+    suspend fun boostOne(clientId: String)
+
+    /** Move to bottom of the client's native ordering. */
+    suspend fun demoteOne(clientId: String)
+
     /**
-     * Apply a prioritarr P1–P5 priority to this download. Each
-     * client translates differently (qBit: pause/boost; SAB: native
-     * priority bucket). The translation table lives on each
-     * implementation.
+     * Apply the prioritarr P1–P5 label to this download by
+     * translating to the client's native model. For SAB that's a
+     * priority bucket; for qBit it's an immediate pause/resume
+     * decision based on the active-queue band rule.
      */
-    suspend fun setPriority(clientId: String, prioritarrPriority: Int)
+    suspend fun applyPriority(clientId: String, prioritarrPriority: Int)
 }
