@@ -77,6 +77,17 @@ data class ManagedDownloadWire(
     val pausedByUs: Boolean,
     val firstSeenAt: String,
     val lastReconciledAt: String,
+    /**
+     * Actual state from the download client at query time —
+     * downloading / stalledDL / pausedDL / error / missingFiles for
+     * qBit; Downloading / Paused / Failed for SAB. Null when the
+     * live state couldn't be fetched (client unreachable).
+     */
+    val liveState: String? = null,
+    /** Human-readable status message from the client when available (SAB fail_message, qBit error cause). */
+    val liveErrorMessage: String? = null,
+    /** Download client deep-link URL for this item, when one can be constructed. */
+    val clientUrl: String? = null,
 )
 
 @Serializable
@@ -125,6 +136,26 @@ data class MappingSnapshot(
     val plexKeyToSeriesId: Map<String, Long>,
     val lastRefreshStats: RefreshStats?,
     val tautulliAvailable: Boolean,
+)
+
+/**
+ * One log entry surfaced for a specific download. `source` points
+ * back to the system that emitted it (sonarr / qbit / sab) so the
+ * UI can label rows, e.g. "Sonarr · Grabbed release …".
+ */
+@Serializable
+data class DownloadLogEntry(
+    val ts: String,
+    val source: String,
+    val level: String,
+    val message: String,
+)
+
+@Serializable
+data class DownloadLogsResponse(
+    val client: String,
+    val clientId: String,
+    val entries: List<DownloadLogEntry>,
 )
 
 /** Standard action response — includes dry_run indicator. */

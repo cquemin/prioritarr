@@ -116,6 +116,20 @@ class SonarrClient(
      * Per-file probe avoids the whole-folder mediainfo scan which
      * hangs on directories with hundreds of files.
      */
+    /**
+     * Fetch a page of Sonarr's application log. Used by the
+     * download-detail endpoint to surface grab/import activity for a
+     * specific torrent hash or nzo_id — each log entry's `message`
+     * field often embeds the downloadId, so the caller greps there.
+     */
+    suspend fun getLogs(page: Int = 1, pageSize: Int = 200): JsonArray =
+        ((get("/api/v3/log", mapOf(
+            "page" to page.toString(),
+            "pageSize" to pageSize.toString(),
+            "sortKey" to "time",
+            "sortDirection" to "descending",
+        )) as JsonObject)["records"] as JsonArray)
+
     suspend fun manualImportProbe(folderOrFile: String): JsonArray =
         get("/api/v3/manualimport", mapOf(
             "folder" to folderOrFile,

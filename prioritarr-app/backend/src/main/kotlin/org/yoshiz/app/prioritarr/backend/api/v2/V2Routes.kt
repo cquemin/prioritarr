@@ -35,6 +35,8 @@ import org.yoshiz.app.prioritarr.backend.schemas.AuditEntry
 import org.yoshiz.app.prioritarr.backend.schemas.BulkActionResult
 import org.yoshiz.app.prioritarr.backend.schemas.BulkDownloadActionRequest
 import org.yoshiz.app.prioritarr.backend.schemas.BulkItemResult
+import org.yoshiz.app.prioritarr.backend.schemas.DownloadLogEntry
+import org.yoshiz.app.prioritarr.backend.schemas.DownloadLogsResponse
 import org.yoshiz.app.prioritarr.backend.schemas.ExternalLinks
 import org.yoshiz.app.prioritarr.backend.schemas.InjectSeriesMappingRequest
 import org.yoshiz.app.prioritarr.backend.schemas.ManagedDownloadWire
@@ -161,7 +163,15 @@ fun Route.v2Routes(state: AppState) {
             val cache = state.db.getPriorityCache(id)
             val managed = state.db.listManagedDownloads().filter { it.series_id == id }
 
+            // Fetch live state for this series' downloads so the UI
+            // can show "actually paused / downloading / stalled /
+            // errored" distinct from "pausedByUs". Single call per
+            // client (small payload); if it fails we gracefully fall
+            // back to null fields.
+            val liveByClientId: Map<String, LiveDownloadState> = fetchLiveStates(state, managed)
+
             val downloadWires = managed.map { row ->
+                val live = liveByClientId[row.client + ":" + row.client_id]
                 ManagedDownloadWire(
                     client = row.client,
                     clientId = row.client_id,
@@ -173,6 +183,9 @@ fun Route.v2Routes(state: AppState) {
                     pausedByUs = row.paused_by_us == 1L,
                     firstSeenAt = row.first_seen_at,
                     lastReconciledAt = row.last_reconciled_at,
+                    liveState = live?.state,
+                    liveErrorMessage = live?.errorMessage,
+                    clientUrl = buildClientDeepLink(state.settings.uiOrigin, row.client, row.client_id),
                 )
             }
 
@@ -340,6 +353,64 @@ fun Route.v2Routes(state: AppState) {
         }
 
         // ---- Actions ----
+        // Per-download log surface. Greps Sonarr's log for mentions
+        // of the clientId (hash or nzo_id) — Sonarr logs grab +
+        // import activity with the downloadId embedded so this
+        // usually catches "Grabbed release X", "Import failed:
+        // cannot match episode", "Release rejected: not an upgrade",
+        // etc. For SAB: also emits history.fail_message when
+        // applicable. For qBit: the global log has no per-item
+        // indexing, so only Sonarr logs appear for qBit items.
+        get("/{client}/{clientId}/logs") {
+            val client = call.parameters["client"]!!
+            val clientId = call.parameters["clientId"]!!
+            val entries = mutableListOf<DownloadLogEntry>()
+
+            // Sonarr-side log grep
+            try {
+                val records = state.sonarr.getLogs(pageSize = 500)
+                for (r in records) {
+                    val obj = (r as? JsonObject) ?: continue
+                    val msg = obj["message"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    val exc = obj["exception"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    val full = listOf(msg, exc).filter { it.isNotBlank() }.joinToString(" | ")
+                    if (full.isEmpty()) continue
+                    if (!full.contains(clientId, ignoreCase = true)) continue
+                    entries += DownloadLogEntry(
+                        ts = obj["time"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        source = "sonarr",
+                        level = obj["level"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                        message = full.take(500),
+                    )
+                }
+            } catch (_: Exception) { /* best effort */ }
+
+            // SAB history entry — surfaces fail_message for failed jobs
+            if (client == "sab") {
+                try {
+                    for (h in state.sab.getHistory(limit = 200)) {
+                        val obj = (h as? JsonObject) ?: continue
+                        val nzo = obj["nzo_id"]?.jsonPrimitive?.contentOrNull
+                        if (nzo != clientId) continue
+                        val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: ""
+                        val fail = obj["fail_message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                        val completed = obj["completed"]?.jsonPrimitive?.longOrNull
+                        val ts = completed?.let { java.time.Instant.ofEpochSecond(it).toString() } ?: ""
+                        entries += DownloadLogEntry(
+                            ts = ts,
+                            source = "sab",
+                            level = if (fail != null) "error" else "info",
+                            message = listOfNotNull(status.takeIf { it.isNotBlank() }, fail).joinToString(" — "),
+                        )
+                    }
+                } catch (_: Exception) { /* best effort */ }
+            }
+
+            // Newest-first, capped for UI rendering
+            val sorted = entries.sortedByDescending { it.ts }.take(100)
+            call.respond(DownloadLogsResponse(client = client, clientId = clientId, entries = sorted))
+        }
+
         post("/{client}/{clientId}/actions/{action}") {
             val client = call.parameters["client"]!!
             val clientId = call.parameters["clientId"]!!
@@ -1035,4 +1106,79 @@ private suspend fun applyDownloadAction(
         Json.parseToJsonElement("""{"client":"$client","client_id":"$clientId","action":"$action"}"""),
     )
     return BulkItemResult(client, clientId, ok = true, message = action)
+}
+
+/** Cached-per-request live state for a managed download. */
+internal data class LiveDownloadState(val state: String?, val errorMessage: String?)
+
+/**
+ * Query qBit + SAB for current state + error messages for the given
+ * managed rows. Best-effort: any upstream failure results in null
+ * entries rather than failing the whole detail response. Key shape:
+ * "<client>:<clientId>" so series with mixed qbit/sab downloads
+ * don't collide.
+ */
+internal suspend fun fetchLiveStates(
+    state: org.yoshiz.app.prioritarr.backend.app.AppState,
+    managed: List<org.yoshiz.app.prioritarr.backend.database.Managed_downloads>,
+): Map<String, LiveDownloadState> {
+    val out = HashMap<String, LiveDownloadState>()
+    val qbitIds = managed.filter { it.client == "qbit" }.map { it.client_id }.toSet()
+    val sabIds = managed.filter { it.client == "sab" }.map { it.client_id }.toSet()
+
+    if (qbitIds.isNotEmpty()) {
+        try {
+            for (t in state.qbit.getTorrents()) {
+                val obj = (t as? JsonObject) ?: continue
+                val hash = obj["hash"]?.jsonPrimitive?.contentOrNull ?: continue
+                if (hash !in qbitIds) continue
+                val st = obj["state"]?.jsonPrimitive?.contentOrNull
+                // qBit exposes no free-form error field; infer from state.
+                val err = when (st) {
+                    "error" -> "torrent in error state (check qBit UI for details)"
+                    "missingFiles" -> "files missing on disk"
+                    "stalledDL" -> "stalled — no peers / dead trackers"
+                    else -> null
+                }
+                out["qbit:$hash"] = LiveDownloadState(state = st, errorMessage = err)
+            }
+        } catch (_: Exception) { /* leave entries null */ }
+    }
+
+    if (sabIds.isNotEmpty()) {
+        try {
+            val slotsQueue = state.sab.getQueue()
+            for (s in slotsQueue) {
+                val obj = (s as? JsonObject) ?: continue
+                val nzoId = obj["nzo_id"]?.jsonPrimitive?.contentOrNull ?: continue
+                if (nzoId !in sabIds) continue
+                val status = obj["status"]?.jsonPrimitive?.contentOrNull
+                out["sab:$nzoId"] = LiveDownloadState(state = status, errorMessage = null)
+            }
+            // History catches already-finished jobs (may have fail_message).
+            for (s in state.sab.getHistory(limit = 200)) {
+                val obj = (s as? JsonObject) ?: continue
+                val nzoId = obj["nzo_id"]?.jsonPrimitive?.contentOrNull ?: continue
+                if (nzoId !in sabIds) continue
+                val status = obj["status"]?.jsonPrimitive?.contentOrNull
+                val fail = obj["fail_message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                out["sab:$nzoId"] = LiveDownloadState(state = status, errorMessage = fail)
+            }
+        } catch (_: Exception) { /* leave entries null */ }
+    }
+    return out
+}
+
+/**
+ * Deep-link into the download client's own UI for an item. qBit's
+ * WebUI has no per-torrent URL; best we can do is land on the main
+ * page. SAB's detail URL uses the nzo_id query param.
+ */
+internal fun buildClientDeepLink(uiOrigin: String?, client: String, clientId: String): String? {
+    val base = uiOrigin?.trimEnd('/') ?: return null
+    return when (client) {
+        "qbit" -> "$base/qbittorrent/"
+        "sab" -> "$base/sabnzbd/?nzo_id=$clientId"
+        else -> null
+    }
 }

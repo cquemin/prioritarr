@@ -62,6 +62,18 @@ export function useDownloads(p: PaginationInput & { client?: 'qbit' | 'sab' } = 
   })
 }
 
+export interface DownloadLogEntry { ts: string; source: string; level: string; message: string }
+export function useDownloadLogs(client: string, clientId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['download-logs', client, clientId],
+    queryFn: () =>
+      rawFetch<{ client: string; clientId: string; entries: DownloadLogEntry[] }>(
+        `/api/v2/downloads/${client}/${encodeURIComponent(clientId)}/logs`,
+      ),
+    enabled,
+  })
+}
+
 export function useDownloadAction() {
   const qc = useQueryClient()
   return useMutation({

@@ -233,6 +233,9 @@ fun main() {
     val queueJanitor = org.yoshiz.app.prioritarr.backend.reconcile.QueueJanitor(
         sonarr = sonarr, qbit = qbit, sab = sab, db = db,
     )
+    val unmonitoredReaper = org.yoshiz.app.prioritarr.backend.reconcile.UnmonitoredReaper(
+        sonarr = sonarr, db = db,
+    )
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("queue_janitor crashed", e) }) {
         while (isActive) {
             try {
@@ -241,6 +244,20 @@ fun main() {
             delay(30L * 60L * 1000L)
         }
     }
+    // Unmonitored-queue reaper — cancels + blocklists any Sonarr
+    // queue entry whose series / season / episode is no longer
+    // monitored. Runs every 30 min so toggling monitoring in Sonarr
+    // takes effect on the queue within one cycle.
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("unmonitored_reaper crashed", e) }) {
+        delay(2L * 60L * 1000L)  // small stagger after boot
+        while (isActive) {
+            try {
+                unmonitoredReaper.sweep(dryRun = settings.dryRun)
+            } catch (e: Exception) { logger.warn("unmonitored_reaper: {}", e.message) }
+            delay(30L * 60L * 1000L)
+        }
+    }
+
     // Orphan reaper — sweeps download folders for files Sonarr/SAB
     // no longer track. Auto-imports the importable, deletes the
     // hardlink-twins + "not an upgrade" cases, keeps anything else

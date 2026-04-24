@@ -18,6 +18,7 @@ import { RowDrawer } from '../components/RowDrawer'
 import { TableSkeleton } from '../components/Skeleton'
 import {
   useDownloadAction,
+  useDownloadLogs,
   useRecomputeSeries,
   useSearch,
   useSeries,
@@ -95,11 +96,13 @@ export function SeriesPage() {
     ? allRows.filter((r) => searchHitsBySeriesId.has(r.id))
     : allRows
 
-  // Minimal 2-column layout: priority chip + title. Everything else
-  // (clients, paused counts, download count, cached-at) lives in the
-  // detail drawer you see on row-click. Keeps the table readable on
-  // narrow viewports and doesn't force horizontal scroll for
-  // secondary metadata.
+  // Responsive layout:
+  //  - mobile (< sm): Priority chip + Title (with inline "N dl / N
+  //    paused" chips) + kebab. Extra columns hidden to keep the
+  //    table readable without horizontal scroll.
+  //  - sm+: full desktop set with separate Client / Paused / Cached /
+  //    Downloads columns. Inline chips under the title hide so
+  //    they don't duplicate the dedicated columns.
   const columns: ColumnDef<SeriesRow>[] = [
     {
       accessorKey: 'priority',
@@ -117,9 +120,6 @@ export function SeriesPage() {
         )
       },
       sortingFn: (a, b) => (a.original.priority ?? 99) - (b.original.priority ?? 99),
-      // w-[1%] + whitespace-nowrap is the standard "shrink column to
-      // its content" trick with `table-layout: auto` — keeps the
-      // Priority column just wide enough for the P1 chip.
       meta: { cellClassName: 'w-[1%] whitespace-nowrap' },
     },
     {
@@ -136,8 +136,10 @@ export function SeriesPage() {
           <div className="space-y-0.5 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium break-words">{r.title}</span>
+              {/* Inline chips only on mobile — on desktop the dedicated
+                  columns below surface the same info without duplication. */}
               {chips.map((c) => (
-                <span key={c} className="px-1.5 py-0.5 text-[10px] bg-surface-3 rounded opacity-70">{c}</span>
+                <span key={c} className="px-1.5 py-0.5 text-[10px] bg-surface-3 rounded opacity-70 sm:hidden">{c}</span>
               ))}
             </div>
             {matched && (
@@ -151,6 +153,53 @@ export function SeriesPage() {
         )
       },
       filterFn: 'includesString',
+    },
+    {
+      id: 'clients',
+      accessorFn: (r) => r.clients.join(','),
+      header: 'Client',
+      meta: { cellClassName: 'hidden sm:table-cell w-[1%] whitespace-nowrap' },
+      cell: ({ row }) => {
+        const cs = row.original.clients
+        if (cs.length === 0) return <span className="opacity-40">—</span>
+        return (
+          <div className="flex gap-1">
+            {cs.map((c) => (
+              <span key={c} className="px-1.5 py-0.5 text-xs bg-surface-3 rounded font-mono">{c}</span>
+            ))}
+          </div>
+        )
+      },
+      filterFn: 'includesString',
+    },
+    {
+      id: 'paused',
+      header: 'Paused',
+      meta: { cellClassName: 'hidden md:table-cell w-[1%] whitespace-nowrap' },
+      cell: ({ row }) => {
+        const { managedDownloadCount: n, pausedCount: p } = row.original
+        if (n === 0) return <span className="opacity-40">—</span>
+        if (p === 0) return <span className="opacity-60">no</span>
+        if (p === n) return <span className="text-amber-400">all ({p})</span>
+        return <span className="text-amber-400">{p} of {n}</span>
+      },
+      sortingFn: (a, b) => a.original.pausedCount - b.original.pausedCount,
+    },
+    {
+      accessorKey: 'managedDownloadCount',
+      header: 'Downloads',
+      meta: { cellClassName: 'hidden lg:table-cell w-[1%] whitespace-nowrap' },
+      cell: ({ row }) => <span>{row.original.managedDownloadCount}</span>,
+    },
+    {
+      accessorKey: 'computedAt',
+      header: 'Cached',
+      meta: { cellClassName: 'hidden lg:table-cell w-[1%] whitespace-nowrap' },
+      cell: ({ row }) => (
+        <span className="opacity-70 text-xs">
+          {row.original.computedAt?.slice(0, 19) ?? '—'}
+        </span>
+      ),
     },
     {
       id: '__actions',
@@ -257,7 +306,11 @@ interface DownloadDto {
   pausedByUs: boolean
   firstSeenAt: string
   lastReconciledAt: string
+  liveState?: string | null
+  liveErrorMessage?: string | null
+  clientUrl?: string | null
 }
+
 
 function SeriesDetailDrawer({
   row, onClose, onRecompute, isRecomputing,
@@ -475,20 +528,58 @@ function DownloadCard({
   onAction: (a: 'pause' | 'resume' | 'boost' | 'demote') => void
   onUntrack: () => void
 }) {
+  const [showLogs, setShowLogs] = useState(false)
+  const logs = useDownloadLogs(dl.client, dl.clientId, showLogs)
+
+  // Derive one canonical status from the live state + pausedByUs flag.
+  // The previous "Paused by us: no — not paused by prioritarr" was
+  // ambiguous about whether the download was actually running; now we
+  // separate "actual state" (from the client) and "who paused it".
+  const statusLabel = (() => {
+    const live = dl.liveState?.toLowerCase() ?? null
+    if (!live) return { text: 'unknown (client unreachable)', color: 'opacity-60' }
+    if (live.includes('error') || live.includes('missing')) return { text: `error (${dl.liveState})`, color: 'text-red-400' }
+    if (live === 'paused' || live.startsWith('pauseddl') || live.startsWith('pausedup')) {
+      const by = dl.pausedByUs ? 'paused by prioritarr' : 'paused (by you or the client)'
+      return { text: by, color: 'text-amber-400' }
+    }
+    if (live.includes('stall')) return { text: `stalled (${dl.liveState})`, color: 'text-amber-400' }
+    if (live.includes('download')) return { text: 'downloading', color: 'text-green-400' }
+    if (live.includes('upload') || live === 'forcedup' || live === 'queuedup') return { text: 'seeding / done', color: 'text-green-400' }
+    return { text: dl.liveState ?? 'unknown', color: 'opacity-70' }
+  })()
+
   return (
     <div className="bg-surface-2 border border-surface-3 rounded-md p-3 space-y-2">
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <span className="px-1.5 py-0.5 text-xs bg-surface-3 rounded font-mono">{dl.client}</span>
-        <span className="font-mono text-xs opacity-70 truncate">{dl.clientId}</span>
+        {/* clientId is now a link into the downloader UI. Same deep-link
+            as the LinkBadge in "Open in" below, but placed on the id
+            itself for quick access. */}
+        {dl.clientUrl ? (
+          <a
+            href={dl.clientUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="font-mono text-xs opacity-70 truncate hover:text-accent underline-offset-2 hover:underline"
+            title={`Open in ${dl.client === 'qbit' ? 'qBittorrent' : 'SABnzbd'}`}
+          >{dl.clientId}</a>
+        ) : (
+          <span className="font-mono text-xs opacity-70 truncate">{dl.clientId}</span>
+        )}
+        <span className={`px-1.5 py-0.5 text-xs rounded font-medium ${statusLabel.color} bg-surface-3`}>
+          {statusLabel.text}
+        </span>
         <span className="ml-auto px-1.5 py-0.5 text-xs rounded bg-surface-3">P{dl.currentPriority}</span>
       </div>
+      {dl.liveErrorMessage && (
+        <div className="text-xs text-red-400 bg-red-900/20 rounded px-2 py-1 font-mono break-words">
+          {dl.liveErrorMessage}
+        </div>
+      )}
       <div className="text-xs grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 opacity-90">
-        <span className="text-text-muted">Paused by us</span>
-        <span className={dl.pausedByUs ? 'text-amber-400' : 'opacity-60'}>
-          {dl.pausedByUs
-            ? 'yes — prioritarr paused it (low priority enforcement)'
-            : 'no — not paused by prioritarr'}
-        </span>
+        <span className="text-text-muted">Client state</span>
+        <span className="font-mono">{dl.liveState ?? 'unknown'}</span>
         <span className="text-text-muted">Episodes</span>
         <span className="font-mono">{dl.episodeIds.join(', ') || '—'}</span>
         <span className="text-text-muted">First seen</span>
@@ -508,6 +599,12 @@ function DownloadCard({
           </button>
         ))}
         <button
+          onClick={() => setShowLogs(!showLogs)}
+          className="px-2 py-1 rounded bg-surface-3 hover:bg-accent"
+        >
+          {showLogs ? 'Hide logs' : 'Logs'}
+        </button>
+        <button
           onClick={onUntrack}
           disabled={isPending}
           className="px-2 py-1 rounded bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
@@ -515,6 +612,32 @@ function DownloadCard({
           Untrack
         </button>
       </div>
+      {showLogs && (
+        <div className="text-[11px] font-mono bg-surface-0 border border-surface-3 rounded max-h-64 overflow-auto">
+          {logs.isLoading ? (
+            <div className="p-2 opacity-60">Loading…</div>
+          ) : (logs.data?.entries ?? []).length === 0 ? (
+            <div className="p-2 opacity-60">No log entries found mentioning this download.</div>
+          ) : (
+            <ul>
+              {logs.data!.entries.map((e, i) => (
+                <li
+                  key={i}
+                  className={`px-2 py-1 border-b border-surface-3 last:border-0 ${
+                    e.level.toLowerCase().includes('error') || e.level.toLowerCase().includes('warn')
+                      ? 'text-red-400'
+                      : 'opacity-90'
+                  }`}
+                >
+                  <span className="opacity-60">{e.ts.slice(0, 19)} · {e.source}</span>
+                  <span className="mx-1 opacity-40">·</span>
+                  {e.message}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   )
 }
