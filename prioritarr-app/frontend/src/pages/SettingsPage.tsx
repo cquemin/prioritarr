@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import {
+  useArchiveSweep,
   useBandwidth,
   useDeleteOrphans,
   useImportOrphan,
@@ -106,6 +107,8 @@ export function SettingsPage() {
       </div>
 
       <BandwidthPanel />
+
+      <ArchivePanel />
 
       <LibrarySyncPanel />
 
@@ -1223,6 +1226,100 @@ function TextField({ label, hint, value, onChange }: {
         className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm" />
       <span className="opacity-50">{hint}</span>
     </label>
+  )
+}
+
+/**
+ * Watched-archive panel. The actual enable flag + N-episode keep
+ * window are YAML-driven in this iteration (settings.archive.*);
+ * this panel exposes the two sweep actions — Preview (dry-run) and
+ * Run (destructive). Preview is fast and non-destructive; Run
+ * unmonitors each episode BEFORE deleting the file so Sonarr can't
+ * re-queue a grab in between.
+ */
+function ArchivePanel() {
+  const sweep = useArchiveSweep()
+  const [showDetails, setShowDetails] = useState(false)
+
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <h2 className="font-semibold">Archive watched episodes</h2>
+          <p className="text-xs opacity-70 mt-0.5">
+            Deletes <strong>watched</strong> episodes that fall outside
+            the keep window (latest season, or last N episodes when
+            that season has more than the cap). Unmonitors in Sonarr
+            first, then deletes — prevents the backfill sweep
+            re-grabbing what you just cleaned up. Unwatched episodes
+            are never touched. Configured via the <code>archive</code>
+            block in the YAML overlay (<code>watched_enabled</code>,
+            <code>latest_season_max_episodes</code>, <code>interval_hours</code>).
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+          <button
+            type="button"
+            onClick={() => sweep.mutate({ dryRun: true })}
+            disabled={sweep.isPending}
+            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50 whitespace-nowrap"
+            title="Show what would be deleted without writing"
+          >
+            {sweep.isPending && sweep.variables?.dryRun !== false ? 'Previewing…' : 'Preview'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!confirm('Delete every watched episode outside the keep window? This cannot be undone.')) return
+              sweep.mutate({ dryRun: false })
+            }}
+            disabled={sweep.isPending}
+            className="px-3 py-1 rounded text-sm bg-red-900/60 hover:bg-red-700 disabled:opacity-50 whitespace-nowrap"
+          >
+            {sweep.isPending && sweep.variables?.dryRun === false ? 'Running…' : 'Run sweep'}
+          </button>
+        </div>
+      </div>
+
+      {sweep.error && (
+        <div className="text-xs text-red-400 font-mono">
+          {String((sweep.error as Error).message ?? sweep.error)}
+        </div>
+      )}
+      {sweep.data && (
+        <div className="text-sm space-y-2">
+          <div>
+            {sweep.data.seriesVisited} series visited ·{' '}
+            <span className="text-amber-400">{sweep.data.candidates}</span> candidates ·{' '}
+            <span className="text-green-400">{sweep.data.deleted}</span>{' '}
+            {sweep.variables?.dryRun === false ? 'deleted' : 'would be deleted'}
+            {sweep.data.errors > 0 && <span className="text-red-400 ml-2">· {sweep.data.errors} errors</span>}
+          </div>
+          {sweep.data.entries.length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowDetails(!showDetails)}
+                className="text-xs underline opacity-70 hover:opacity-100"
+              >
+                {showDetails ? 'Hide' : 'Show'} per-series detail ({sweep.data.entries.length})
+              </button>
+              {showDetails && (
+                <div className="space-y-1 max-h-96 overflow-auto text-xs font-mono border-t border-surface-3 pt-2">
+                  {sweep.data.entries.map((e) => (
+                    <div key={e.seriesId} className="flex gap-2 flex-wrap py-0.5">
+                      <span className="font-medium">{e.title}</span>
+                      <span className="opacity-60 text-[10px]">#{e.seriesId}</span>
+                      <span className="opacity-80">{e.episodes.join(', ')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 

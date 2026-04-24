@@ -117,6 +117,44 @@ class SonarrClient(
      * hangs on directories with hundreds of files.
      */
     /**
+     * Delete a specific episode file by id. Used by the watched-
+     * archive sweep to reclaim disk space for episodes that have
+     * been watched and fall outside the keep window. Sonarr moves
+     * the file to the recycle bin (if configured) or hard-deletes.
+     */
+    suspend fun deleteEpisodeFile(episodeFileId: Long) {
+        http.delete("$root/api/v3/episodefile/$episodeFileId") {
+            header("X-Api-Key", apiKey)
+        }.body<JsonElement?>()
+    }
+
+    /**
+     * Set an episode's monitored flag. Used after archiving a
+     * watched episode — future backfill/cutoff sweeps shouldn't
+     * immediately re-grab what we just cleaned up.
+     */
+    suspend fun setEpisodeMonitored(episodeId: Long, monitored: Boolean) {
+        // Sonarr's episode endpoint takes the full episode payload as
+        // the body; fetch-modify-put to stay faithful to the contract.
+        val episode = http.get("$root/api/v3/episode/$episodeId") {
+            header("X-Api-Key", apiKey)
+        }.body<JsonObject>()
+        val patched = buildJsonObject {
+            for ((k, v) in episode) {
+                if (k == "monitored") put(k, monitored) else put(k, v)
+            }
+        }
+        http.post("$root/api/v3/episode/$episodeId/monitor") {
+            header("X-Api-Key", apiKey)
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject {
+                put("episodeIds", buildJsonArray { add(episodeId) })
+                put("monitored", monitored)
+            })
+        }.body<JsonElement?>()
+    }
+
+    /**
      * Fetch a page of Sonarr's application log. Used by the
      * download-detail endpoint to surface grab/import activity for a
      * specific torrent hash or nzo_id — each log entry's `message`

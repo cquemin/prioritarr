@@ -670,6 +670,19 @@ fun Route.v2Routes(state: AppState) {
         call.respond(agg)
     }
 
+    // ---- Watched archiver ----
+    //
+    // Dry-run by default (safer for operator-initiated sweeps); set
+    // ?dryRun=false to actually delete. Uses the in-memory settings
+    // snapshot — doesn't honour runtime overrides to the archive
+    // config (intentional — archive settings are YAML-driven for
+    // this iteration; UI toggle can follow).
+    post("/archive/sweep") {
+        val dryRun = call.request.queryParameters["dryRun"]?.equals("false", ignoreCase = true) != true
+        val report = state.watchedArchiver.sweep(state.settings.archive, dryRun = dryRun)
+        call.respond(report)
+    }
+
     // ---- Orphan reaper ----
     //
     // POST /sweep — runs an OrphanReaper.sweep cycle synchronously

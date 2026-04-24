@@ -132,6 +132,11 @@ fun main() {
         cleanupPaths = settings.orphanReaperPaths,
         autoImport = true,
     )
+    val watchedArchiver = org.yoshiz.app.prioritarr.backend.reconcile.WatchedArchiver(
+        sonarr = sonarr,
+        watchProviders = watchProviders,
+        db = db,
+    )
 
     val state = AppState(
         settings = settings,
@@ -150,6 +155,7 @@ fun main() {
         thresholdsSource = thresholdsSource,
         crossSourceSync = crossSourceSync,
         orphanReaper = orphanReaper,
+        watchedArchiver = watchedArchiver,
         eventBus = EventBus(),
         httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp),
     )
@@ -265,6 +271,19 @@ fun main() {
                 unmonitoredReaper.sweep(dryRun = settings.dryRun)
             } catch (e: Exception) { logger.warn("unmonitored_reaper: {}", e.message) }
             delay(30L * 60L * 1000L)
+        }
+    }
+
+    // Watched archiver — deletes watched episodes outside the keep
+    // window (latest season or last N). Off by default. Cadence is
+    // configurable via settings.archive.intervalHours (default weekly).
+    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("watched_archiver crashed", e) }) {
+        delay(10L * 60L * 1000L)  // stagger 10 min after boot
+        while (isActive) {
+            try {
+                watchedArchiver.sweep(settings.archive, dryRun = settings.dryRun)
+            } catch (e: Exception) { logger.warn("watched_archiver: {}", e.message) }
+            delay(settings.archive.intervalHours.toLong() * 60L * 60L * 1000L)
         }
     }
 

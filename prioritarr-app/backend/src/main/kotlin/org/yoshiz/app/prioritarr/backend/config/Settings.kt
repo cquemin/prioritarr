@@ -105,6 +105,27 @@ data class AuditConfig(
     val webhookDedupeHours: Int = 24,
 )
 
+/**
+ * Archive-watched-episodes feature. Periodically sweeps the library
+ * and removes episodes that have been watched AND fall outside the
+ * "keep" window (latest season, or last N episodes if that season
+ * has more than [latestSeasonMaxEpisodes]). Removed episodes are
+ * also set monitored=false in Sonarr so prioritarr's backfill /
+ * cutoff sweeps don't immediately re-grab them.
+ *
+ * Safety:
+ *   - Unwatched episodes are NEVER touched.
+ *   - Default OFF; operator opts in via the UI or YAML.
+ *   - Every action is audit-logged.
+ *   - Dry-run mode enumerates without writing.
+ */
+@kotlinx.serialization.Serializable
+data class ArchiveSettings(
+    val watchedEnabled: Boolean = false,
+    val latestSeasonMaxEpisodes: Int = 30,
+    val intervalHours: Int = 168,   // weekly by default
+)
+
 // YAML overlay is parsed as a generic Map<String, Any> — Hoplite was
 // silently returning all-nulls on the more strict data-class mapping,
 // and we only need four optional sections here. SnakeYAML is the
@@ -152,6 +173,7 @@ data class Settings(
     val cache: CacheConfig = CacheConfig(),
     val audit: AuditConfig = AuditConfig(),
     val bandwidth: BandwidthSettings = BandwidthSettings(),
+    val archive: ArchiveSettings = ArchiveSettings(),
 
     /** Paths swept by the OrphanReaper. Empty list disables the reaper. */
     val orphanReaperPaths: List<String> = listOf(
@@ -246,6 +268,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
     var cache = CacheConfig()
     var audit = AuditConfig()
     var bandwidth = BandwidthSettings()
+    var archive = ArchiveSettings()
 
     if (configPath != null && File(configPath).exists()) {
         @Suppress("UNCHECKED_CAST")
@@ -286,6 +309,13 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
             audit = audit.copy(
                 retentionDays = o.num("retention_days") { it.toInt() } ?: audit.retentionDays,
                 webhookDedupeHours = o.num("webhook_dedupe_hours") { it.toInt() } ?: audit.webhookDedupeHours,
+            )
+        }
+        (root["archive"] as? Map<*, *>)?.let { o ->
+            archive = archive.copy(
+                watchedEnabled = (o["watched_enabled"] as? Boolean) ?: archive.watchedEnabled,
+                latestSeasonMaxEpisodes = o.num("latest_season_max_episodes") { it.toInt() } ?: archive.latestSeasonMaxEpisodes,
+                intervalHours = o.num("interval_hours") { it.toInt() } ?: archive.intervalHours,
             )
         }
         (root["bandwidth"] as? Map<*, *>)?.let { o ->
@@ -331,5 +361,6 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         cache = cache,
         audit = audit,
         bandwidth = bandwidth,
+        archive = archive,
     )
 }

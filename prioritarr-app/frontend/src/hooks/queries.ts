@@ -342,6 +342,25 @@ export function useSaveBandwidth() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['bandwidth'] }),
   })
 }
+// Watched-archive sweep. Destructive when dryRun=false (deletes
+// episode files + unmonitors). Unmonitor-first ordering is handled
+// server-side to avoid Sonarr re-queuing.
+export interface ArchiveReport {
+  seriesVisited: number
+  candidates: number
+  deleted: number
+  errors: number
+  entries: Array<{ seriesId: number; title: string; episodes: string[] }>
+}
+export function useArchiveSweep() {
+  return useMutation({
+    mutationFn: (opts: { dryRun?: boolean } = {}) => {
+      const dry = opts.dryRun !== false
+      return rawFetch<ArchiveReport>(`/api/v2/archive/sweep?dryRun=${dry}`, { method: 'POST' })
+    },
+  })
+}
+
 export function useResetBandwidth() {
   const qc = useQueryClient()
   return useMutation({
