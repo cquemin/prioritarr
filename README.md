@@ -149,8 +149,8 @@ Classifies every file in the download folders (configurable paths for qBit and S
 Add to your docker-compose:
 
 ```yaml
-prioritarr-app:
-  image: ghcr.io/cquemin/prioritarr-app:latest
+prioritarr:
+  image: ghcr.io/cquemin/prioritarr:latest
   volumes:
     - /path/to/config:/config
     - ${DATADIR}:/storage              # needed for the orphan reaper

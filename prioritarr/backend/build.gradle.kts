@@ -6,6 +6,9 @@ plugins {
     application
 }
 
+group = "org.yoshiz.app.prioritarr"
+version = "0.3.0"
+
 repositories {
     mavenCentral()
 }

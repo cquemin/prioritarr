@@ -598,12 +598,14 @@ function JobsGrid() {
 
 function ColorLegend() {
   return (
-    <div className="bg-surface-1 rounded-lg border border-surface-3 p-3 text-xs flex flex-wrap gap-x-5 gap-y-2 items-center">
-      <span className="opacity-70">Color code:</span>
-      <LegendItem trigger="auto+manual" label="Scheduled · manual trigger available" />
-      <LegendItem trigger="auto" label="Scheduled only — no manual button" />
-      <LegendItem trigger="event" label="Event-driven (incoming webhook)" />
-      <LegendItem trigger="manual" label="Manual only — not on a clock" />
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-3 text-xs space-y-2">
+      <div className="opacity-70">Color code:</div>
+      <div className="flex flex-wrap gap-x-5 gap-y-2 items-center">
+        <LegendItem trigger="auto+manual" label="Scheduled · manual trigger available" />
+        <LegendItem trigger="auto" label="Scheduled only — no manual button" />
+        <LegendItem trigger="event" label="Event-driven (incoming webhook)" />
+        <LegendItem trigger="manual" label="Manual only — not on a clock" />
+      </div>
     </div>
   )
 }
@@ -2051,8 +2053,8 @@ function TraktAuthPanel() {
       )}
 
       {!activeFlow && hasAccessToken && (
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="text-sm flex-1 min-w-0 space-y-1">
+        <>
+          <div className="text-sm space-y-1">
             <div>
               <span className="text-green-400">✓ Connected</span>
               {tokenAgeDays !== null && (
@@ -2069,9 +2071,7 @@ function TraktAuthPanel() {
                   <span className="opacity-60 font-mono ml-2">{expiresAt.toISOString().slice(0, 10)}</span>
                 </span>
                 <span>Refresh token:</span>
-                <span>
-                  rotates with the access token (same ~90-day window)
-                </span>
+                <span>rotates with the access token (same ~90-day window)</span>
               </div>
             )}
             <div className="text-xs opacity-60 italic">
@@ -2079,39 +2079,43 @@ function TraktAuthPanel() {
               Refresh + reconnect buttons are fallbacks for the rare cases (Trakt outage, &gt;90 days offline, revoked app).
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() =>
-              refresh.mutate(undefined, {
-                onSuccess: (r) => {
-                  if (r.status === 'reconnect_required') {
-                    setPollMessage(
-                      `Refresh failed: ${(r as { detail?: string }).detail ?? 'refresh_token expired or revoked'}. Click "Connect Trakt" to start over.`,
-                    )
-                  } else {
-                    setPollMessage('Tokens refreshed.')
-                  }
-                },
-              })
-            }
-            disabled={refresh.isPending}
-            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
-            title="Mint a fresh access_token using the stored refresh_token. If Trakt rejects it (revoked / >90 days idle), tokens clear and you reconnect."
-          >
-            {refresh.isPending ? 'Refreshing…' : 'Refresh tokens'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (!confirm('Disconnect Trakt? Sync + unmonitor reconciler will stop working until you reconnect (and restart).')) return
-              disconnect.mutate()
-            }}
-            disabled={disconnect.isPending}
-            className="px-3 py-1 rounded text-sm bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
-          >
-            {disconnect.isPending ? 'Disconnecting…' : 'Disconnect'}
-          </button>
-        </div>
+          {/* Buttons in their own row at the bottom — matches the
+              ConnectionCard layout above so the page reads cleanly. */}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                refresh.mutate(undefined, {
+                  onSuccess: (r) => {
+                    if (r.status === 'reconnect_required') {
+                      setPollMessage(
+                        `Refresh failed: ${(r as { detail?: string }).detail ?? 'refresh_token expired or revoked'}. Click "Connect Trakt" to start over.`,
+                      )
+                    } else {
+                      setPollMessage('Tokens refreshed.')
+                    }
+                  },
+                })
+              }
+              disabled={refresh.isPending}
+              className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
+              title="Mint a fresh access_token using the stored refresh_token. If Trakt rejects it (revoked / >90 days idle), tokens clear and you reconnect."
+            >
+              {refresh.isPending ? 'Refreshing…' : 'Refresh tokens'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!confirm('Disconnect Trakt? Sync + unmonitor reconciler will stop working until you reconnect (and restart).')) return
+                disconnect.mutate()
+              }}
+              disabled={disconnect.isPending}
+              className="ml-auto px-3 py-1 rounded text-sm bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
+            >
+              {disconnect.isPending ? 'Disconnecting…' : 'Disconnect'}
+            </button>
+          </div>
+        </>
       )}
 
       {!activeFlow && !hasAccessToken && hasClientId && hasClientSecret && (
