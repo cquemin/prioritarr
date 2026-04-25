@@ -185,10 +185,17 @@ export interface EditableSettings {
   plexUrl?: string | null
   plexToken?: string | null
   traktClientId?: string | null
+  traktClientSecret?: string | null
   traktAccessToken?: string | null
+  traktRefreshToken?: string | null
+  traktTokenExpiresAt?: string | null
   dryRun?: boolean | null
   logLevel?: string | null
   uiOrigin?: string | null
+  traktUnmonitorEnabled?: boolean | null
+  traktUnmonitorIntervalHours?: number | null
+  traktUnmonitorSkipSpecials?: boolean | null
+  traktUnmonitorProtectTag?: string | null
 }
 
 export function useSaveSettings() {
@@ -440,11 +447,23 @@ export function useWatchStatus(seriesId: number | null) {
   })
 }
 
+export type SyncDirection = 'both' | 'plex-to-trakt' | 'trakt-to-plex'
+
+function buildSyncQuery(opts: { dryRun?: boolean; direction?: SyncDirection; limit?: number }): string {
+  const params = new URLSearchParams()
+  if (opts.dryRun) params.set('dryRun', 'true')
+  // Omit direction=both since it's the backend default — keeps URLs clean.
+  if (opts.direction && opts.direction !== 'both') params.set('direction', opts.direction)
+  if (opts.limit) params.set('limit', String(opts.limit))
+  const qs = params.toString()
+  return qs ? `?${qs}` : ''
+}
+
 export function useSeriesSync() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (v: { id: number; dryRun?: boolean }) =>
-      postJson<SeriesSyncReport>(`/api/v2/series/${v.id}/sync${v.dryRun ? '?dryRun=true' : ''}`),
+    mutationFn: (v: { id: number; dryRun?: boolean; direction?: SyncDirection }) =>
+      postJson<SeriesSyncReport>(`/api/v2/series/${v.id}/sync${buildSyncQuery(v)}`),
     onSuccess: (_d, v) => {
       // Skip cache invalidation on dry-run — nothing actually changed.
       if (v.dryRun) return
@@ -457,16 +476,196 @@ export function useSeriesSync() {
 export function useLibrarySync() {
   const qc = useQueryClient()
   return useMutation({
+    mutationFn: (opts: { dryRun?: boolean; limit?: number; direction?: SyncDirection } = {}) =>
+      postJson<LibrarySyncReport>(`/api/v2/sync${buildSyncQuery(opts)}`),
+    onSuccess: (_d, opts) => {
+      if (opts.dryRun) return
+      qc.invalidateQueries({ queryKey: ['series'] })
+    },
+  })
+}
+
+// ---- Connection tester ----
+export interface ConnectionTestResult {
+  ok: boolean
+  /** "connected" | "connection-failed" | "auth-failed" | "version-failed" */
+  status: string
+  detail?: string | null
+  version?: string | null
+}
+
+/**
+ * Generic per-service tester. The body shape mirrors EditableSettings
+ * field names (sonarrUrl, sonarrApiKey, etc.) so the backend can
+ * accept candidate values without the user pre-saving.
+ */
+export function useTestConnection() {
+  return useMutation({
+    mutationFn: (v: { service: string; body: Record<string, string | null> }) =>
+      rawFetch<ConnectionTestResult>(`/api/v2/connections/${v.service}/test`, {
+        method: 'POST',
+        body: JSON.stringify(v.body),
+      }),
+  })
+}
+
+// ---- Background-job run history ----
+export interface JobRun {
+  jobId: string
+  startedAt: string
+  finishedAt: string
+  status: 'ok' | 'error' | 'noop' | string
+  durationMs: number
+  summary?: string | null
+  errorMessage?: string | null
+}
+
+export function useJobRuns() {
+  return useQuery({
+    queryKey: ['job-runs'],
+    queryFn: () => rawFetch<JobRun[]>('/api/v2/jobs/runs'),
+    // Refetch every 30s so the grid stays in sync as schedulers tick
+    // — cheap query (returns ~15 rows) so this doesn't risk the API.
+    refetchInterval: 30_000,
+  })
+}
+
+export function useJobRunHistory(jobId: string | null, limit = 10) {
+  return useQuery({
+    queryKey: ['job-runs', jobId, limit],
+    queryFn: () => rawFetch<JobRun[]>(`/api/v2/jobs/${jobId}/runs?limit=${limit}`),
+    enabled: !!jobId,
+    refetchInterval: 30_000,
+  })
+}
+
+// ---- Trakt OAuth device-code flow ----
+export interface TraktDeviceCode {
+  device_code: string
+  user_code: string
+  verification_url: string
+  expires_in: number
+  interval: number
+}
+export interface TraktPollResponse {
+  status: 'pending' | 'connected'
+  tokenExpiresAt?: string
+  restartRequired?: boolean
+}
+
+export function useTraktAuthBegin() {
+  return useMutation({
+    mutationFn: () => postJson<TraktDeviceCode>('/api/v2/trakt/oauth/begin'),
+  })
+}
+
+export function useTraktAuthPoll() {
+  return useMutation({
+    mutationFn: (deviceCode: string) =>
+      rawFetch<TraktPollResponse>('/api/v2/trakt/oauth/poll', {
+        method: 'POST',
+        body: JSON.stringify({ device_code: deviceCode }),
+      }),
+  })
+}
+
+export function useTraktAuthRefresh() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (): Promise<TraktPollResponse | { status: 'reconnect_required'; detail?: string }> => {
+      // Don't throw on 409 — that's the "refresh_token rejected; tokens
+      // wiped" state, which the UI surfaces by showing the Connect
+      // button (settings cache invalidates → hasAccessToken flips false).
+      const key = getApiKey()
+      const res = await fetch(`${API_BASE}/api/v2/trakt/oauth/refresh`, {
+        method: 'POST',
+        headers: { ...(key ? { 'X-Api-Key': key } : {}) },
+      })
+      if (res.status === 409) return await res.json()
+      if (!res.ok) throw new Error(`POST /api/v2/trakt/oauth/refresh failed: ${res.status} ${res.statusText}`)
+      return await res.json()
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['settings'] }),
+  })
+}
+
+export function useTraktAuthDisconnect() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => postJson<{ ok: boolean; message?: string }>('/api/v2/trakt/oauth/disconnect'),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['settings'] }),
+  })
+}
+
+// ---- Trakt → Sonarr unmonitor reconciler ----
+export interface SeriesUnmonitorReport {
+  seriesId: number
+  title: string
+  unmonitored: EpisodeRef[]
+  skippedReason: string | null
+  errors: string[]
+}
+export interface LibraryUnmonitorReport {
+  dryRun: boolean
+  totalSeries: number
+  unmonitoredTotal: number
+  perSeries: SeriesUnmonitorReport[]
+}
+export interface ProtectUnmonitorResponse {
+  seriesId: number
+  protected: boolean
+  tag: string
+}
+export interface BulkProtectUnmonitorResponse {
+  count: number
+  protected: boolean
+  tag: string
+}
+
+export function useTraktUnmonitorSweep() {
+  const qc = useQueryClient()
+  return useMutation({
     mutationFn: (opts: { dryRun?: boolean; limit?: number } = {}) => {
       const params = new URLSearchParams()
       if (opts.dryRun) params.set('dryRun', 'true')
       if (opts.limit) params.set('limit', String(opts.limit))
       const qs = params.toString()
-      return postJson<LibrarySyncReport>(`/api/v2/sync${qs ? `?${qs}` : ''}`)
+      return postJson<LibraryUnmonitorReport>(`/api/v2/reconcile/trakt-unmonitor${qs ? `?${qs}` : ''}`)
     },
     onSuccess: (_d, opts) => {
       if (opts.dryRun) return
       qc.invalidateQueries({ queryKey: ['series'] })
+    },
+  })
+}
+
+export function useProtectUnmonitor() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (v: { id: number; protected: boolean }) =>
+      rawFetch<ProtectUnmonitorResponse>(`/api/v2/series/${v.id}/protect-unmonitor`, {
+        method: 'PUT',
+        body: JSON.stringify({ protected: v.protected }),
+      }),
+    onSuccess: (_d, v) => {
+      qc.invalidateQueries({ queryKey: ['series', v.id] })
+    },
+  })
+}
+
+export function useBulkProtectUnmonitor() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (v: { seriesIds: number[]; protected: boolean }) =>
+      rawFetch<BulkProtectUnmonitorResponse>(`/api/v2/series/protect-unmonitor/bulk`, {
+        method: 'POST',
+        body: JSON.stringify(v),
+      }),
+    onSuccess: (_d, v) => {
+      // Invalidate every affected series so any open drawer re-fetches
+      // its `protectedFromUnmonitor` flag. The general series-list
+      // query never showed the flag, so no invalidation needed there.
+      v.seriesIds.forEach((id) => qc.invalidateQueries({ queryKey: ['series', id] }))
     },
   })
 }

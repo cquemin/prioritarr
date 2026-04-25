@@ -47,6 +47,12 @@ data class SeriesDetail(
      * instead of "nothing happening." Null if nothing's coming.
      */
     val nextWantedEpisode: WantedEpisodeWire? = null,
+    /**
+     * True when the series carries the Sonarr tag configured as
+     * `settings.traktUnmonitor.protectTag`. Surfaces in the drawer as
+     * a toggle — flipping it adds or removes the tag in Sonarr.
+     */
+    val protectedFromUnmonitor: Boolean = false,
 )
 
 @Serializable
@@ -144,13 +150,64 @@ data class SettingsRedacted(
     val plexUrl: String?,
     val plexToken: String?,
     val traktClientId: String?,
+    val traktClientSecret: String?,
     val traktAccessToken: String?,
+    val traktRefreshToken: String?,
+    val traktTokenExpiresAt: String?,
     val apiKey: String?,
     val uiOrigin: String?,
     val dryRun: Boolean,
     val logLevel: String,
     val testMode: Boolean,
     val hasOverrides: Boolean = false,
+    // Trakt→Sonarr unmonitor reconciler knobs. Live-editable; the
+    // scheduler re-reads these every tick.
+    val traktUnmonitorEnabled: Boolean = false,
+    val traktUnmonitorIntervalHours: Int = 6,
+    val traktUnmonitorSkipSpecials: Boolean = false,
+    val traktUnmonitorProtectTag: String = "prioritarr-no-unmonitor",
+    // Scheduler cadences — see [Intervals]. All live-editable.
+    val intervals: IntervalsWire = IntervalsWire(),
+    val orphanReaperIntervalMinutes: Int = 60,
+    val archiveIntervalHours: Int = 168,
+)
+
+/**
+ * Wire shape mirrors [org.yoshiz.app.prioritarr.backend.config.Intervals]
+ * — defaults match the Kotlin record so the UI's expected baseline
+ * stays in sync without an extra round-trip.
+ */
+@Serializable
+data class IntervalsWire(
+    val reconcileMinutes: Int = 15,
+    val backfillSweepHours: Int = 2,
+    val cutoffSweepHours: Int = 24,
+    val backfillMaxSearchesPerSweep: Int = 10,
+    val backfillDelayBetweenSearchesSeconds: Int = 30,
+    val cutoffMaxSearchesPerSweep: Int = 5,
+    val refreshMappingsMinutes: Int = 60,
+    val refreshSeriesCacheMinutes: Int = 5,
+    val refreshEpisodeCacheMinutes: Int = 60,
+    val refreshPrioritiesMinutes: Int = 30,
+    val queueJanitorMinutes: Int = 30,
+    val unmonitoredReaperMinutes: Int = 30,
+    val traktTokenRefreshHours: Int = 24,
+)
+
+/**
+ * One scheduler-tick history row. Status: 'ok' = ran cleanly,
+ * 'error' = threw, 'noop' = scheduled but short-circuited (e.g. job
+ * disabled).
+ */
+@Serializable
+data class JobRunWire(
+    val jobId: String,
+    val startedAt: String,
+    val finishedAt: String,
+    val status: String,
+    val durationMs: Long,
+    val summary: String? = null,
+    val errorMessage: String? = null,
 )
 
 @Serializable
@@ -244,6 +301,26 @@ data class BulkActionResult(
 /** Single (season, episode) reference. Used by the sync detail report. */
 @Serializable
 data class EpisodeRef(val season: Int, val number: Int)
+
+/**
+ * Response for PUT /series/{id}/protect-unmonitor — confirms the tag
+ * state after toggling. The tag name is echoed so the UI can reflect
+ * a rename that happened via settings in the same session.
+ */
+@Serializable
+data class ProtectUnmonitorResponse(
+    val seriesId: Long,
+    val protected: Boolean,
+    val tag: String,
+)
+
+/** Bulk variant — `count` is the number of series the tag was applied to. */
+@Serializable
+data class BulkProtectUnmonitorResponse(
+    val count: Int,
+    val protected: Boolean,
+    val tag: String,
+)
 
 /**
  * Per-series cross-source watch sync result. The numbers describe what

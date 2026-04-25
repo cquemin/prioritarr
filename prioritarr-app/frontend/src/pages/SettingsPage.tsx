@@ -1,11 +1,24 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  Settings as SettingsIcon, Plug, Gauge, ListOrdered, RefreshCw, Link2, Webhook,
+} from 'lucide-react'
 
+import { navigate, useRoute, type SettingsSection } from '../hooks/useHashRoute'
+import { JOBS, JOBS_BY_ID, JOB_DISPLAY_ORDER, TRIGGER_CLASS, TRIGGER_LABEL, buildCadencePatch, readPath, type JobMeta, type JobSetting } from '../lib/jobs'
 import {
   useArchiveSweep,
   useBandwidth,
   useDeleteOrphans,
   useImportOrphan,
+  useJobRunHistory,
+  useJobRuns,
   useLibrarySync,
+  useTestConnection,
+  useTraktAuthBegin,
+  useTraktAuthDisconnect,
+  useTraktAuthPoll,
+  useTraktAuthRefresh,
+  useTraktUnmonitorSweep,
   useMappings,
   useOrphanSweep,
   useOrphans,
@@ -15,7 +28,6 @@ import {
   useProbeOrphan,
   useRefreshMappings,
   useRenameOrphan,
-  useResetSettings,
   useResetThresholds,
   useSaveSettings,
   useSaveThresholds,
@@ -23,7 +35,6 @@ import {
   useSettings,
   useThresholds,
   type BandwidthSettings,
-  type EditableSettings,
   type OrphanAuditRow,
   type OrphanProbeResult,
   type PriorityPreviewEntry,
@@ -31,6 +42,7 @@ import {
 } from '../hooks/queries'
 import { PRIORITY_CLASS, PRIORITY_LABELS } from '../lib/priority'
 import { useAuth } from '../hooks/useAuth'
+import { SyncDirectionSelect } from '../components/SyncDirectionSelect'
 
 // Single source of truth for the editable threshold fields so the form
 // and the sandbox know the same set of knobs, labels, and step sizes.
@@ -67,26 +79,418 @@ const THRESHOLD_FIELDS: ThresholdField[] = [
   { key: 'p5WhenNothingToDownload', kind: 'checkbox', label: 'Collapse to P5 when nothing to download', hint: 'When every monitored-aired episode has a file, bypass the P1/P2/P3 bands and land in P5. Intended for "caught up, fully downloaded, waiting for next release" shows that shouldn\'t hold a queue slot.' },
 ]
 
+/**
+ * Settings sidebar entries — id matches the URL hash segment
+ * (`#/settings/<id>`). Order is the visual order in the sidebar.
+ */
+const SETTINGS_NAV: ReadonlyArray<{
+  id: SettingsSection
+  label: string
+  icon: React.ReactNode
+}> = [
+  { id: 'general', label: 'General', icon: <SettingsIcon size={16} /> },
+  { id: 'connections', label: 'Connections', icon: <Plug size={16} /> },
+  { id: 'bandwidth', label: 'Bandwidth', icon: <Gauge size={16} /> },
+  { id: 'priority-rules', label: 'Priority rules', icon: <ListOrdered size={16} /> },
+  { id: 'jobs', label: 'Background jobs', icon: <RefreshCw size={16} /> },
+  { id: 'mappings', label: 'Mappings', icon: <Link2 size={16} /> },
+  { id: 'webhooks', label: 'Webhooks', icon: <Webhook size={16} /> },
+]
+
 export function SettingsPage() {
-  const { logout } = useAuth()
   const settings = useSettings()
-  const mappings = useMappings()
-  const refresh = useRefreshMappings()
+  const route = useRoute()
+  const section = route.settingsSection ?? 'general'
 
   if (settings.isLoading) return <p className="p-6 opacity-70">Loading…</p>
   const s = settings.data as any
-  const m = mappings.data as any
 
   return (
-    <div className="p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">Settings</h1>
-      <ServiceCredentialsPanel current={s} />
+    <div className="flex h-full">
+      {/* Settings sub-nav. On mobile (< sm) it collapses to icon-only
+          @ 40px; on sm+ it expands to icon+label @ 224px. The
+          Settings header label hides at the same breakpoint. */}
+      <aside className="w-10 sm:w-56 shrink-0 bg-surface-1 border-r border-surface-3 py-2 sm:py-4 px-1 sm:px-2 overflow-y-auto">
+        <h1 className="hidden sm:block text-xs uppercase tracking-wider opacity-50 px-3 mb-2">Settings</h1>
+        <nav className="flex flex-col gap-0.5 items-center sm:items-stretch">
+          {SETTINGS_NAV.map((n) => {
+            const active = n.id === section
+            return (
+              <button
+                key={n.id}
+                type="button"
+                title={n.label}
+                onClick={() => navigate({ page: 'settings', settingsSection: n.id })}
+                className={`flex items-center justify-center sm:justify-start gap-2 p-2 sm:px-3 sm:py-1.5 rounded text-sm text-left ${
+                  active ? 'bg-surface-3 text-accent' : 'hover:bg-surface-2'
+                }`}
+              >
+                {n.icon}
+                <span className="hidden sm:inline">{n.label}</span>
+              </button>
+            )
+          })}
+        </nav>
+      </aside>
 
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 min-w-0">
+        {section === 'general' && <GeneralSection />}
+        {section === 'connections' && <ConnectionsSection s={s} />}
+        {section === 'bandwidth' && <BandwidthSection />}
+        {section === 'priority-rules' && <PriorityRulesSection />}
+        {section === 'jobs' && <JobsSection />}
+        {section === 'mappings' && <MappingsSection />}
+        {section === 'webhooks' && <WebhooksSection />}
+      </div>
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Section bodies — Phase 1 wiring. Each one is a thin wrapper around */
+/* existing panel components; later phases break panels into per-card */
+/* sub-components and add the per-job detail pages.                    */
+/* ------------------------------------------------------------------ */
+
+function GeneralSection() {
+  const { logout } = useAuth()
+  const settings = useSettings()
+  const save = useSaveSettings()
+  const s = settings.data as any
+  const [draft, setDraft] = useState<Record<string, any>>({})
+  useEffect(() => { setDraft({}) }, [s?.dryRun, s?.logLevel, s?.uiOrigin])
+  const dirty = Object.keys(draft).length > 0
+  const get = (k: string) => (draft[k] !== undefined ? draft[k] : s?.[k])
+
+  return (
+    <>
+      <SectionHeader title="General" subtitle="Runtime, log level, UI access." />
+      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+        <h3 className="font-semibold">Runtime</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="flex items-center gap-2 text-sm sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={Boolean(get('dryRun'))}
+              onChange={(e) => setDraft({ ...draft, dryRun: e.target.checked })}
+            />
+            <span className="flex-1">
+              Dry-run mode
+              <span className="block text-xs opacity-60">Log every upstream write but don't actually fire it. Useful for verifying a new policy.</span>
+            </span>
+          </label>
+          <label className="flex flex-col text-xs space-y-1">
+            <span className="opacity-80">Log level</span>
+            <select
+              value={get('logLevel') ?? 'INFO'}
+              onChange={(e) => setDraft({ ...draft, logLevel: e.target.value })}
+              className="bg-surface-3 border border-surface-2 rounded px-2 py-1 font-mono text-sm"
+            >
+              {['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE'].map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col text-xs space-y-1">
+            <span className="opacity-80">UI origin (deep-link base)</span>
+            <input
+              type="url"
+              value={get('uiOrigin') ?? ''}
+              onChange={(e) => setDraft({ ...draft, uiOrigin: e.target.value })}
+              placeholder="(not set)"
+              className="bg-surface-3 border border-surface-2 rounded px-2 py-1 font-mono text-sm"
+            />
+          </label>
+        </div>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            disabled={!dirty || save.isPending}
+            onClick={async () => { await save.mutateAsync(draft as any); setDraft({}) }}
+            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-30"
+          >
+            {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+          </button>
+        </div>
+      </div>
+
+      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 flex justify-between items-center">
+        <div className="text-sm opacity-70">API key stored in localStorage.</div>
+        <button
+          onClick={logout}
+          className="px-4 py-1 rounded bg-red-900/60 hover:bg-red-700 text-sm"
+        >
+          Log out
+        </button>
+      </div>
+    </>
+  )
+}
+
+function ConnectionsSection({ s }: { s: any }) {
+  return (
+    <>
+      <SectionHeader
+        title="Connections"
+        subtitle="One card per upstream service. Test before saving — green tick = reachable + auth + parseable response. Failures point at the cause: URL, API key, or unsupported version."
+      />
+      <ConnectionCard
+        title="Sonarr"
+        service="sonarr"
+        current={s}
+        fields={[
+          { key: 'sonarrUrl', label: 'URL', type: 'url' },
+          { key: 'sonarrApiKey', label: 'API key', secret: true },
+        ]}
+      />
+      <ConnectionCard
+        title="Tautulli"
+        service="tautulli"
+        current={s}
+        fields={[
+          { key: 'tautulliUrl', label: 'URL', type: 'url' },
+          { key: 'tautulliApiKey', label: 'API key', secret: true },
+        ]}
+      />
+      <ConnectionCard
+        title="qBittorrent"
+        service="qbit"
+        current={s}
+        fields={[
+          { key: 'qbitUrl', label: 'URL', type: 'url' },
+          { key: 'qbitUsername', label: 'Username' },
+          { key: 'qbitPassword', label: 'Password', secret: true },
+        ]}
+      />
+      <ConnectionCard
+        title="SABnzbd"
+        service="sab"
+        current={s}
+        fields={[
+          { key: 'sabUrl', label: 'URL', type: 'url' },
+          { key: 'sabApiKey', label: 'API key', secret: true },
+        ]}
+      />
+      <ConnectionCard
+        title="Plex"
+        service="plex"
+        current={s}
+        fields={[
+          { key: 'plexUrl', label: 'URL', type: 'url' },
+          { key: 'plexToken', label: 'Token', secret: true },
+        ]}
+      />
+      {/* Trakt has its own card with the OAuth dance + a hot-swap
+          access token, so we don't duplicate the URL/key inputs here.
+          The Trakt card embeds its own Test button. */}
+      <TraktAuthPanel />
+    </>
+  )
+}
+
+interface ConnectionCardField {
+  key: string
+  label: string
+  type?: 'text' | 'url'
+  secret?: boolean
+}
+
+/**
+ * One upstream-service connection card. Owns its own draft state +
+ * save lifecycle so each service feels independent. The Test button
+ * runs against the *draft* values (falling back to live secrets when
+ * the user didn't re-type them) and renders a green/red badge with a
+ * categorised reason on failure.
+ */
+function ConnectionCard({
+  title, service, current, fields,
+}: {
+  title: string
+  service: string
+  current: any
+  fields: ReadonlyArray<ConnectionCardField>
+}) {
+  const save = useSaveSettings()
+  const test = useTestConnection()
+  const [draft, setDraft] = useState<Record<string, string>>({})
+  const [revealSecrets, setRevealSecrets] = useState(false)
+
+  // Reset the draft when the live values change (e.g. after Save).
+  useEffect(() => { setDraft({}) }, [...fields.map((f) => current?.[f.key])]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const dirty = Object.values(draft).some((v) => v.length > 0)
+  const setField = (k: string, v: string) =>
+    setDraft((d) => ({ ...d, [k]: v }))
+
+  const onTest = () => {
+    // Send only fields the user actually filled in; backend falls back
+    // to the saved value otherwise. Skips the redacted "***" sentinel.
+    const body: Record<string, string | null> = {}
+    for (const f of fields) {
+      const d = draft[f.key]?.trim()
+      if (d && d !== '***') body[f.key] = d
+    }
+    test.mutate({ service, body })
+  }
+
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <h3 className="font-semibold">{title}</h3>
+        <ConnectionTestBadge result={test.data} pending={test.isPending} error={test.error} />
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {fields.map((f) => {
+          const live = current?.[f.key]
+          const draftVal = draft[f.key] ?? ''
+          const placeholder = f.secret
+            ? (live ? '••••• (leave blank to keep)' : '(not set)')
+            : (live ?? '(not set)')
+          return (
+            <label key={f.key} className="flex flex-col text-xs space-y-1">
+              <span className="opacity-80">
+                {f.label}
+                {draftVal !== '' && <span className="text-amber-400 ml-1">(modified)</span>}
+              </span>
+              <input
+                type={f.secret && !revealSecrets ? 'password' : (f.type === 'url' ? 'url' : 'text')}
+                value={draftVal}
+                onChange={(e) => setField(f.key, e.target.value)}
+                placeholder={placeholder}
+                className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
+              />
+              {!f.secret && live && draftVal === '' && (
+                <span className="opacity-50">current: <code>{String(live)}</code></span>
+              )}
+            </label>
+          )
+        })}
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onTest}
+          disabled={test.isPending}
+          className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
+          title="GET the upstream's status endpoint with the values above and report back"
+        >
+          {test.isPending ? 'Testing…' : 'Test connection'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setRevealSecrets(!revealSecrets)}
+          className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2"
+        >
+          {revealSecrets ? 'Hide' : 'Show'} secrets
+        </button>
+        <button
+          type="button"
+          disabled={!dirty || save.isPending}
+          onClick={async () => {
+            const patch: Record<string, string | null> = {}
+            for (const [k, v] of Object.entries(draft)) {
+              if (v.length > 0) patch[k] = v
+            }
+            await save.mutateAsync(patch as any)
+            setDraft({})
+          }}
+          className="ml-auto px-3 py-1 rounded text-sm bg-accent disabled:opacity-30"
+        >
+          {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Visual badge for the test outcome. Green tick = connected (with
+ * version when known); red with category-specific guidance on failure
+ * so the operator knows where to look (URL vs key vs version).
+ */
+function ConnectionTestBadge({
+  result, pending, error,
+}: {
+  result?: import('../hooks/queries').ConnectionTestResult
+  pending: boolean
+  error: unknown
+}) {
+  if (pending) {
+    return (
+      <span className="text-xs px-2 py-0.5 rounded bg-surface-3 inline-flex items-center gap-1">
+        <span className="inline-block w-3 h-3 border-2 border-text-muted border-t-accent rounded-full animate-spin" />
+        Testing…
+      </span>
+    )
+  }
+  if (error && !result) {
+    return <span className="text-xs px-2 py-0.5 rounded bg-red-900/40 text-red-300">Test request failed</span>
+  }
+  if (!result) return <span className="text-xs opacity-50">Untested</span>
+  if (result.ok) {
+    return (
+      <span className="text-xs px-2 py-0.5 rounded bg-green-700/40 text-green-300 inline-flex items-center gap-1.5"
+        title={result.detail ?? undefined}>
+        <span>✓</span>
+        <span>Connected{result.version ? ` · v${result.version.replace(/^v/, '')}` : ''}</span>
+      </span>
+    )
+  }
+  // Map status → operator-friendly hint
+  const hint: Record<string, string> = {
+    'connection-failed': 'Wrong URL or upstream unreachable',
+    'auth-failed': 'Wrong API key / credentials',
+    'version-failed': 'Reached upstream but response wasn\u2019t the expected shape',
+  }
+  return (
+    <span
+      className="text-xs px-2 py-0.5 rounded bg-red-900/40 text-red-300 inline-flex items-center gap-1.5"
+      title={result.detail ?? undefined}
+    >
+      <span>✗</span>
+      <span>{hint[result.status] ?? result.status}</span>
+      {result.detail && <span className="opacity-70">· {result.detail.slice(0, 70)}</span>}
+    </span>
+  )
+}
+
+function BandwidthSection() {
+  return (
+    <>
+      <SectionHeader
+        title="Bandwidth"
+        subtitle="Caps and decision knobs for the bandwidth-aware enforcement."
+      />
+      <BandwidthPanel />
+    </>
+  )
+}
+
+function PriorityRulesSection() {
+  return (
+    <>
+      <SectionHeader
+        title="Priority rules"
+        subtitle="Tuning knobs for each P-class. Edits apply to the priority cache on save (next refresh)."
+      />
       <ThresholdsPanel />
+    </>
+  )
+}
 
+function MappingsSection() {
+  const mappings = useMappings()
+  const refresh = useRefreshMappings()
+  const m = mappings.data as any
+  return (
+    <>
+      <SectionHeader
+        title="Mappings"
+        subtitle="Plex rating-key ↔ Sonarr series id resolution table. Refreshes hourly."
+      />
       <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-2">
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Plex ↔ Sonarr mappings</h2>
+          <h3 className="font-semibold">Plex ↔ Sonarr mappings</h3>
           <button
             onClick={() => refresh.mutate()}
             disabled={refresh.isPending}
@@ -105,24 +509,454 @@ export function SettingsPage() {
           </div>
         )}
       </div>
+    </>
+  )
+}
 
-      <BandwidthPanel />
+function WebhooksSection() {
+  // Read-only docs for now. Each webhook URL is composed at the edge
+  // (Authelia + Traefik strip the prefix before reaching the app), so
+  // surfaces the format the user pastes into Sonarr/SAB/Tautulli.
+  return (
+    <>
+      <SectionHeader
+        title="Webhooks"
+        subtitle="Paste these URLs into the upstream services to drive real-time UI updates."
+      />
+      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3 text-sm">
+        <WebhookRow
+          name="Sonarr"
+          path="/prioritarr/api/sonarr/on-grab"
+          notes="Sonarr → Settings → Connect → Webhook. Trigger on Grab, Download, Episode File Delete, Series Delete, Manual Interaction Required, Test."
+        />
+        <WebhookRow
+          name="SABnzbd"
+          path="/prioritarr/api/sab/webhook?nzo_id=$NZO&status=$STATUS&fail_message=$FAIL_MSG"
+          notes="SABnzbd → Config → Notifications → Notification scripts (or a wrapper script that curls this URL on post-processing)."
+        />
+        <WebhookRow
+          name="Plex / Tautulli"
+          path="/prioritarr/api/plex-event"
+          notes="Tautulli → Settings → Notification Agents → Webhook → POST on watched-event with JSON payload."
+        />
+      </div>
+    </>
+  )
+}
 
-      <ArchivePanel />
+function WebhookRow({ name, path, notes }: { name: string; path: string; notes: string }) {
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        <span className="font-semibold">{name}</span>
+        <code className="text-xs font-mono px-2 py-0.5 bg-surface-3 rounded select-all">{path}</code>
+      </div>
+      <div className="text-xs opacity-70 mt-1">{notes}</div>
+    </div>
+  )
+}
 
-      <LibrarySyncPanel />
+function JobsSection() {
+  const route = useRoute()
+  if (route.jobId) {
+    const job = JOBS_BY_ID[route.jobId]
+    if (!job) {
+      // Bad id — bounce back to the grid rather than show an empty page.
+      return <JobsGrid />
+    }
+    return <JobDetail job={job} />
+  }
+  return <JobsGrid />
+}
 
-      <OrphanReaperPanel />
+function JobsGrid() {
+  const runs = useJobRuns()
+  // Index by jobId for O(1) lookup as the grid renders. Empty when
+  // the query is loading — cards just show "no runs yet" in that case.
+  const runByJob = useMemo(() => {
+    const m = new Map<string, ReturnType<typeof useJobRuns>['data'] extends (infer T)[] | undefined ? T : never>()
+    for (const r of runs.data ?? []) m.set(r.jobId, r as any)
+    return m
+  }, [runs.data])
+  return (
+    <>
+      <SectionHeader
+        title="Background jobs"
+        subtitle="Every scheduled or event-driven job that prioritarr runs. Click a card for details, settings, and (where applicable) a manual trigger."
+      />
+      <ColorLegend />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {JOB_DISPLAY_ORDER.flatMap((trigger) =>
+          JOBS.filter((j) => j.trigger === trigger).map((job) => (
+            <JobCard key={job.id} job={job} lastRun={runByJob.get(job.id)} />
+          )),
+        )}
+      </div>
+    </>
+  )
+}
 
-      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 flex justify-between items-center">
-        <div className="text-sm opacity-70">API key stored in localStorage.</div>
+function ColorLegend() {
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-3 text-xs flex flex-wrap gap-x-5 gap-y-2 items-center">
+      <span className="opacity-70">Color code:</span>
+      <LegendItem trigger="auto+manual" label="Scheduled · manual trigger available" />
+      <LegendItem trigger="auto" label="Scheduled only — no manual button" />
+      <LegendItem trigger="event" label="Event-driven (incoming webhook)" />
+      <LegendItem trigger="manual" label="Manual only — not on a clock" />
+    </div>
+  )
+}
+
+function LegendItem({ trigger, label }: { trigger: keyof typeof TRIGGER_CLASS; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={`w-2 h-2 rounded-full ${TRIGGER_CLASS[trigger].dot}`} />
+      <span className="opacity-90">{label}</span>
+    </span>
+  )
+}
+
+function JobCard({ job, lastRun }: { job: JobMeta; lastRun?: import('../hooks/queries').JobRun }) {
+  const settings = useSettings()
+  const data = settings.data as any
+  const cadenceValue = job.cadence ? readPath(data, job.cadence.key) : null
+  return (
+    <button
+      type="button"
+      onClick={() => navigate({ page: 'settings', settingsSection: 'jobs', jobId: job.id })}
+      className={`text-left bg-surface-1 rounded-lg p-3 hover:bg-surface-2 transition-colors space-y-2 ${TRIGGER_CLASS[job.trigger].border} border-y border-r border-surface-3`}
+    >
+      <div className="flex items-center gap-2">
+        <span className="text-text-secondary">{job.icon}</span>
+        <span className="font-medium text-sm flex-1 min-w-0 truncate">{job.name}</span>
+        <RunStatusDot run={lastRun} />
+      </div>
+      <div className="text-xs opacity-80">{job.short}</div>
+      <div className="flex items-center gap-2 text-xs">
+        <span className={`px-1.5 py-0.5 rounded ${TRIGGER_CLASS[job.trigger].chip}`}>
+          {TRIGGER_LABEL[job.trigger]}
+        </span>
+        {job.cadence && cadenceValue != null && (
+          <span className="opacity-70">every {cadenceValue} {job.cadence.unit === 'hours' ? 'h' : 'm'}</span>
+        )}
+        {!job.cadence && <span className="opacity-50 italic">on demand</span>}
+        {lastRun && <span className="opacity-60">· {relativeTime(lastRun.startedAt)}</span>}
+      </div>
+    </button>
+  )
+}
+
+/**
+ * Tiny status indicator: green = ok, red = error, gray = noop, hollow
+ * = no run recorded. Hover surfaces the full timestamp + summary.
+ */
+function RunStatusDot({ run }: { run?: import('../hooks/queries').JobRun }) {
+  if (!run) {
+    return (
+      <span
+        className="w-2 h-2 rounded-full border border-surface-3"
+        title="No runs recorded yet"
+      />
+    )
+  }
+  const color =
+    run.status === 'ok' ? 'bg-green-500' :
+    run.status === 'error' ? 'bg-red-500' :
+    'bg-zinc-500'
+  const tooltip = [
+    `${run.status === 'error' ? 'Failed' : run.status === 'noop' ? 'Skipped' : 'Ran'} at ${run.startedAt.replace('T', ' ').slice(0, 19)}`,
+    run.summary && `· ${run.summary}`,
+    run.errorMessage && `· ${run.errorMessage}`,
+    `· ${formatDuration(run.durationMs)}`,
+  ].filter(Boolean).join(' ')
+  return <span className={`w-2 h-2 rounded-full ${color}`} title={tooltip} />
+}
+
+/**
+ * Format a millisecond duration with the right unit. < 1s shows ms,
+ * < 60s shows fractional seconds, < 60m shows m+s, otherwise h+m.
+ * Keeps two significant figures in the seconds case so 9377ms reads
+ * "9.4s" not "9.377s".
+ */
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return ''
+  if (ms < 1000) return `${ms}ms`
+  const sec = ms / 1000
+  if (sec < 60) return `${sec.toFixed(sec < 10 ? 1 : 0)}s`
+  const totalSec = Math.round(sec)
+  const m = Math.floor(totalSec / 60)
+  const s = totalSec % 60
+  if (m < 60) return s === 0 ? `${m}m` : `${m}m ${s}s`
+  const h = Math.floor(m / 60)
+  const remM = m % 60
+  return remM === 0 ? `${h}h` : `${h}h ${remM}m`
+}
+
+/**
+ * Relative-time formatter — "5m ago" / "2h ago" / "3d ago". Coarse on
+ * purpose; the tooltip on RunStatusDot has the full ISO timestamp for
+ * anyone who needs precision.
+ */
+function relativeTime(iso: string): string {
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return ''
+  const sec = Math.max(0, Math.floor((Date.now() - t) / 1000))
+  if (sec < 60) return `${sec}s ago`
+  const min = Math.floor(sec / 60); if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60); if (hr < 24) return `${hr}h ago`
+  return `${Math.floor(hr / 24)}d ago`
+}
+
+function JobDetail({ job }: { job: JobMeta }) {
+  const settings = useSettings()
+  const save = useSaveSettings()
+  const data = settings.data as any
+  const cadenceValue = job.cadence ? readPath(data, job.cadence.key) : null
+  const [cadenceDraft, setCadenceDraft] = useState<number | ''>(cadenceValue ?? '')
+  useEffect(() => { if (cadenceValue != null) setCadenceDraft(cadenceValue) }, [cadenceValue])
+  const cadenceDirty = typeof cadenceDraft === 'number' && cadenceDraft !== cadenceValue
+
+  return (
+    <>
+      <div className="flex items-center gap-3 flex-wrap">
         <button
-          onClick={logout}
-          className="px-4 py-1 rounded bg-red-900/60 hover:bg-red-700 text-sm"
+          type="button"
+          onClick={() => navigate({ page: 'settings', settingsSection: 'jobs' })}
+          className="text-xs opacity-70 hover:opacity-100"
         >
-          Log out
+          ← Back to all jobs
         </button>
       </div>
+      <div className={`bg-surface-1 rounded-lg p-4 space-y-3 ${TRIGGER_CLASS[job.trigger].border} border-y border-r border-surface-3`}>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-text-secondary">{job.icon}</span>
+          <h2 className="text-xl font-semibold flex-1 min-w-0">{job.name}</h2>
+          <span className={`px-2 py-0.5 text-xs rounded ${TRIGGER_CLASS[job.trigger].chip}`}>
+            {TRIGGER_LABEL[job.trigger]}
+          </span>
+        </div>
+        <p className="text-sm opacity-80 leading-relaxed">{job.description}</p>
+        {job.why && (
+          <p className="text-sm opacity-70 leading-relaxed border-l-2 border-surface-3 pl-3 italic">{job.why}</p>
+        )}
+
+        {/* Some jobs have a richer control panel with preview / result
+            breakdown — render that in place of the bare manual button.
+            The bare button still drives jobs without a rich panel. */}
+        {job.id === 'trakt-unmonitor' ? (
+          <div className="-m-4 mt-2 pt-3 border-t border-surface-3"><TraktUnmonitorPanel /></div>
+        ) : job.id === 'watched-archiver' ? (
+          <div className="-m-4 mt-2 pt-3 border-t border-surface-3"><ArchivePanel /></div>
+        ) : job.id === 'library-sync' ? (
+          <div className="-m-4 mt-2 pt-3 border-t border-surface-3"><LibrarySyncPanel /></div>
+        ) : job.id === 'orphan-reaper' ? (
+          <div className="-m-4 mt-2 pt-3 border-t border-surface-3"><OrphanReaperPanel /></div>
+        ) : job.manual ? (
+          <ManualTriggerButton job={job} />
+        ) : null}
+      </div>
+
+      {job.cadence && (
+        <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-2">
+          <h3 className="font-semibold">Schedule</h3>
+          <p className="text-xs opacity-70">
+            Edits apply on the next tick — no restart needed.
+          </p>
+          <div className="flex items-center gap-2">
+            <label htmlFor={`${job.id}-cadence`} className="text-sm opacity-80">Run every</label>
+            <input
+              id={`${job.id}-cadence`}
+              type="number"
+              min={job.cadence.min ?? 1}
+              step={1}
+              value={cadenceDraft}
+              onChange={(e) => setCadenceDraft(e.target.valueAsNumber)}
+              className="w-24 bg-surface-3 border border-surface-2 rounded px-2 py-1 font-mono text-sm"
+            />
+            <span className="text-sm opacity-80">{job.cadence.unit}</span>
+            <button
+              type="button"
+              disabled={!cadenceDirty || save.isPending}
+              onClick={() =>
+                save.mutate(buildCadencePatch(job.cadence!.key, cadenceDraft as number))
+              }
+              className="ml-2 px-3 py-1 rounded text-sm bg-accent disabled:opacity-30"
+            >
+              {save.isPending ? 'Saving…' : cadenceDirty ? 'Save' : 'Saved'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {job.settings && job.settings.length > 0 && (
+        <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+          <h3 className="font-semibold">Job-specific settings</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {job.settings.map((s) => (
+              <JobSettingInput key={s.key} setting={s} data={data} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <RecentRunsCard jobId={job.id} />
+
+      {job.relatedSettings && job.relatedSettings.length > 0 && (
+        <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-2">
+          <h3 className="font-semibold">Related settings</h3>
+          <p className="text-xs opacity-70">Cross-cutting knobs that influence this job. Editing happens in their own section.</p>
+          <ul className="text-sm space-y-1">
+            {job.relatedSettings.map((r) => (
+              <li key={`${r.section}.${r.field}`}>
+                <button
+                  type="button"
+                  className="underline hover:text-accent text-left"
+                  onClick={() => navigate({ page: 'settings', settingsSection: r.section as SettingsSection })}
+                >
+                  {r.sectionLabel}
+                  {r.field !== '*' && <span className="opacity-60"> · {r.field}</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
+  )
+}
+
+function JobSettingInput({ setting, data }: { setting: JobSetting; data: any }) {
+  const save = useSaveSettings()
+  const live = data?.[setting.key]
+  const [draft, setDraft] = useState<any>(live ?? '')
+  useEffect(() => { if (live !== undefined) setDraft(live) }, [live])
+  const dirty = draft !== live && draft !== ''
+
+  if (setting.type === 'boolean') {
+    return (
+      <label className="flex items-start gap-2 text-sm sm:col-span-2">
+        <input
+          type="checkbox"
+          checked={Boolean(live)}
+          disabled={save.isPending}
+          onChange={(e) => save.mutate({ [setting.key]: e.target.checked })}
+          className="mt-1"
+        />
+        <span className="flex-1">
+          <div>{setting.label}</div>
+          {setting.hint && <div className="text-xs opacity-60 mt-0.5">{setting.hint}</div>}
+        </span>
+      </label>
+    )
+  }
+
+  return (
+    <label className="flex flex-col text-xs space-y-1">
+      <span className="opacity-80">{setting.label}</span>
+      <div className="flex gap-2">
+        <input
+          type={setting.type === 'number' ? 'number' : 'text'}
+          value={draft}
+          step={setting.type === 'number' ? setting.step : undefined}
+          min={setting.type === 'number' ? setting.min : undefined}
+          onChange={(e) => setDraft(setting.type === 'number' ? e.target.valueAsNumber : e.target.value)}
+          className="flex-1 bg-surface-3 border border-surface-2 rounded px-2 py-1 font-mono text-sm"
+        />
+        <button
+          type="button"
+          disabled={!dirty || save.isPending}
+          onClick={() => save.mutate({ [setting.key]: draft })}
+          className="px-2 py-1 rounded text-xs bg-accent disabled:opacity-30 whitespace-nowrap"
+        >
+          {save.isPending ? '…' : 'Save'}
+        </button>
+      </div>
+      {setting.hint && <span className="opacity-50">{setting.hint}</span>}
+    </label>
+  )
+}
+
+function RecentRunsCard({ jobId }: { jobId: string }) {
+  const runs = useJobRunHistory(jobId, 10)
+  const list = runs.data ?? []
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-2">
+      <h3 className="font-semibold">Recent runs</h3>
+      {runs.isLoading && <div className="text-xs opacity-70">Loading…</div>}
+      {!runs.isLoading && list.length === 0 && (
+        <div className="text-xs opacity-70">
+          No runs recorded yet. Scheduler tracking started when the container last
+          rebooted; manual-only and event-driven jobs only appear after a real run.
+        </div>
+      )}
+      {list.length > 0 && (
+        <ul className="text-xs space-y-1 font-mono">
+          {list.map((r, i) => (
+            <li
+              key={`${r.startedAt}-${i}`}
+              className="grid grid-cols-[auto_auto_1fr_auto] gap-3 items-baseline"
+              title={r.errorMessage ?? r.summary ?? ''}
+            >
+              <RunStatusDot run={r} />
+              <span className="opacity-80">{r.startedAt.replace('T', ' ').slice(0, 19)}</span>
+              <span className="opacity-70 truncate">
+                {r.errorMessage ?? r.summary ?? <span className="opacity-40">—</span>}
+              </span>
+              <span className="opacity-50 tabular-nums">{formatDuration(r.durationMs)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function ManualTriggerButton({ job }: { job: JobMeta }) {
+  const [busy, setBusy] = useState(false)
+  const [outcome, setOutcome] = useState<string | null>(null)
+  if (!job.manual) return null
+  const onClick = async () => {
+    setBusy(true); setOutcome(null)
+    const params = new URLSearchParams(job.manual!.query ?? {})
+    const qs = params.toString()
+    const url = `${job.manual!.path}${qs ? `?${qs}` : ''}`
+    try {
+      const key = (window as any).localStorage?.getItem?.('apiKey') ?? null
+      const res = await fetch(url, {
+        method: job.manual!.method,
+        headers: { ...(key ? { 'X-Api-Key': key } : {}) },
+      })
+      setOutcome(res.ok ? `OK (${res.status})` : `Failed: ${res.status} ${res.statusText}`)
+    } catch (e) {
+      setOutcome(`Failed: ${(e as Error).message ?? e}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="flex items-center gap-3 flex-wrap pt-2 border-t border-surface-3">
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={busy}
+        className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-50"
+      >
+        {busy ? 'Running…' : job.manual.label}
+      </button>
+      {outcome && <span className={`text-xs font-mono ${outcome.startsWith('OK') ? 'text-green-400' : 'text-red-400'}`}>{outcome}</span>}
+      <span className="text-xs opacity-50">
+        {job.manual.method} {job.manual.path}{job.manual.query ? `?${new URLSearchParams(job.manual.query).toString()}` : ''}
+      </span>
+    </div>
+  )
+}
+
+function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+  return (
+    <div>
+      <h2 className="text-2xl font-semibold">{title}</h2>
+      {subtitle && <p className="text-sm opacity-70 mt-1">{subtitle}</p>}
     </div>
   )
 }
@@ -216,40 +1050,65 @@ function ThresholdsPanel() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {THRESHOLD_FIELDS.map((f) => {
-          if (f.kind === 'checkbox') {
-            return (
-              <label key={f.key} className="flex flex-col text-xs space-y-1 justify-between">
-                <span className="opacity-80">{f.label}</span>
-                <div className="flex items-center gap-2 py-1">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(draft[f.key])}
-                    onChange={(e) => setDraft({ ...draft, [f.key]: e.target.checked })}
-                  />
-                  <span className="opacity-80">{draft[f.key] ? 'on' : 'off'}</span>
-                </div>
-                <span className="opacity-50">{f.hint}</span>
-              </label>
-            )
-          }
+      {/* Per-priority cards. Grouped by P1/P2/P3/P4/P5 prefix because
+          users reason about "what makes a series P1 vs P2", not about
+          "all the watch-percent knobs". The card label uses the
+          existing PRIORITY_LABELS so wording stays consistent with the
+          rest of the UI. Single-knob priorities (P4, P5) are still
+          rendered as cards for visual rhythm even though by-domain
+          grouping would have folded them. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {([1, 2, 3, 4, 5] as const).map((p) => {
+          const fields = THRESHOLD_FIELDS.filter((f) => String(f.key).startsWith(`p${p}`))
+          if (fields.length === 0) return null
           return (
-            <label key={f.key} className="flex flex-col text-xs space-y-1">
-              <span className="opacity-80">{f.label}</span>
-              <input
-                type="number"
-                value={draft[f.key] as number}
-                step={f.step}
-                min={f.min}
-                max={f.max}
-                onChange={(e) =>
-                  setDraft({ ...draft, [f.key]: e.target.valueAsNumber })
-                }
-                className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
-              />
-              <span className="opacity-50">{f.hint}</span>
-            </label>
+            <div
+              key={p}
+              className={`bg-surface-0 border rounded-lg p-3 space-y-3 ${PRIORITY_CLASS[p]?.replace(/text-\S+/g, '') ?? 'border-surface-3'}`}
+            >
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-0.5 rounded text-xs border ${PRIORITY_CLASS[p]}`}>P{p}</span>
+                <span className="text-sm font-medium">{PRIORITY_LABELS[p]?.replace(/^P\d\s+/, '') ?? `Priority ${p}`}</span>
+                <span className="ml-auto text-xs opacity-50">{fields.length} knob{fields.length === 1 ? '' : 's'}</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {fields.map((f) => {
+                  if (f.kind === 'checkbox') {
+                    return (
+                      <label key={f.key} className="flex flex-col text-xs space-y-1 justify-between sm:col-span-2">
+                        <span className="opacity-80">{f.label}</span>
+                        <div className="flex items-center gap-2 py-1">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(draft[f.key])}
+                            onChange={(e) => setDraft({ ...draft, [f.key]: e.target.checked })}
+                          />
+                          <span className="opacity-80">{draft[f.key] ? 'on' : 'off'}</span>
+                        </div>
+                        <span className="opacity-50">{f.hint}</span>
+                      </label>
+                    )
+                  }
+                  return (
+                    <label key={f.key} className="flex flex-col text-xs space-y-1">
+                      <span className="opacity-80">{f.label.replace(/^P\d\s*·\s*/, '')}</span>
+                      <input
+                        type="number"
+                        value={draft[f.key] as number}
+                        step={f.step}
+                        min={f.min}
+                        max={f.max}
+                        onChange={(e) =>
+                          setDraft({ ...draft, [f.key]: e.target.valueAsNumber })
+                        }
+                        className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
+                      />
+                      <span className="opacity-50">{f.hint}</span>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
           )
         })}
       </div>
@@ -419,186 +1278,6 @@ function SandboxCard({ entry, loading = false }: { entry: PriorityPreviewEntry; 
   )
 }
 
-/**
- * Editable upstream-service credentials + a few app-level toggles.
- *
- * Stored as a DB override on top of the env baseline. Changes only
- * take effect after a container restart because clients are
- * constructed once at boot and held in AppState.
- *
- * Secret fields show as a masked placeholder; leaving them blank on
- * save means "no change" (the existing value persists). Typing
- * anything overwrites.
- */
-function ServiceCredentialsPanel({ current }: { current: any }) {
-  const save = useSaveSettings()
-  const reset = useResetSettings()
-  // Empty draft — only fields the user actually touches get sent.
-  const [draft, setDraft] = useState<EditableSettings>({})
-  const [revealSecrets, setRevealSecrets] = useState(false)
-
-  if (!current) {
-    return (
-      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4">
-        <h2 className="font-semibold">Service credentials</h2>
-        <p className="text-xs opacity-70 mt-1">Loading…</p>
-      </div>
-    )
-  }
-
-  const dirty = Object.keys(draft).length > 0
-  const fields: Array<{
-    key: keyof EditableSettings
-    label: string
-    placeholder?: string
-    secret?: boolean
-    type?: 'text' | 'url' | 'checkbox' | 'select'
-    options?: string[]
-  }> = [
-    { key: 'sonarrUrl',         label: 'Sonarr URL',           type: 'url' },
-    { key: 'sonarrApiKey',      label: 'Sonarr API key',       secret: true },
-    { key: 'tautulliUrl',       label: 'Tautulli URL',         type: 'url' },
-    { key: 'tautulliApiKey',    label: 'Tautulli API key',     secret: true },
-    { key: 'qbitUrl',           label: 'qBittorrent URL',      type: 'url' },
-    { key: 'qbitUsername',      label: 'qBittorrent username' },
-    { key: 'qbitPassword',      label: 'qBittorrent password', secret: true },
-    { key: 'sabUrl',            label: 'SABnzbd URL',          type: 'url' },
-    { key: 'sabApiKey',         label: 'SABnzbd API key',      secret: true },
-    { key: 'plexUrl',           label: 'Plex URL',             type: 'url' },
-    { key: 'plexToken',         label: 'Plex token',           secret: true },
-    { key: 'traktClientId',     label: 'Trakt client ID' },
-    { key: 'traktAccessToken',  label: 'Trakt access token',   secret: true },
-    { key: 'uiOrigin',          label: 'UI origin (for deep-links)', type: 'url' },
-    { key: 'logLevel',          label: 'Log level', type: 'select', options: ['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE'] },
-    { key: 'dryRun',            label: 'Dry-run (log actions, no upstream writes)', type: 'checkbox' },
-  ]
-
-  const set = (k: keyof EditableSettings, v: string | boolean | null) =>
-    setDraft({ ...draft, [k]: v })
-
-  return (
-    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex-1 min-w-0">
-          <h2 className="font-semibold">Service credentials</h2>
-          <p className="text-xs opacity-70 mt-0.5">
-            Persisted as a DB override on top of the env baseline.
-            Secret fields show <code>***</code> — leave blank to keep,
-            type to overwrite.
-            {current.hasOverrides && (
-              <span className="text-amber-400 ml-2">
-                Override active — restart prioritarr to apply changes.
-              </span>
-            )}
-          </p>
-        </div>
-        {/* Action buttons stack vertically full-width on mobile, row on sm+. */}
-        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-          <button
-            type="button"
-            onClick={() => setRevealSecrets(!revealSecrets)}
-            className="px-3 py-1 rounded text-sm bg-surface-3"
-            title="Toggle masked vs unmasked secret inputs (UI-only)"
-          >
-            {revealSecrets ? 'Hide' : 'Show'} secrets
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              if (!confirm('Drop the DB override and revert to env-loaded settings? Restart required.')) return
-              await reset.mutateAsync()
-              setDraft({})
-            }}
-            disabled={reset.isPending || !current.hasOverrides}
-            className="px-3 py-1 rounded text-sm bg-surface-3 disabled:opacity-40"
-          >
-            {reset.isPending ? 'Resetting…' : 'Reset to env'}
-          </button>
-          <button
-            type="button"
-            disabled={!dirty || save.isPending}
-            onClick={async () => {
-              await save.mutateAsync(draft)
-              setDraft({})
-            }}
-            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-40"
-          >
-            {save.isPending ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
-          </button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {fields.map((f) => {
-          const live = (current as any)[f.key]
-          if (f.type === 'checkbox') {
-            const draftVal = draft[f.key] as boolean | undefined
-            const value = draftVal ?? Boolean(live)
-            return (
-              <label key={f.key} className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={value}
-                  onChange={(e) => set(f.key, e.target.checked)}
-                />
-                <span>{f.label}</span>
-                {draftVal !== undefined && draftVal !== Boolean(live) && (
-                  <span className="text-amber-400 text-xs">(modified)</span>
-                )}
-              </label>
-            )
-          }
-          if (f.type === 'select') {
-            const draftVal = draft[f.key] as string | undefined
-            const value = draftVal ?? (live ?? '')
-            return (
-              <label key={f.key} className="flex flex-col text-xs space-y-1">
-                <span className="opacity-80">{f.label}</span>
-                <select
-                  value={value}
-                  onChange={(e) => set(f.key, e.target.value)}
-                  className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
-                >
-                  {f.options!.map((o) => <option key={o} value={o}>{o}</option>)}
-                </select>
-              </label>
-            )
-          }
-          // Text / url / secret string field
-          const draftVal = draft[f.key] as string | undefined
-          const placeholder = f.secret
-            ? (live ? '••••• (leave blank to keep)' : '(not set)')
-            : (live ?? '(not set)')
-          return (
-            <label key={f.key} className="flex flex-col text-xs space-y-1">
-              <span className="opacity-80">
-                {f.label}
-                {draftVal !== undefined && draftVal !== '' && (
-                  <span className="text-amber-400 ml-1">(modified)</span>
-                )}
-              </span>
-              <input
-                type={f.secret && !revealSecrets ? 'password' : (f.type === 'url' ? 'url' : 'text')}
-                value={draftVal ?? ''}
-                onChange={(e) => set(f.key, e.target.value || null)}
-                placeholder={placeholder}
-                className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
-              />
-              {!f.secret && live && draftVal === undefined && (
-                <span className="opacity-50">current: <code>{String(live)}</code></span>
-              )}
-            </label>
-          )
-        })}
-      </div>
-      {save.error && (
-        <div className="text-xs text-red-400 font-mono">
-          {String((save.error as Error).message ?? save.error)}
-        </div>
-      )}
-    </div>
-  )
-}
 
 /**
  * Library-wide Plex ⇆ Trakt sync. Two buttons: Preview (dry-run, never
@@ -609,6 +1288,7 @@ function ServiceCredentialsPanel({ current }: { current: any }) {
 function LibrarySyncPanel() {
   const sync = useLibrarySync()
   const [showDetails, setShowDetails] = useState(false)
+  const [direction, setDirection] = useState<import('../hooks/queries').SyncDirection>('both')
 
   return (
     <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
@@ -623,8 +1303,9 @@ function LibrarySyncPanel() {
         </div>
         {/* Action buttons stack vertically full-width on mobile, row on sm+. */}
         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+          <SyncDirectionSelect value={direction} onChange={setDirection} disabled={sync.isPending} />
           <button
-            onClick={() => sync.mutate({ dryRun: true, limit: 20 })}
+            onClick={() => sync.mutate({ dryRun: true, limit: 20, direction })}
             disabled={sync.isPending}
             className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50 whitespace-nowrap"
             title="Sample the first 20 series in dry-run mode — completes in seconds"
@@ -634,7 +1315,7 @@ function LibrarySyncPanel() {
           <button
             onClick={() => {
               if (!confirm('Sync watch state for ALL series? This may take several minutes.')) return
-              sync.mutate({})
+              sync.mutate({ direction })
             }}
             disabled={sync.isPending}
             className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
@@ -1237,6 +1918,427 @@ function TextField({ label, hint, value, onChange }: {
  * unmonitors each episode BEFORE deleting the file so Sonarr can't
  * re-queue a grab in between.
  */
+/**
+ * Trakt OAuth device-code flow panel. Three states:
+ *   1. Disconnected — show "Connect Trakt" button (requires
+ *      clientId + clientSecret in Settings first; we surface a hint).
+ *   2. Activation in progress — show user_code prominently, a link to
+ *      trakt.tv/activate, and a "Waiting…" status that auto-polls.
+ *   3. Connected — show expiry + "Refresh" + "Disconnect" buttons.
+ *
+ * Token writes persist to the settings DB override; the running
+ * TraktClient still uses the boot-time access_token, so a restart is
+ * required to actually start using the new credentials. We surface
+ * that in the success message.
+ */
+function TraktAuthPanel() {
+  const settings = useSettings()
+  const begin = useTraktAuthBegin()
+  const poll = useTraktAuthPoll()
+  const refresh = useTraktAuthRefresh()
+  const disconnect = useTraktAuthDisconnect()
+  const s = (settings.data ?? {}) as {
+    traktClientId?: string | null
+    traktClientSecret?: string | null
+    traktAccessToken?: string | null
+    traktTokenExpiresAt?: string | null
+  }
+  // Treat "***" (the redacted-secret marker) as "set"; "" or null as
+  // "not set". The redactSecret helper returns "" for null/blank input.
+  const hasClientId = !!s.traktClientId && s.traktClientId.length > 0
+  const hasClientSecret = !!s.traktClientSecret && s.traktClientSecret.length > 0
+  const hasAccessToken = !!s.traktAccessToken && s.traktAccessToken.length > 0
+  const expiresAt = s.traktTokenExpiresAt && s.traktTokenExpiresAt.length > 0
+    ? new Date(s.traktTokenExpiresAt)
+    : null
+  const daysToExpiry = expiresAt
+    ? Math.round((expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+    : null
+  // Trakt issues access + refresh tokens together with ~90-day windows
+  // tied to the same created_at. Each successful refresh rotates the
+  // pair, so tracking access_token expiry implicitly tracks the refresh
+  // token's window too (always within ~24h of each other in practice).
+  const issuedAt = expiresAt
+    ? new Date(expiresAt.getTime() - 90 * 24 * 60 * 60 * 1000)
+    : null
+  const tokenAgeDays = issuedAt
+    ? Math.round((Date.now() - issuedAt.getTime()) / (1000 * 60 * 60 * 24))
+    : null
+
+  // Active flow state — held entirely in this component; no global store
+  // needed because the user can only run one activation at a time.
+  const [activeFlow, setActiveFlow] = useState<{
+    deviceCode: string
+    userCode: string
+    verificationUrl: string
+    expiresAt: number
+    intervalMs: number
+  } | null>(null)
+  const [pollMessage, setPollMessage] = useState<string | null>(null)
+
+  // Auto-poll while the flow is active. Stops on success, expiry, or
+  // when the user navigates away (component unmount cleans the timer).
+  useEffect(() => {
+    if (!activeFlow) return
+    let cancelled = false
+    const tick = async () => {
+      if (cancelled) return
+      if (Date.now() > activeFlow.expiresAt) {
+        setPollMessage('Activation window expired — start over.')
+        setActiveFlow(null)
+        return
+      }
+      try {
+        const r = await poll.mutateAsync(activeFlow.deviceCode)
+        if (cancelled) return
+        if (r.status === 'connected') {
+          setPollMessage('Connected! Restart the container to start using the new tokens.')
+          setActiveFlow(null)
+          settings.refetch()
+          return
+        }
+      } catch (e) {
+        // Hard error — likely "denied" or "expired".
+        setPollMessage(`Stopped: ${(e as Error).message ?? e}`)
+        setActiveFlow(null)
+        return
+      }
+      setTimeout(tick, activeFlow.intervalMs)
+    }
+    const t = setTimeout(tick, activeFlow.intervalMs)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFlow])
+
+  const startFlow = async () => {
+    setPollMessage(null)
+    try {
+      const r = await begin.mutateAsync()
+      setActiveFlow({
+        deviceCode: r.device_code,
+        userCode: r.user_code,
+        verificationUrl: r.verification_url,
+        expiresAt: Date.now() + r.expires_in * 1000,
+        intervalMs: Math.max(r.interval, 1) * 1000,
+      })
+    } catch (e) {
+      setPollMessage(`Failed to start: ${(e as Error).message ?? e}`)
+    }
+  }
+
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div>
+        <h2 className="font-semibold">Trakt connection</h2>
+        <p className="text-xs opacity-70 mt-0.5">
+          Connect prioritarr to your Trakt account using Trakt's
+          device-code OAuth flow — no copy-pasting tokens.
+          Requires <strong>traktClientId</strong> and <strong>traktClientSecret</strong>
+          {' '}from your Trakt app at{' '}
+          <a className="underline" href="https://trakt.tv/oauth/applications" target="_blank" rel="noreferrer">
+            trakt.tv/oauth/applications
+          </a>.
+        </p>
+      </div>
+
+      {(!hasClientId || !hasClientSecret) && (
+        <div className="text-xs text-amber-300 bg-amber-900/20 border border-amber-800/40 rounded p-2">
+          Set <strong>traktClientId</strong> and <strong>traktClientSecret</strong> in the credentials section above first, then return here.
+        </div>
+      )}
+
+      {!activeFlow && hasAccessToken && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="text-sm flex-1 min-w-0 space-y-1">
+            <div>
+              <span className="text-green-400">✓ Connected</span>
+              {tokenAgeDays !== null && (
+                <span className="opacity-70 ml-2">
+                  — last refreshed {tokenAgeDays === 0 ? 'today' : `${tokenAgeDays} day${tokenAgeDays === 1 ? '' : 's'} ago`}
+                </span>
+              )}
+            </div>
+            {expiresAt && (
+              <div className="text-xs opacity-70 grid grid-cols-[max-content_1fr] gap-x-3">
+                <span>Access token:</span>
+                <span>
+                  expires {daysToExpiry !== null && daysToExpiry >= 0 ? `in ${daysToExpiry} day${daysToExpiry === 1 ? '' : 's'}` : 'soon'}
+                  <span className="opacity-60 font-mono ml-2">{expiresAt.toISOString().slice(0, 10)}</span>
+                </span>
+                <span>Refresh token:</span>
+                <span>
+                  rotates with the access token (same ~90-day window)
+                </span>
+              </div>
+            )}
+            <div className="text-xs opacity-60 italic">
+              Auto-refreshes within 7 days of expiry — no manual action needed in normal use.
+              Refresh + reconnect buttons are fallbacks for the rare cases (Trakt outage, &gt;90 days offline, revoked app).
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              refresh.mutate(undefined, {
+                onSuccess: (r) => {
+                  if (r.status === 'reconnect_required') {
+                    setPollMessage(
+                      `Refresh failed: ${(r as { detail?: string }).detail ?? 'refresh_token expired or revoked'}. Click "Connect Trakt" to start over.`,
+                    )
+                  } else {
+                    setPollMessage('Tokens refreshed.')
+                  }
+                },
+              })
+            }
+            disabled={refresh.isPending}
+            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
+            title="Mint a fresh access_token using the stored refresh_token. If Trakt rejects it (revoked / >90 days idle), tokens clear and you reconnect."
+          >
+            {refresh.isPending ? 'Refreshing…' : 'Refresh tokens'}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!confirm('Disconnect Trakt? Sync + unmonitor reconciler will stop working until you reconnect (and restart).')) return
+              disconnect.mutate()
+            }}
+            disabled={disconnect.isPending}
+            className="px-3 py-1 rounded text-sm bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
+          >
+            {disconnect.isPending ? 'Disconnecting…' : 'Disconnect'}
+          </button>
+        </div>
+      )}
+
+      {!activeFlow && !hasAccessToken && hasClientId && hasClientSecret && (
+        <button
+          type="button"
+          onClick={startFlow}
+          disabled={begin.isPending}
+          className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50"
+        >
+          {begin.isPending ? 'Starting…' : 'Connect Trakt'}
+        </button>
+      )}
+
+      {activeFlow && (
+        <div className="space-y-3 border-t border-surface-3 pt-3">
+          <div>
+            <div className="text-xs opacity-70 uppercase tracking-wider mb-1">Step 1 — open</div>
+            <a
+              href={activeFlow.verificationUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-block px-3 py-1 rounded bg-surface-3 hover:bg-surface-2 underline text-sm"
+            >
+              {activeFlow.verificationUrl} ↗
+            </a>
+          </div>
+          <div>
+            <div className="text-xs opacity-70 uppercase tracking-wider mb-1">Step 2 — enter this code</div>
+            <div className="flex items-center gap-2">
+              <code className="text-2xl font-mono px-3 py-2 bg-surface-3 rounded tracking-widest">
+                {activeFlow.userCode}
+              </code>
+              <button
+                type="button"
+                className="px-2 py-1 text-xs rounded bg-surface-3 hover:bg-surface-2"
+                onClick={() => navigator.clipboard.writeText(activeFlow.userCode)}
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+          <div className="text-xs opacity-70">
+            Auto-polling every {activeFlow.intervalMs / 1000}s · waiting for you to activate…
+            <button
+              type="button"
+              className="ml-3 underline opacity-80"
+              onClick={() => { setActiveFlow(null); setPollMessage('Cancelled.') }}
+            >
+              cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {pollMessage && (
+        <div className={`text-xs font-mono ${pollMessage.startsWith('Connected') ? 'text-green-400' : pollMessage.startsWith('Stopped') || pollMessage.startsWith('Failed') ? 'text-red-400' : 'opacity-70'}`}>
+          {pollMessage}
+        </div>
+      )}
+      {begin.error && !activeFlow && (
+        <div className="text-xs text-red-400 font-mono">{String((begin.error as Error).message ?? begin.error)}</div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Trakt→Sonarr unmonitor reconciler panel. Mirrors the chrome of
+ * LibrarySyncPanel — Preview (dry-run, sample N), Run (library-wide),
+ * plus an inline enable-toggle and tag-name editor. The tag name is
+ * persisted via the standard settings override path; changes take
+ * effect on the next container restart for the scheduled tick (manual
+ * Run button picks up live changes immediately).
+ */
+function TraktUnmonitorPanel() {
+  const sweep = useTraktUnmonitorSweep()
+  const settings = useSettings()
+  const save = useSaveSettings()
+  const [showDetails, setShowDetails] = useState(false)
+
+  const s = (settings.data ?? {}) as {
+    traktUnmonitorEnabled?: boolean
+    traktUnmonitorProtectTag?: string
+    traktUnmonitorSkipSpecials?: boolean
+    traktUnmonitorIntervalHours?: number
+  }
+  const enabled = s.traktUnmonitorEnabled ?? false
+  const tag = s.traktUnmonitorProtectTag ?? 'prioritarr-no-unmonitor'
+  const [tagDraft, setTagDraft] = useState(tag)
+  useEffect(() => { setTagDraft(tag) }, [tag])
+  const tagDirty = tagDraft.trim() !== tag.trim() && tagDraft.trim().length > 0
+
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <h2 className="font-semibold">Trakt → Sonarr auto-unmonitor</h2>
+          <p className="text-xs opacity-70 mt-0.5">
+            For every episode Trakt reports as watched but Sonarr still
+            monitors without a file, flips the episode's monitored flag
+            off so the backfill sweep stops chasing it. Never touches
+            episodes that are on disk. Series carrying the configured
+            Sonarr tag are skipped entirely — add that tag via the
+            drawer, the bulk bar below the Series table, or Sonarr's UI.
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+          <button
+            onClick={() => sweep.mutate({ dryRun: true, limit: 30 })}
+            disabled={sweep.isPending}
+            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50 whitespace-nowrap"
+            title="Dry-run the first 30 series to preview what would be unmonitored"
+          >
+            {sweep.isPending && sweep.variables?.dryRun ? 'Previewing…' : 'Preview (sample 30)'}
+          </button>
+          <button
+            onClick={() => {
+              if (!confirm('Unmonitor every watched-but-not-downloaded episode across the entire library? This is reversible via Sonarr but affects many episodes at once.')) return
+              sweep.mutate({})
+            }}
+            disabled={sweep.isPending}
+            className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
+          >
+            {sweep.isPending && !sweep.variables?.dryRun ? 'Running…' : 'Run sweep now'}
+          </button>
+        </div>
+      </div>
+
+      {/* enable + tag editor row */}
+      <div className="flex flex-col sm:flex-row gap-3 sm:items-center border-t border-surface-3 pt-3">
+        <label className="inline-flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={save.isPending || settings.isLoading}
+            onChange={(e) => save.mutate({ traktUnmonitorEnabled: e.target.checked })}
+          />
+          Enable scheduled sweep (every 6h)
+        </label>
+        <label className="inline-flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={s.traktUnmonitorSkipSpecials ?? false}
+            disabled={save.isPending || settings.isLoading}
+            onChange={(e) => save.mutate({ traktUnmonitorSkipSpecials: e.target.checked })}
+          />
+          Skip specials (season 0)
+        </label>
+        <div className="flex items-center gap-2 flex-1 min-w-0">
+          <label htmlFor="protect-tag" className="text-sm opacity-80 whitespace-nowrap">
+            Protect tag:
+          </label>
+          <input
+            id="protect-tag"
+            type="text"
+            value={tagDraft}
+            onChange={(e) => setTagDraft(e.target.value)}
+            className="px-2 py-1 rounded text-sm bg-surface-3 border border-surface-2 min-w-0 flex-1"
+          />
+          <button
+            type="button"
+            disabled={!tagDirty || save.isPending}
+            onClick={() => save.mutate({ traktUnmonitorProtectTag: tagDraft.trim() })}
+            className="px-2 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-30 whitespace-nowrap"
+          >
+            {save.isPending ? 'Saving…' : 'Save tag'}
+          </button>
+        </div>
+      </div>
+
+      {sweep.error && (
+        <div className="text-xs text-red-400 font-mono">
+          {String((sweep.error as Error).message ?? sweep.error)}
+        </div>
+      )}
+      {sweep.data && (
+        <TraktUnmonitorReport report={sweep.data} showDetails={showDetails} setShowDetails={setShowDetails} />
+      )}
+    </div>
+  )
+}
+
+function TraktUnmonitorReport({
+  report, showDetails, setShowDetails,
+}: {
+  report: import('../hooks/queries').LibraryUnmonitorReport
+  showDetails: boolean
+  setShowDetails: (v: boolean) => void
+}) {
+  const verb = report.dryRun ? 'would unmonitor' : 'unmonitored'
+  const contributors = report.perSeries.filter((p) => p.unmonitored.length > 0)
+  const skipped = report.perSeries.filter((p) => p.skippedReason).length
+  const errored = report.perSeries.filter((p) => p.errors.length > 0).length
+  return (
+    <div className="text-sm space-y-2 pt-2 border-t border-surface-3">
+      <div>
+        {report.totalSeries} series visited ·{' '}
+        <span className="text-amber-400">{report.unmonitoredTotal}</span> episodes {verb}
+        {skipped > 0 && <span className="opacity-70"> · {skipped} skipped</span>}
+        {errored > 0 && <span className="text-red-400 ml-2"> · {errored} series with errors</span>}
+        {' · '}
+        <button type="button" className="underline text-xs opacity-80" onClick={() => setShowDetails(!showDetails)}>
+          {showDetails ? 'hide details' : 'show details'}
+        </button>
+      </div>
+      {showDetails && contributors.length > 0 && (
+        <ul className="text-xs opacity-80 space-y-1 max-h-72 overflow-y-auto">
+          {contributors.slice(0, 50).map((p) => (
+            <li key={p.seriesId}>
+              <strong>{p.title}</strong>: {p.unmonitored.length} ep
+              {p.unmonitored.length > 1 ? 's' : ''}
+              <span className="opacity-70">
+                {' — '}
+                {p.unmonitored.slice(0, 8).map((e) => `S${String(e.season).padStart(2, '0')}E${String(e.number).padStart(2, '0')}`).join(', ')}
+                {p.unmonitored.length > 8 && ` … +${p.unmonitored.length - 8} more`}
+              </span>
+            </li>
+          ))}
+          {contributors.length > 50 && (
+            <li className="opacity-50">… +{contributors.length - 50} more series</li>
+          )}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 function ArchivePanel() {
   const sweep = useArchiveSweep()
   const [showDetails, setShowDetails] = useState(false)

@@ -12,13 +12,17 @@ import { type ColumnDef } from '@tanstack/react-table'
 import { ExternalLink, Search, X } from 'lucide-react'
 import React, { useEffect, useMemo, useState } from 'react'
 
+import { BulkActionBar } from '../components/BulkActionBar'
 import { DataTable } from '../components/DataTable'
 import { KebabMenu } from '../components/KebabMenu'
 import { RowDrawer } from '../components/RowDrawer'
 import { TableSkeleton } from '../components/Skeleton'
+import { SyncDirectionSelect } from '../components/SyncDirectionSelect'
 import {
   useDownloadAction,
   useDownloadLogs,
+  useBulkProtectUnmonitor,
+  useProtectUnmonitor,
   useRecomputeSeries,
   useSearch,
   useSeries,
@@ -54,6 +58,10 @@ export function SeriesPage() {
   // Back/Forward just works.
   const route = useRoute()
   const openSeriesId = route.page === 'series' ? route.seriesId : null
+
+  // Selected rows for bulk actions (e.g. protect-from-unmonitor).
+  // Populated by DataTable's checkbox column; cleared by the bar.
+  const [selectedSeries, setSelectedSeries] = useState<SeriesRow[]>([])
 
   // Global search — matches series title OR episode name. Debounced so
   // typing fast doesn't spam the /search endpoint.
@@ -120,7 +128,19 @@ export function SeriesPage() {
         )
       },
       sortingFn: (a, b) => (a.original.priority ?? 99) - (b.original.priority ?? 99),
-      meta: { cellClassName: 'w-[1%] whitespace-nowrap' },
+      meta: {
+        cellClassName: 'w-[1%] whitespace-nowrap',
+        filter: {
+          type: 'select',
+          options: [
+            { value: '1', label: PRIORITY_LABELS[1] },
+            { value: '2', label: PRIORITY_LABELS[2] },
+            { value: '3', label: PRIORITY_LABELS[3] },
+            { value: '4', label: PRIORITY_LABELS[4] },
+            { value: '5', label: PRIORITY_LABELS[5] },
+          ],
+        },
+      },
     },
     {
       accessorKey: 'title',
@@ -265,7 +285,11 @@ export function SeriesPage() {
         rowKey={(r) => r.id}
         onRowClick={(r) => navigate({ page: 'series', seriesId: r.id })}
         emptyMessage="No series — Sonarr library is empty or series cache hasn't refreshed yet."
+        enableSelection
+        onSelectionChange={setSelectedSeries}
       />
+
+      <BulkProtectBar selected={selectedSeries} onClear={() => setSelectedSeries([])} />
 
       {openSeriesId != null && (() => {
         // The row may not be in the currently-filtered list (e.g. user
@@ -283,6 +307,46 @@ export function SeriesPage() {
         )
       })()}
     </div>
+  )
+}
+
+/**
+ * Sticky bulk action bar — wraps [BulkActionBar] with the protect /
+ * unprotect buttons. Lives here rather than in [BulkActionBar] itself
+ * because the actions are series-specific; the bar primitive stays
+ * dumb + reusable.
+ */
+function BulkProtectBar({ selected, onClear }: { selected: SeriesRow[]; onClear: () => void }) {
+  const bulk = useBulkProtectUnmonitor()
+  if (selected.length === 0) return null
+  const ids = selected.map((r) => r.id)
+  const apply = (protect: boolean) => {
+    bulk.mutate(
+      { seriesIds: ids, protected: protect },
+      { onSuccess: () => onClear() },
+    )
+  }
+  return (
+    <BulkActionBar count={selected.length} onClear={onClear}>
+      <button
+        type="button"
+        onClick={() => apply(true)}
+        disabled={bulk.isPending}
+        className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
+        title="Add the protect-from-unmonitor Sonarr tag so these series are never auto-unmonitored."
+      >
+        {bulk.isPending && bulk.variables?.protected ? 'Protecting…' : 'Protect from unmonitor'}
+      </button>
+      <button
+        type="button"
+        onClick={() => apply(false)}
+        disabled={bulk.isPending}
+        className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
+        title="Remove the protect tag — these series become eligible for auto-unmonitor again."
+      >
+        {bulk.isPending && bulk.variables?.protected === false ? 'Unprotecting…' : 'Unprotect'}
+      </button>
+    </BulkActionBar>
   )
 }
 
@@ -340,6 +404,9 @@ function SeriesDetailDrawer({
   const untrack = useUntrackDownload()
   const sync = useSeriesSync()
   const watchStatus = useWatchStatus(row.id)
+  const protect = useProtectUnmonitor()
+  const [syncDirection, setSyncDirection] = useState<import('../hooks/queries').SyncDirection>('both')
+  const isProtected: boolean = d?.protectedFromUnmonitor === true
 
   // Sync button should only show when a delta exists between watch
   // providers. If every source reports the same episode count we're
@@ -379,20 +446,53 @@ function SeriesDetailDrawer({
             {isRecomputing ? 'Recomputing…' : 'Recompute priority'}
           </button>
           {syncNeeded ? (
-            <button
-              type="button"
-              onClick={() => sync.mutate({ id: row.id })}
-              disabled={sync.isPending}
-              className="px-3 py-1.5 rounded bg-surface-3 text-sm disabled:opacity-50"
-              title="Push missing episodes across Plex ⇆ Trakt so both sides agree"
-            >
-              {sync.isPending ? 'Syncing…' : 'Sync Plex ⇆ Trakt'}
-            </button>
+            <>
+              <SyncDirectionSelect
+                value={syncDirection}
+                onChange={setSyncDirection}
+                disabled={sync.isPending}
+              />
+              <button
+                type="button"
+                onClick={() => sync.mutate({ id: row.id, direction: syncDirection })}
+                disabled={sync.isPending}
+                className="px-3 py-1.5 rounded bg-surface-3 text-sm disabled:opacity-50"
+                title="Push missing episodes across Plex ⇆ Trakt so both sides agree"
+              >
+                {sync.isPending ? 'Syncing…' : 'Sync'}
+              </button>
+            </>
           ) : okStatuses.length > 0 ? (
             <span className="px-3 py-1.5 text-xs text-green-400 opacity-80 self-center">
               ✓ All sources synchronised
             </span>
           ) : null}
+          <button
+            type="button"
+            onClick={() =>
+              protect.mutate(
+                { id: row.id, protected: !isProtected },
+                { onSuccess: () => detail.refetch() },
+              )
+            }
+            disabled={protect.isPending}
+            title={
+              isProtected
+                ? 'Currently PROTECTED — the Trakt→Sonarr auto-unmonitor job will skip this series. Click to remove protection.'
+                : 'Click to add the Sonarr tag that exempts this series from auto-unmonitor.'
+            }
+            className={`px-3 py-1.5 rounded text-sm disabled:opacity-50 ${
+              isProtected
+                ? 'bg-amber-700/70 hover:bg-amber-700 text-white'
+                : 'bg-surface-3 hover:bg-surface-2'
+            }`}
+          >
+            {protect.isPending
+              ? 'Updating…'
+              : isProtected
+                ? '✓ Protected (unprotect)'
+                : 'Protect from auto-unmonitor'}
+          </button>
           <button
             type="button"
             onClick={onClose}

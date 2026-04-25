@@ -8,6 +8,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
@@ -20,6 +21,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
 import org.yoshiz.app.prioritarr.backend.app.AppState
 import org.yoshiz.app.prioritarr.backend.app.appJson
 import org.yoshiz.app.prioritarr.backend.clients.SABClient
@@ -59,7 +61,11 @@ import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewRequest
 import org.yoshiz.app.prioritarr.backend.schemas.PriorityPreviewResponse
 import org.yoshiz.app.prioritarr.backend.schemas.SearchHit
 import org.yoshiz.app.prioritarr.backend.schemas.SearchResponse
+import org.yoshiz.app.prioritarr.backend.schemas.BulkProtectUnmonitorResponse
+import org.yoshiz.app.prioritarr.backend.schemas.JobRunWire
+import org.yoshiz.app.prioritarr.backend.schemas.ProtectUnmonitorResponse
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesDetail
+import org.yoshiz.app.prioritarr.backend.sync.SyncDirection
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesSummary
 import org.yoshiz.app.prioritarr.backend.schemas.SeriesSyncReport
 import org.yoshiz.app.prioritarr.backend.schemas.SettingsRedacted
@@ -68,6 +74,50 @@ import io.ktor.server.request.receive
 private fun PriorityResult.toWire() = PriorityResultWire(priority, label, reason)
 
 private fun redactSecret(v: String?): String? = if (v.isNullOrBlank()) v else "***"
+
+/**
+ * Compute an absolute ISO-8601 expiry timestamp from a Trakt token
+ * payload's `created_at` (epoch seconds) + `expires_in` (seconds).
+ * Falls back to "now + expires_in" when created_at is absent.
+ */
+private fun computeExpiresAt(tokens: JsonObject): String {
+    val expiresIn = tokens["expires_in"]?.jsonPrimitive?.longOrNull ?: 0L
+    val createdAt = tokens["created_at"]?.jsonPrimitive?.longOrNull
+    val base = if (createdAt != null) java.time.Instant.ofEpochSecond(createdAt) else java.time.Instant.now()
+    return base.plusSeconds(expiresIn).toString()
+}
+
+/**
+ * Merge Trakt token payload into the persisted settings override so the
+ * next container start picks up the fresh creds. Echoes the full
+ * existing override + the new fields so partial updates accumulate.
+ */
+private fun persistTraktTokens(
+    state: org.yoshiz.app.prioritarr.backend.app.AppState,
+    tokens: JsonObject,
+) {
+    val existing = state.db.getSettingsOverride()?.let { raw ->
+        try { Json.decodeFromString(org.yoshiz.app.prioritarr.backend.config.EditableSettings.serializer(), raw) }
+        catch (_: Exception) { org.yoshiz.app.prioritarr.backend.config.EditableSettings() }
+    } ?: org.yoshiz.app.prioritarr.backend.config.EditableSettings()
+    val merged = existing.copy(
+        traktAccessToken = tokens["access_token"]?.jsonPrimitive?.contentOrNull ?: existing.traktAccessToken,
+        traktRefreshToken = tokens["refresh_token"]?.jsonPrimitive?.contentOrNull ?: existing.traktRefreshToken,
+        traktTokenExpiresAt = computeExpiresAt(tokens),
+    )
+    state.db.setSettingsOverride(Json.encodeToString(
+        org.yoshiz.app.prioritarr.backend.config.EditableSettings.serializer(),
+        merged,
+    ))
+    state.eventBus.publish("trakt-token-updated", kotlinx.serialization.json.JsonNull)
+}
+
+private fun parseSyncDirection(raw: String?): SyncDirection = when (raw?.lowercase()) {
+    null, "", "both" -> SyncDirection.BOTH
+    "plex-to-trakt", "plex_to_trakt" -> SyncDirection.PLEX_TO_TRAKT
+    "trakt-to-plex", "trakt_to_plex" -> SyncDirection.TRAKT_TO_PLEX
+    else -> throw ValidationException("direction", "must be one of: both, plex-to-trakt, trakt-to-plex")
+}
 
 /**
  * Merge a patch onto the existing override blob. For each field, the
@@ -91,10 +141,32 @@ private fun mergeEditable(
     plexUrl = patch.plexUrl ?: existing.plexUrl,
     plexToken = patch.plexToken ?: existing.plexToken,
     traktClientId = patch.traktClientId ?: existing.traktClientId,
+    traktClientSecret = patch.traktClientSecret ?: existing.traktClientSecret,
     traktAccessToken = patch.traktAccessToken ?: existing.traktAccessToken,
+    traktRefreshToken = patch.traktRefreshToken ?: existing.traktRefreshToken,
+    traktTokenExpiresAt = patch.traktTokenExpiresAt ?: existing.traktTokenExpiresAt,
     dryRun = patch.dryRun ?: existing.dryRun,
     logLevel = patch.logLevel ?: existing.logLevel,
     uiOrigin = patch.uiOrigin ?: existing.uiOrigin,
+    traktUnmonitorEnabled = patch.traktUnmonitorEnabled ?: existing.traktUnmonitorEnabled,
+    traktUnmonitorIntervalHours = patch.traktUnmonitorIntervalHours ?: existing.traktUnmonitorIntervalHours,
+    traktUnmonitorSkipSpecials = patch.traktUnmonitorSkipSpecials ?: existing.traktUnmonitorSkipSpecials,
+    traktUnmonitorProtectTag = patch.traktUnmonitorProtectTag ?: existing.traktUnmonitorProtectTag,
+    reconcileMinutes = patch.reconcileMinutes ?: existing.reconcileMinutes,
+    backfillSweepHours = patch.backfillSweepHours ?: existing.backfillSweepHours,
+    cutoffSweepHours = patch.cutoffSweepHours ?: existing.cutoffSweepHours,
+    backfillMaxSearchesPerSweep = patch.backfillMaxSearchesPerSweep ?: existing.backfillMaxSearchesPerSweep,
+    backfillDelayBetweenSearchesSeconds = patch.backfillDelayBetweenSearchesSeconds ?: existing.backfillDelayBetweenSearchesSeconds,
+    cutoffMaxSearchesPerSweep = patch.cutoffMaxSearchesPerSweep ?: existing.cutoffMaxSearchesPerSweep,
+    refreshMappingsMinutes = patch.refreshMappingsMinutes ?: existing.refreshMappingsMinutes,
+    refreshSeriesCacheMinutes = patch.refreshSeriesCacheMinutes ?: existing.refreshSeriesCacheMinutes,
+    refreshEpisodeCacheMinutes = patch.refreshEpisodeCacheMinutes ?: existing.refreshEpisodeCacheMinutes,
+    refreshPrioritiesMinutes = patch.refreshPrioritiesMinutes ?: existing.refreshPrioritiesMinutes,
+    queueJanitorMinutes = patch.queueJanitorMinutes ?: existing.queueJanitorMinutes,
+    unmonitoredReaperMinutes = patch.unmonitoredReaperMinutes ?: existing.unmonitoredReaperMinutes,
+    traktTokenRefreshHours = patch.traktTokenRefreshHours ?: existing.traktTokenRefreshHours,
+    orphanReaperIntervalMinutes = patch.orphanReaperIntervalMinutes ?: existing.orphanReaperIntervalMinutes,
+    archiveIntervalHours = patch.archiveIntervalHours ?: existing.archiveIntervalHours,
 )
 
 fun Route.v2Routes(state: AppState) {
@@ -273,6 +345,21 @@ fun Route.v2Routes(state: AppState) {
                 hasQbit = managed.any { it.client == "qbit" },
                 hasSab = managed.any { it.client == "sab" },
             )
+            // Resolve the protect-unmonitor state from the Sonarr
+            // series row's `tags` array. Cheap — tags list is small
+            // and we already have seriesObj in hand. On lookup error
+            // default to false rather than blocking the response.
+            val protectedFromUnmonitor = run {
+                val label = state.settings.traktUnmonitor.protectTag
+                if (label.isBlank()) return@run false
+                val tagIds = (seriesObj["tags"] as? kotlinx.serialization.json.JsonArray)
+                    ?.mapNotNull { it.jsonPrimitive.longOrNull?.toInt() }
+                    ?: return@run false
+                if (tagIds.isEmpty()) return@run false
+                val protectTagId = runCatching { state.sonarr.getOrCreateTag(label) }.getOrNull()
+                    ?: return@run false
+                protectTagId in tagIds
+            }
             call.respond(SeriesDetail(
                 summary = summary,
                 priority = priority,
@@ -281,6 +368,7 @@ fun Route.v2Routes(state: AppState) {
                 downloads = downloadWires,
                 externalLinks = links,
                 nextWantedEpisode = nextWanted,
+                protectedFromUnmonitor = protectedFromUnmonitor,
             ))
         }
 
@@ -308,7 +396,8 @@ fun Route.v2Routes(state: AppState) {
                 ?: throw ValidationException("id", "must be a number")
             val dryRun = call.request.queryParameters["dryRun"]?.equals("true", ignoreCase = true)
                 ?: state.settings.dryRun
-            val report = state.crossSourceSync.syncSeries(id, dryRun = dryRun)
+            val direction = parseSyncDirection(call.request.queryParameters["direction"])
+            val report = state.crossSourceSync.syncSeries(id, dryRun = dryRun, direction = direction)
             state.eventBus.publish(
                 "series-synced",
                 Json.encodeToJsonElement(SeriesSyncReport.serializer(), report),
@@ -591,7 +680,10 @@ fun Route.v2Routes(state: AppState) {
     // ---- Settings (redacted) ----
 
     get("/settings") {
-        val s = state.settings
+        // Read effective settings — boot-time baseline merged with the
+        // current DB override — so the UI sees what the live schedulers
+        // are actually using, not just the env baseline.
+        val s = org.yoshiz.app.prioritarr.backend.liveSettings(state.db, state.settings)
         call.respond(SettingsRedacted(
             sonarrUrl = s.sonarrUrl,
             sonarrApiKey = "***",
@@ -605,13 +697,37 @@ fun Route.v2Routes(state: AppState) {
             plexUrl = s.plexUrl,
             plexToken = redactSecret(s.plexToken),
             traktClientId = s.traktClientId,
+            traktClientSecret = redactSecret(s.traktClientSecret),
             traktAccessToken = redactSecret(s.traktAccessToken),
+            traktRefreshToken = redactSecret(s.traktRefreshToken),
+            traktTokenExpiresAt = s.traktTokenExpiresAt,
             apiKey = redactSecret(s.apiKey),
             uiOrigin = s.uiOrigin,
             dryRun = s.dryRun,
             logLevel = s.logLevel,
             testMode = s.testMode,
             hasOverrides = state.db.getSettingsOverride() != null,
+            traktUnmonitorEnabled = s.traktUnmonitor.enabled,
+            traktUnmonitorIntervalHours = s.traktUnmonitor.intervalHours,
+            traktUnmonitorSkipSpecials = s.traktUnmonitor.skipSpecials,
+            traktUnmonitorProtectTag = s.traktUnmonitor.protectTag,
+            intervals = org.yoshiz.app.prioritarr.backend.schemas.IntervalsWire(
+                reconcileMinutes = s.intervals.reconcileMinutes,
+                backfillSweepHours = s.intervals.backfillSweepHours,
+                cutoffSweepHours = s.intervals.cutoffSweepHours,
+                backfillMaxSearchesPerSweep = s.intervals.backfillMaxSearchesPerSweep,
+                backfillDelayBetweenSearchesSeconds = s.intervals.backfillDelayBetweenSearchesSeconds,
+                cutoffMaxSearchesPerSweep = s.intervals.cutoffMaxSearchesPerSweep,
+                refreshMappingsMinutes = s.intervals.refreshMappingsMinutes,
+                refreshSeriesCacheMinutes = s.intervals.refreshSeriesCacheMinutes,
+                refreshEpisodeCacheMinutes = s.intervals.refreshEpisodeCacheMinutes,
+                refreshPrioritiesMinutes = s.intervals.refreshPrioritiesMinutes,
+                queueJanitorMinutes = s.intervals.queueJanitorMinutes,
+                unmonitoredReaperMinutes = s.intervals.unmonitoredReaperMinutes,
+                traktTokenRefreshHours = s.intervals.traktTokenRefreshHours,
+            ),
+            orphanReaperIntervalMinutes = s.orphanReaperIntervalMinutes,
+            archiveIntervalHours = s.archive.intervalHours,
         ))
     }
 
@@ -652,10 +768,11 @@ fun Route.v2Routes(state: AppState) {
             "settings-updated",
             kotlinx.serialization.json.JsonNull,
         )
-        // Echo back the *running* settings (which still reflect the
-        // pre-restart values). The UI uses hasOverrides to surface
-        // "restart to apply".
-        val s = state.settings
+        // Echo back the live-merged settings so the UI sees the values
+        // it just saved (cadences and other live-editable knobs already
+        // affect the schedulers; URL/credentials still need a restart,
+        // and `hasOverrides` flags that visually).
+        val s = org.yoshiz.app.prioritarr.backend.liveSettings(state.db, state.settings)
         call.respond(SettingsRedacted(
             sonarrUrl = s.sonarrUrl,
             sonarrApiKey = "***",
@@ -669,13 +786,39 @@ fun Route.v2Routes(state: AppState) {
             plexUrl = s.plexUrl,
             plexToken = redactSecret(s.plexToken),
             traktClientId = s.traktClientId,
+            traktClientSecret = redactSecret(s.traktClientSecret),
             traktAccessToken = redactSecret(s.traktAccessToken),
+            traktRefreshToken = redactSecret(s.traktRefreshToken),
+            traktTokenExpiresAt = s.traktTokenExpiresAt,
             apiKey = redactSecret(s.apiKey),
             uiOrigin = s.uiOrigin,
             dryRun = s.dryRun,
             logLevel = s.logLevel,
             testMode = s.testMode,
             hasOverrides = true,
+            // `s` is already the live-merged snapshot; the cadences
+            // come straight from it without needing the `merged` patch.
+            traktUnmonitorEnabled = s.traktUnmonitor.enabled,
+            traktUnmonitorIntervalHours = s.traktUnmonitor.intervalHours,
+            traktUnmonitorSkipSpecials = s.traktUnmonitor.skipSpecials,
+            traktUnmonitorProtectTag = s.traktUnmonitor.protectTag,
+            intervals = org.yoshiz.app.prioritarr.backend.schemas.IntervalsWire(
+                reconcileMinutes = s.intervals.reconcileMinutes,
+                backfillSweepHours = s.intervals.backfillSweepHours,
+                cutoffSweepHours = s.intervals.cutoffSweepHours,
+                backfillMaxSearchesPerSweep = s.intervals.backfillMaxSearchesPerSweep,
+                backfillDelayBetweenSearchesSeconds = s.intervals.backfillDelayBetweenSearchesSeconds,
+                cutoffMaxSearchesPerSweep = s.intervals.cutoffMaxSearchesPerSweep,
+                refreshMappingsMinutes = s.intervals.refreshMappingsMinutes,
+                refreshSeriesCacheMinutes = s.intervals.refreshSeriesCacheMinutes,
+                refreshEpisodeCacheMinutes = s.intervals.refreshEpisodeCacheMinutes,
+                refreshPrioritiesMinutes = s.intervals.refreshPrioritiesMinutes,
+                queueJanitorMinutes = s.intervals.queueJanitorMinutes,
+                unmonitoredReaperMinutes = s.intervals.unmonitoredReaperMinutes,
+                traktTokenRefreshHours = s.intervals.traktTokenRefreshHours,
+            ),
+            orphanReaperIntervalMinutes = s.orphanReaperIntervalMinutes,
+            archiveIntervalHours = s.archive.intervalHours,
         ))
     }
 
@@ -683,6 +826,219 @@ fun Route.v2Routes(state: AppState) {
         state.db.clearSettingsOverride()
         state.eventBus.publish("settings-reset", kotlinx.serialization.json.JsonNull)
         call.respond(ActionResult(ok = true, message = "override cleared (restart to apply)"))
+    }
+
+    // ---- Connection tester ----
+    //
+    // POST /connections/{service}/test with the candidate URL +
+    // credentials. Doesn't require pre-saving; the UI tests draft
+    // values before committing. Return shape is
+    // [ConnectionTestResult] — success/failure plus a categorised
+    // reason ("connection-failed" / "auth-failed" / "version-failed").
+    post("/connections/{service}/test") {
+        val service = call.parameters["service"]?.lowercase()
+            ?: throw ValidationException("service", "missing")
+        val body = call.receiveText()
+        val patch = appJson.parseToJsonElement(body).jsonObject
+        // Helper: read a field from the request body, falling back to
+        // the live setting if the user didn't override (and skipping
+        // the redaction sentinel "***" so a redacted echo doesn't get
+        // sent as a literal credential).
+        fun field(key: String, baseline: String?): String {
+            val provided = patch[key]?.jsonPrimitive?.contentOrNull
+            return if (!provided.isNullOrBlank() && provided != "***") provided
+                else baseline.orEmpty()
+        }
+        val s = state.settings
+        val result = when (service) {
+            "sonarr" -> org.yoshiz.app.prioritarr.backend.connections.testSonarr(
+                rawUrl = field("sonarrUrl", s.sonarrUrl),
+                apiKey = field("sonarrApiKey", s.sonarrApiKey),
+            )
+            "tautulli" -> org.yoshiz.app.prioritarr.backend.connections.testTautulli(
+                rawUrl = field("tautulliUrl", s.tautulliUrl),
+                apiKey = field("tautulliApiKey", s.tautulliApiKey),
+            )
+            "qbit" -> org.yoshiz.app.prioritarr.backend.connections.testQbit(
+                rawUrl = field("qbitUrl", s.qbitUrl),
+                username = field("qbitUsername", s.qbitUsername),
+                password = field("qbitPassword", s.qbitPassword),
+            )
+            "sab" -> org.yoshiz.app.prioritarr.backend.connections.testSab(
+                rawUrl = field("sabUrl", s.sabUrl),
+                apiKey = field("sabApiKey", s.sabApiKey),
+            )
+            "plex" -> org.yoshiz.app.prioritarr.backend.connections.testPlex(
+                rawUrl = field("plexUrl", s.plexUrl),
+                token = field("plexToken", s.plexToken),
+            )
+            "trakt" -> org.yoshiz.app.prioritarr.backend.connections.testTrakt(
+                clientId = field("traktClientId", s.traktClientId),
+                accessToken = field("traktAccessToken", s.traktAccessToken),
+            )
+            else -> throw ValidationException("service", "unknown service: $service")
+        }
+        call.respond(result)
+    }
+
+    // ---- Trakt OAuth device-code flow ----
+    //
+    // Three endpoints implement the dance:
+    //   POST /trakt/oauth/begin   → returns user_code + verification_url
+    //   POST /trakt/oauth/poll    → exchanges device_code for tokens
+    //   POST /trakt/oauth/refresh → mints fresh tokens from refresh_token
+    //   POST /trakt/oauth/disconnect → wipes the stored tokens
+    //
+    // All four require client_id + client_secret in settings. The user
+    // sets those once (from their Trakt app settings page); thereafter
+    // prioritarr handles the rest. Tokens persist via the standard
+    // settings override (live until container restart for the running
+    // TraktClient — restart picks up the fresh creds).
+    post("/trakt/oauth/begin") {
+        val helper = state.traktOAuth ?: throw ValidationException(
+            "trakt",
+            "set traktClientId and traktClientSecret in Settings first (from your Trakt app at trakt.tv/oauth/applications)",
+        )
+        val resp = helper.begin()
+        // Echo straight through — Trakt returns {device_code, user_code,
+        // verification_url, expires_in, interval}. Frontend reads
+        // user_code + verification_url for display, device_code +
+        // interval for the poll loop.
+        call.respond(resp)
+    }
+
+    post("/trakt/oauth/poll") {
+        val helper = state.traktOAuth ?: throw ValidationException("trakt", "client_id/client_secret missing")
+        val body = call.receiveText()
+        val deviceCode = (appJson.parseToJsonElement(body) as JsonObject)["device_code"]
+            ?.jsonPrimitive?.contentOrNull
+            ?: throw ValidationException("device_code", "missing")
+
+        val tokens = helper.poll(deviceCode)
+        if (tokens == null) {
+            // Still pending — UI will retry after `interval` seconds.
+            call.respond(io.ktor.http.HttpStatusCode.Accepted, kotlinx.serialization.json.buildJsonObject {
+                put("status", "pending")
+            })
+            return@post
+        }
+
+        // Persist + echo the new credentials. We compute expires_at as
+        // ISO so the UI can show a friendly countdown without doing
+        // math against a relative `expires_in` seconds value. Also
+        // hot-swap the running TraktClient so subsequent calls in this
+        // process use the new token without a restart.
+        persistTraktTokens(state, tokens)
+        val newAccess = (tokens["access_token"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+        if (newAccess != null) state.traktClient?.updateAccessToken(newAccess)
+        call.respond(kotlinx.serialization.json.buildJsonObject {
+            put("status", "connected")
+            put("tokenExpiresAt", computeExpiresAt(tokens))
+            // Restart still recommended if the user STARTS Trakt-disabled
+            // — TraktClient is null and we can't conjure one without the
+            // boot-time wiring. When already connected, hot-swap covers it.
+            put("restartRequired", state.traktClient == null)
+        })
+    }
+
+    post("/trakt/oauth/refresh") {
+        val helper = state.traktOAuth ?: throw ValidationException("trakt", "client_id/client_secret missing")
+        // Delegate to the shared helper — it handles missing refresh
+        // token, distinguishes 4xx (wipe + reconnect required) from
+        // transient 5xx failures, and persists the new tokens. Returns
+        // the new access_token on success, null otherwise.
+        val newAccess = org.yoshiz.app.prioritarr.backend.refreshTraktTokensFromDb(
+            db = state.db, baseline = state.settings, oauth = helper,
+        )
+        if (newAccess == null) {
+            // Wipe-or-skip already happened inside the helper. Surface
+            // the same "needs reconnect" state the UI uses for a
+            // first-time user — TraktAuthPanel reads `traktAccessToken`
+            // from settings and flips to "Connect Trakt" when blank.
+            call.respond(io.ktor.http.HttpStatusCode.Conflict, kotlinx.serialization.json.buildJsonObject {
+                put("status", "reconnect_required")
+                put("detail", "refresh_token missing or rejected by Trakt — start over via Connect Trakt")
+            })
+            return@post
+        }
+        state.traktClient?.updateAccessToken(newAccess)
+        // Read the freshly-persisted expiry back out of the override
+        // blob so the response is consistent with what the helper wrote.
+        val newExpiry = state.db.getSettingsOverride()?.let { raw ->
+            try {
+                Json.decodeFromString(
+                    org.yoshiz.app.prioritarr.backend.config.EditableSettings.serializer(), raw,
+                ).traktTokenExpiresAt
+            } catch (_: Exception) { null }
+        }.orEmpty()
+        call.respond(kotlinx.serialization.json.buildJsonObject {
+            put("status", "refreshed")
+            put("tokenExpiresAt", newExpiry)
+            put("restartRequired", state.traktClient == null)
+        })
+    }
+
+    post("/trakt/oauth/disconnect") {
+        // Wipe access + refresh tokens. Keeping client_id/secret so the
+        // user doesn't have to re-enter them when re-connecting.
+        val existing = state.db.getSettingsOverride()?.let { raw ->
+            try { Json.decodeFromString(org.yoshiz.app.prioritarr.backend.config.EditableSettings.serializer(), raw) }
+            catch (_: Exception) { org.yoshiz.app.prioritarr.backend.config.EditableSettings() }
+        } ?: org.yoshiz.app.prioritarr.backend.config.EditableSettings()
+        // Empty strings short-circuit the `?:` merge — they're treated
+        // as "explicit clear". Use spaces would be cleaner via a sentinel,
+        // but for v1 we just wipe via empty-string. Document if it bites.
+        val cleared = existing.copy(
+            traktAccessToken = "",
+            traktRefreshToken = "",
+            traktTokenExpiresAt = "",
+        )
+        state.db.setSettingsOverride(Json.encodeToString(
+            org.yoshiz.app.prioritarr.backend.config.EditableSettings.serializer(),
+            cleared,
+        ))
+        call.respond(ActionResult(ok = true, message = "Trakt tokens cleared (restart to take effect)"))
+    }
+
+    // ---- Background-job run history ----
+    //
+    // Two endpoints:
+    //   GET /jobs/runs                — latest run per job_id (drives the grid)
+    //   GET /jobs/{jobId}/runs?limit=N — recent runs for one job (drives the detail page)
+    //
+    // Wire shape mirrors the SQL row exactly so the UI doesn't have to
+    // do any reshaping. Status is one of: ok | error | noop.
+    get("/jobs/runs") {
+        val rows = state.db.listLatestJobRuns().map { r ->
+            JobRunWire(
+                jobId = r.job_id,
+                startedAt = r.started_at,
+                finishedAt = r.finished_at,
+                status = r.status,
+                durationMs = r.duration_ms,
+                summary = r.summary,
+                errorMessage = r.error_message,
+            )
+        }
+        call.respond(rows)
+    }
+
+    get("/jobs/{jobId}/runs") {
+        val jobId = call.parameters["jobId"]
+            ?: throw ValidationException("jobId", "missing")
+        val limit = call.request.queryParameters["limit"]?.toLongOrNull()?.coerceIn(1, 200) ?: 10L
+        val rows = state.db.selectRecentJobRuns(jobId, limit).map { r ->
+            JobRunWire(
+                jobId = r.job_id,
+                startedAt = r.started_at,
+                finishedAt = r.finished_at,
+                status = r.status,
+                durationMs = r.duration_ms,
+                summary = r.summary,
+                errorMessage = r.error_message,
+            )
+        }
+        call.respond(rows)
     }
 
     // ---- Mappings ----
@@ -705,6 +1061,7 @@ fun Route.v2Routes(state: AppState) {
     post("/sync") {
         val dryRun = call.request.queryParameters["dryRun"]?.equals("true", ignoreCase = true)
             ?: state.settings.dryRun
+        val direction = parseSyncDirection(call.request.queryParameters["direction"])
         // Optional cap on the number of series visited per call. The
         // sandbox preview button uses limit=20 so the dry-run completes
         // in seconds instead of minutes; a real (non-dry) sync is
@@ -716,7 +1073,7 @@ fun Route.v2Routes(state: AppState) {
         var plexTotal = 0
         var traktTotal = 0
         for (row in targets) {
-            val r = state.crossSourceSync.syncSeries(row.id, dryRun = dryRun)
+            val r = state.crossSourceSync.syncSeries(row.id, dryRun = dryRun, direction = direction)
             perSeries += r
             plexTotal += r.plexAdded
             traktTotal += r.traktAdded
@@ -734,6 +1091,75 @@ fun Route.v2Routes(state: AppState) {
             Json.encodeToJsonElement(LibrarySyncReport.serializer(), agg),
         )
         call.respond(agg)
+    }
+
+    // ---- Trakt→Sonarr unmonitor reconciler ----
+    //
+    // POST /reconcile/trakt-unmonitor — library-wide sweep; honours
+    // ?dryRun (defaults to false here so the UI "Run" button actually
+    // writes) and ?limit=N for the preview button.
+    // PUT  /series/{id}/protect-unmonitor body {"protected": true|false}
+    //   — toggles the protect tag on a single series.
+    // POST /series/protect-unmonitor/bulk body {"seriesIds":[...], "protected":true|false}
+    //   — bulk toggle via Sonarr series editor (atomic).
+    post("/reconcile/trakt-unmonitor") {
+        val dryRun = call.request.queryParameters["dryRun"]?.equals("true", ignoreCase = true) == true
+        val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceAtLeast(1)
+        val report = state.traktUnmonitor.reconcileAll(state.settings.traktUnmonitor, dryRun = dryRun, limit = limit)
+        state.eventBus.publish(
+            "trakt-unmonitor-swept",
+            Json.encodeToJsonElement(
+                org.yoshiz.app.prioritarr.backend.reconcile.LibraryUnmonitorReport.serializer(),
+                report,
+            ),
+        )
+        call.respond(report)
+    }
+
+    post("/series/{id}/reconcile/trakt-unmonitor") {
+        val id = call.parameters["id"]?.toLongOrNull()
+            ?: throw ValidationException("id", "must be a number")
+        val dryRun = call.request.queryParameters["dryRun"]?.equals("true", ignoreCase = true) == true
+        val report = state.traktUnmonitor.reconcileSeries(id, state.settings.traktUnmonitor, dryRun = dryRun)
+        call.respond(report)
+    }
+
+    // Single-series protect toggle. Reads + writes via Sonarr tags API
+    // — no prioritarr-side storage, so editing in Sonarr's UI and
+    // editing here stay in lockstep automatically.
+    put("/series/{id}/protect-unmonitor") {
+        val id = call.parameters["id"]?.toLongOrNull()
+            ?: throw ValidationException("id", "must be a number")
+        val body = call.receiveText()
+        val parsed = appJson.parseToJsonElement(body).jsonObject
+        val protected = parsed["protected"]?.jsonPrimitive?.booleanOrNull
+            ?: throw ValidationException("protected", "missing boolean")
+        val label = state.settings.traktUnmonitor.protectTag
+        val tagId = state.sonarr.getOrCreateTag(label)
+        state.sonarr.bulkApplySeriesTag(listOf(id), tagId, if (protected) "add" else "remove")
+        state.eventBus.publish(
+            "series-protect-toggled",
+            Json.parseToJsonElement("""{"seriesId":$id,"protected":$protected,"tag":"${label.replace("\"","\\\"")}"}"""),
+        )
+        call.respond(ProtectUnmonitorResponse(seriesId = id, protected = protected, tag = label))
+    }
+
+    post("/series/protect-unmonitor/bulk") {
+        val body = call.receiveText()
+        val parsed = appJson.parseToJsonElement(body).jsonObject
+        val idsArray = parsed["seriesIds"] as? kotlinx.serialization.json.JsonArray
+        val ids = idsArray?.mapNotNull { it.jsonPrimitive.longOrNull }.orEmpty()
+        if (ids.isEmpty()) throw ValidationException("seriesIds", "must be a non-empty array")
+        val protected = parsed["protected"]?.jsonPrimitive?.booleanOrNull
+            ?: throw ValidationException("protected", "missing boolean")
+        val label = state.settings.traktUnmonitor.protectTag
+        val tagId = state.sonarr.getOrCreateTag(label)
+        state.sonarr.bulkApplySeriesTag(ids, tagId, if (protected) "add" else "remove")
+        state.eventBus.publish(
+            "series-protect-toggled",
+            Json.parseToJsonElement("""{"count":${ids.size},"protected":$protected,"tag":"${label.replace("\"","\\\"")}"}"""),
+        )
+        call.respond(BulkProtectUnmonitorResponse(count = ids.size, protected = protected, tag = label))
     }
 
     // ---- Watched archiver ----

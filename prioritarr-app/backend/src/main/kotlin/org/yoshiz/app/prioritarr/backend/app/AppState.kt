@@ -8,6 +8,8 @@ import org.yoshiz.app.prioritarr.backend.clients.QBitClient
 import org.yoshiz.app.prioritarr.backend.clients.SABClient
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
 import org.yoshiz.app.prioritarr.backend.clients.TautulliClient
+import org.yoshiz.app.prioritarr.backend.clients.TraktClient
+import org.yoshiz.app.prioritarr.backend.clients.TraktOAuth
 import org.yoshiz.app.prioritarr.backend.config.Settings
 import org.yoshiz.app.prioritarr.backend.database.Database
 import org.yoshiz.app.prioritarr.backend.events.EventBus
@@ -15,6 +17,7 @@ import org.yoshiz.app.prioritarr.backend.mapping.MappingState
 import org.yoshiz.app.prioritarr.backend.priority.PriorityService
 import org.yoshiz.app.prioritarr.backend.priority.ThresholdsSource
 import org.yoshiz.app.prioritarr.backend.reconcile.OrphanReaper
+import org.yoshiz.app.prioritarr.backend.reconcile.TraktUnmonitorReconciler
 import org.yoshiz.app.prioritarr.backend.reconcile.WatchedArchiver
 import org.yoshiz.app.prioritarr.backend.sync.CrossSourceSync
 
@@ -49,6 +52,11 @@ data class AppState(
     val crossSourceSync: CrossSourceSync,
     val orphanReaper: OrphanReaper,
     val watchedArchiver: WatchedArchiver,
+    val traktUnmonitor: TraktUnmonitorReconciler,
+    /** Live TraktClient — null when Trakt isn't configured. Routes use it for hot-swapping the access token after refresh. */
+    val traktClient: TraktClient?,
+    /** OAuth helper — null when client_id or client_secret missing. Routes use it for begin/poll/refresh. */
+    val traktOAuth: TraktOAuth?,
     val eventBus: EventBus,
     val httpClients: List<HttpClient>,
 )

@@ -54,7 +54,11 @@ data class PriorityThresholds(
     val p3DormantReleaseWindowDays: Int = 60,
 )
 
-/** Scheduler cadences. */
+/**
+ * Scheduler cadences. Every entry here is live-editable via the
+ * Settings UI; the schedulers re-read the merged settings each tick
+ * so changes propagate within at most one full interval (no restart).
+ */
 data class Intervals(
     val reconcileMinutes: Int = 15,
     val backfillSweepHours: Int = 2,
@@ -62,6 +66,15 @@ data class Intervals(
     val backfillMaxSearchesPerSweep: Int = 10,
     val backfillDelayBetweenSearchesSeconds: Int = 30,
     val cutoffMaxSearchesPerSweep: Int = 5,
+    // Previously hard-coded in Main.kt; lifted here so the UI can edit
+    // them and the scheduler reads the live values.
+    val refreshMappingsMinutes: Int = 60,
+    val refreshSeriesCacheMinutes: Int = 5,
+    val refreshEpisodeCacheMinutes: Int = 60,
+    val refreshPrioritiesMinutes: Int = 30,
+    val queueJanitorMinutes: Int = 30,
+    val unmonitoredReaperMinutes: Int = 30,
+    val traktTokenRefreshHours: Int = 24,
 )
 
 data class CacheConfig(val priorityTtlMinutes: Int = 60)
@@ -126,6 +139,28 @@ data class ArchiveSettings(
     val intervalHours: Int = 168,   // weekly by default
 )
 
+/**
+ * Trakt→Sonarr unmonitor reconciler. For each series, if Trakt reports
+ * an episode as watched AND Sonarr has `hasFile=false, monitored=true`,
+ * we flip monitored→false so the backfill sweep stops grinding on an
+ * episode you already watched elsewhere.
+ *
+ * Series with a Sonarr tag named [protectTag] are skipped entirely —
+ * the tag acts as a per-series opt-out managed in Sonarr's tags UI
+ * (or via prioritarr's drawer/bulk action, which just adds/removes
+ * the same tag on the Sonarr series record).
+ *
+ * Disabled by default (opt-in). Enable flag and tag name are
+ * live-editable; scheduler tick cadence requires a restart.
+ */
+@kotlinx.serialization.Serializable
+data class TraktUnmonitorSettings(
+    val enabled: Boolean = false,
+    val intervalHours: Int = 6,
+    val skipSpecials: Boolean = false,
+    val protectTag: String = "prioritarr-no-unmonitor",
+)
+
 // YAML overlay is parsed as a generic Map<String, Any> — Hoplite was
 // silently returning all-nulls on the more strict data-class mapping,
 // and we only need four optional sections here. SnakeYAML is the
@@ -154,10 +189,16 @@ data class Settings(
     val plexUrl: String? = null,
     val plexToken: String? = null,
 
-    // Trakt OAuth credentials. Both must be set for the Trakt provider
-    // to be installed; either missing = Trakt disabled, Tautulli alone.
+    // Trakt OAuth credentials. clientId + accessToken must be set for
+    // the Trakt provider to be installed; either missing = Trakt
+    // disabled, Tautulli alone. clientSecret is only required to mint
+    // or refresh tokens via the device-code flow inside prioritarr;
+    // refreshToken + tokenExpiresAt enable that refresh.
     val traktClientId: String? = null,
+    val traktClientSecret: String? = null,
     val traktAccessToken: String? = null,
+    val traktRefreshToken: String? = null,
+    val traktTokenExpiresAt: String? = null,
 
     val dryRun: Boolean = true,
     val logLevel: String = "INFO",
@@ -174,6 +215,7 @@ data class Settings(
     val audit: AuditConfig = AuditConfig(),
     val bandwidth: BandwidthSettings = BandwidthSettings(),
     val archive: ArchiveSettings = ArchiveSettings(),
+    val traktUnmonitor: TraktUnmonitorSettings = TraktUnmonitorSettings(),
 
     /** Paths swept by the OrphanReaper. Empty list disables the reaper. */
     val orphanReaperPaths: List<String> = listOf(
@@ -219,10 +261,40 @@ data class EditableSettings(
     val plexUrl: String? = null,
     val plexToken: String? = null,
     val traktClientId: String? = null,
+    val traktClientSecret: String? = null,
     val traktAccessToken: String? = null,
+    val traktRefreshToken: String? = null,
+    val traktTokenExpiresAt: String? = null,
     val dryRun: Boolean? = null,
     val logLevel: String? = null,
     val uiOrigin: String? = null,
+    // Trakt→Sonarr unmonitor reconciler knobs. Flat (not nested) to
+    // stay consistent with the rest of EditableSettings; applied
+    // onto Settings.traktUnmonitor in applySettingsOverride.
+    val traktUnmonitorEnabled: Boolean? = null,
+    val traktUnmonitorIntervalHours: Int? = null,
+    val traktUnmonitorSkipSpecials: Boolean? = null,
+    val traktUnmonitorProtectTag: String? = null,
+
+    // ---- Scheduler cadences (live-editable; see [Intervals]). Each
+    // null = "use baseline (env/YAML)". Schedulers re-read these every
+    // tick so changes apply within one cycle without restart.
+    val reconcileMinutes: Int? = null,
+    val backfillSweepHours: Int? = null,
+    val cutoffSweepHours: Int? = null,
+    val backfillMaxSearchesPerSweep: Int? = null,
+    val backfillDelayBetweenSearchesSeconds: Int? = null,
+    val cutoffMaxSearchesPerSweep: Int? = null,
+    val refreshMappingsMinutes: Int? = null,
+    val refreshSeriesCacheMinutes: Int? = null,
+    val refreshEpisodeCacheMinutes: Int? = null,
+    val refreshPrioritiesMinutes: Int? = null,
+    val queueJanitorMinutes: Int? = null,
+    val unmonitoredReaperMinutes: Int? = null,
+    val traktTokenRefreshHours: Int? = null,
+    // ---- Other cadences not in [Intervals] ----
+    val orphanReaperIntervalMinutes: Int? = null,
+    val archiveIntervalHours: Int? = null,
 )
 
 /** Apply [override] on top of [base], returning a new [Settings]. */
@@ -239,10 +311,38 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
     plexUrl = override.plexUrl ?: base.plexUrl,
     plexToken = override.plexToken ?: base.plexToken,
     traktClientId = override.traktClientId ?: base.traktClientId,
+    traktClientSecret = override.traktClientSecret ?: base.traktClientSecret,
     traktAccessToken = override.traktAccessToken ?: base.traktAccessToken,
+    traktRefreshToken = override.traktRefreshToken ?: base.traktRefreshToken,
+    traktTokenExpiresAt = override.traktTokenExpiresAt ?: base.traktTokenExpiresAt,
     dryRun = override.dryRun ?: base.dryRun,
     logLevel = override.logLevel ?: base.logLevel,
     uiOrigin = override.uiOrigin ?: base.uiOrigin,
+    traktUnmonitor = base.traktUnmonitor.copy(
+        enabled = override.traktUnmonitorEnabled ?: base.traktUnmonitor.enabled,
+        intervalHours = override.traktUnmonitorIntervalHours ?: base.traktUnmonitor.intervalHours,
+        skipSpecials = override.traktUnmonitorSkipSpecials ?: base.traktUnmonitor.skipSpecials,
+        protectTag = override.traktUnmonitorProtectTag ?: base.traktUnmonitor.protectTag,
+    ),
+    intervals = base.intervals.copy(
+        reconcileMinutes = override.reconcileMinutes ?: base.intervals.reconcileMinutes,
+        backfillSweepHours = override.backfillSweepHours ?: base.intervals.backfillSweepHours,
+        cutoffSweepHours = override.cutoffSweepHours ?: base.intervals.cutoffSweepHours,
+        backfillMaxSearchesPerSweep = override.backfillMaxSearchesPerSweep ?: base.intervals.backfillMaxSearchesPerSweep,
+        backfillDelayBetweenSearchesSeconds = override.backfillDelayBetweenSearchesSeconds ?: base.intervals.backfillDelayBetweenSearchesSeconds,
+        cutoffMaxSearchesPerSweep = override.cutoffMaxSearchesPerSweep ?: base.intervals.cutoffMaxSearchesPerSweep,
+        refreshMappingsMinutes = override.refreshMappingsMinutes ?: base.intervals.refreshMappingsMinutes,
+        refreshSeriesCacheMinutes = override.refreshSeriesCacheMinutes ?: base.intervals.refreshSeriesCacheMinutes,
+        refreshEpisodeCacheMinutes = override.refreshEpisodeCacheMinutes ?: base.intervals.refreshEpisodeCacheMinutes,
+        refreshPrioritiesMinutes = override.refreshPrioritiesMinutes ?: base.intervals.refreshPrioritiesMinutes,
+        queueJanitorMinutes = override.queueJanitorMinutes ?: base.intervals.queueJanitorMinutes,
+        unmonitoredReaperMinutes = override.unmonitoredReaperMinutes ?: base.intervals.unmonitoredReaperMinutes,
+        traktTokenRefreshHours = override.traktTokenRefreshHours ?: base.intervals.traktTokenRefreshHours,
+    ),
+    orphanReaperIntervalMinutes = override.orphanReaperIntervalMinutes ?: base.orphanReaperIntervalMinutes,
+    archive = base.archive.copy(
+        intervalHours = override.archiveIntervalHours ?: base.archive.intervalHours,
+    ),
 )
 
 private val TRUTHY = setOf("true", "1", "yes")
@@ -269,6 +369,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
     var audit = AuditConfig()
     var bandwidth = BandwidthSettings()
     var archive = ArchiveSettings()
+    var traktUnmonitor = TraktUnmonitorSettings()
 
     if (configPath != null && File(configPath).exists()) {
         @Suppress("UNCHECKED_CAST")
@@ -318,6 +419,14 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 intervalHours = o.num("interval_hours") { it.toInt() } ?: archive.intervalHours,
             )
         }
+        (root["trakt_unmonitor"] as? Map<*, *>)?.let { o ->
+            traktUnmonitor = traktUnmonitor.copy(
+                enabled = (o["enabled"] as? Boolean) ?: traktUnmonitor.enabled,
+                intervalHours = o.num("interval_hours") { it.toInt() } ?: traktUnmonitor.intervalHours,
+                skipSpecials = (o["skip_specials"] as? Boolean) ?: traktUnmonitor.skipSpecials,
+                protectTag = (o["protect_tag"] as? String) ?: traktUnmonitor.protectTag,
+            )
+        }
         (root["bandwidth"] as? Map<*, *>)?.let { o ->
             bandwidth = bandwidth.copy(
                 maxMbps = o.num("max_mbps") { it.toInt() } ?: bandwidth.maxMbps,
@@ -349,7 +458,10 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         plexUrl = env("PLEX_URL"),
         plexToken = env("PLEX_TOKEN"),
         traktClientId = env("TRAKT_CLIENT_ID"),
+        traktClientSecret = env("TRAKT_CLIENT_SECRET"),
         traktAccessToken = env("TRAKT_ACCESS_TOKEN"),
+        traktRefreshToken = env("TRAKT_REFRESH_TOKEN"),
+        traktTokenExpiresAt = env("TRAKT_TOKEN_EXPIRES_AT"),
         dryRun = dryRun,
         logLevel = env("LOG_LEVEL", "INFO") ?: "INFO",
         testMode = testMode,
@@ -362,5 +474,6 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         audit = audit,
         bandwidth = bandwidth,
         archive = archive,
+        traktUnmonitor = traktUnmonitor,
     )
 }
