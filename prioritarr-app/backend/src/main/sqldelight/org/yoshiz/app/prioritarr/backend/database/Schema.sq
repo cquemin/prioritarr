@@ -119,6 +119,27 @@ CREATE TABLE IF NOT EXISTS mapping_cache (
     updated_at TEXT NOT NULL
 );
 
+-- Background-job run history. Each scheduler tick (or webhook handler)
+-- records one row here so the Settings → Background jobs page can show
+-- last-run status, duration, and a short summary. Trimmed to the most
+-- recent N rows per job_id on every insert (default 50) to keep the
+-- table tiny — at ~15 jobs * 50 rows that's ~750 rows steady-state.
+CREATE TABLE IF NOT EXISTS job_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    -- 'ok' = ran cleanly. 'error' = threw. 'noop' = scheduled tick but
+    -- the job short-circuited (e.g. trakt_unmonitor when disabled).
+    status TEXT NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    summary TEXT,
+    error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_runs_job_started
+    ON job_runs(job_id, started_at DESC);
+
 -- ------------------------------------------------------------------
 -- series_priority_cache
 -- ------------------------------------------------------------------
@@ -383,3 +404,48 @@ SELECT plex_key, series_id FROM mapping_cache;
 
 deleteAllMappingCache:
 DELETE FROM mapping_cache;
+
+-- ------------------------------------------------------------------
+-- job_runs
+-- ------------------------------------------------------------------
+
+insertJobRun:
+INSERT INTO job_runs (job_id, started_at, finished_at, status, duration_ms, summary, error_message)
+VALUES (?, ?, ?, ?, ?, ?, ?);
+
+-- Trim a single job_id's history to the most recent :keep rows.
+-- Called inline after each insert to bound the table size; the
+-- per-job index makes the LIMIT subquery nearly free.
+trimJobRuns:
+DELETE FROM job_runs
+WHERE job_id = :job_id
+  AND id NOT IN (
+    SELECT id FROM job_runs
+    WHERE job_id = :job_id
+    ORDER BY started_at DESC
+    LIMIT :keep
+  );
+
+-- Latest run per job_id. SQLite's "max started_at per group" idiom
+-- via window function isn't worth the complexity at <50 rows/job; a
+-- correlated SELECT per job is plenty fast.
+listLatestJobRuns:
+SELECT job_id, started_at, finished_at, status, duration_ms, summary, error_message
+FROM job_runs r1
+WHERE started_at = (
+    SELECT MAX(started_at) FROM job_runs r2 WHERE r2.job_id = r1.job_id
+);
+
+selectLatestJobRun:
+SELECT job_id, started_at, finished_at, status, duration_ms, summary, error_message
+FROM job_runs
+WHERE job_id = ?
+ORDER BY started_at DESC
+LIMIT 1;
+
+selectRecentJobRuns:
+SELECT job_id, started_at, finished_at, status, duration_ms, summary, error_message
+FROM job_runs
+WHERE job_id = ?
+ORDER BY started_at DESC
+LIMIT ?;

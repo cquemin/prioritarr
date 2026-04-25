@@ -209,6 +209,45 @@ class Database(dbPath: String) {
     }
 
     // ------------------------------------------------------------------
+    // job_runs
+    // ------------------------------------------------------------------
+
+    /**
+     * Record a single scheduler tick. Always pair the started_at and
+     * finished_at from the same wall-clock so duration_ms doesn't
+     * drift across timezones. Trims the history for this job to
+     * `keep` most recent rows in the same transaction.
+     */
+    fun recordJobRun(
+        jobId: String,
+        startedAt: java.time.Instant,
+        finishedAt: java.time.Instant,
+        status: String,
+        summary: String? = null,
+        errorMessage: String? = null,
+        keep: Long = 50,
+    ) {
+        val durationMs = java.time.Duration.between(startedAt, finishedAt).toMillis()
+        q.transaction {
+            q.insertJobRun(
+                job_id = jobId,
+                started_at = startedAt.toString(),
+                finished_at = finishedAt.toString(),
+                status = status,
+                duration_ms = durationMs,
+                summary = summary,
+                error_message = errorMessage,
+            )
+            q.trimJobRuns(job_id = jobId, keep = keep)
+        }
+    }
+
+    fun listLatestJobRuns() = q.listLatestJobRuns().executeAsList()
+    fun selectLatestJobRun(jobId: String) = q.selectLatestJobRun(jobId).executeAsOneOrNull()
+    fun selectRecentJobRuns(jobId: String, limit: Long = 10L) =
+        q.selectRecentJobRuns(jobId, limit).executeAsList()
+
+    // ------------------------------------------------------------------
     // app_bandwidth_overrides
     // ------------------------------------------------------------------
 
