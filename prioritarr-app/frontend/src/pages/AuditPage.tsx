@@ -11,6 +11,7 @@ import { DataTable } from '../components/DataTable'
 import { RowDrawer } from '../components/RowDrawer'
 import { TableSkeleton } from '../components/Skeleton'
 import { useAudit } from '../hooks/queries'
+import { humanize } from '../lib/humanize'
 
 interface AuditRow {
   id: number
@@ -49,12 +50,16 @@ export function AuditPage() {
           {row.original.ts.slice(0, 19)}
         </span>
       ),
+      meta: { filter: { type: 'date-range' } },
     },
     {
       accessorKey: 'action',
       header: 'Action',
-      cell: ({ row }) => <span className="text-accent font-mono">{row.original.action}</span>,
-      filterFn: 'includesString',
+      // Display the humanized action so the operator doesn't have to
+      // mentally translate `trakt_unmonitored` etc. Filter still works
+      // on the raw value (TanStack reads accessorKey verbatim).
+      cell: ({ row }) => <span className="text-accent">{humanize(row.original.action)}</span>,
+      meta: { filter: { type: 'select' } },
     },
     {
       accessorKey: 'seriesId',
@@ -72,7 +77,7 @@ export function AuditPage() {
       cell: ({ row }) =>
         row.original.client ? (
           <span className="text-xs">
-            <span className="px-1.5 py-0.5 bg-surface-3 rounded">{row.original.client}</span>
+            <span className="px-1.5 py-0.5 bg-surface-3 rounded">{humanize(row.original.client)}</span>
             {row.original.clientId && (
               <span className="opacity-60 font-mono ml-1">
                 {row.original.clientId.slice(0, 14)}
@@ -82,7 +87,15 @@ export function AuditPage() {
         ) : (
           <span className="opacity-30">—</span>
         ),
-      filterFn: 'includesString',
+      meta: {
+        filter: {
+          type: 'select',
+          options: [
+            { value: 'qbit', label: 'qBittorrent' },
+            { value: 'sab', label: 'SABnzbd' },
+          ],
+        },
+      },
     },
     {
       id: '__details_preview',
@@ -123,7 +136,7 @@ export function AuditPage() {
         <RowDrawer
           isOpen
           onClose={() => setOpenRow(null)}
-          title={openRow.action}
+          title={humanize(openRow.action)}
           subtitle={`#${openRow.id} · ${openRow.ts.slice(0, 19)}`}
         >
           <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">

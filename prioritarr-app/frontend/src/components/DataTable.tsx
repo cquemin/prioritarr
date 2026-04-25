@@ -8,6 +8,7 @@
  */
 
 import {
+  type Column,
   type ColumnDef,
   type ColumnFiltersState,
   type Row,
@@ -20,7 +21,38 @@ import {
   useReactTable,
 } from '@tanstack/react-table'
 import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+
+import { humanize } from '../lib/humanize'
+
+/**
+ * Per-column filter UX. Stash on `meta.filter`:
+ *   - `{ type: 'text' }`   default — free-text "contains" input
+ *   - `{ type: 'select', options? }` — dropdown. If `options` omitted,
+ *      the unique values in the data are used and humanized as labels.
+ *   - `{ type: 'date-range' }` — two date pickers; matches rows whose
+ *      column value (ISO string) falls inside [from, to]. Either bound
+ *      may be empty.
+ *
+ * Each variant attaches the right `filterFn` automatically so the
+ * caller doesn't have to remember to set `filterFn: 'includesString'`.
+ */
+export type FilterConfig =
+  | { type: 'text' }
+  | { type: 'select'; options?: ReadonlyArray<{ value: string; label: string }> }
+  | { type: 'date-range' }
+
+declare module '@tanstack/react-table' {
+  // Augment ColumnMeta so callers get autocomplete + type-checking
+  // when they set `meta: { filter: { type: 'select' } }`.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  interface ColumnMeta<TData extends unknown, TValue> {
+    cellClassName?: string
+    filter?: FilterConfig
+    /** Override the built-in humanize for select-filter option labels. */
+    formatOption?: (raw: unknown) => string
+  }
+}
 
 export interface DataTableProps<T> {
   data: T[]
@@ -45,11 +77,33 @@ export function DataTable<T>(props: DataTableProps<T>) {
   const [filters, setFilters] = useState<ColumnFiltersState>([])
   const [selection, setSelection] = useState<RowSelectionState>({})
 
+  // Inject the right filterFn for any column whose meta declares a
+  // non-text filter, so callers don't have to repeat themselves.
+  const filteredColumns: ColumnDef<T, any>[] = useMemo(
+    () => columns.map((c) => {
+      const meta = c.meta as { filter?: FilterConfig } | undefined
+      if (!meta?.filter) return c
+      if (meta.filter.type === 'select' && c.filterFn == null) {
+        // Exact-match select; row's column value compared as string.
+        return { ...c, filterFn: ((row, columnId, filterValue) => {
+          if (!filterValue) return true
+          const v = row.getValue(columnId)
+          return v != null && String(v) === String(filterValue)
+        }) }
+      }
+      if (meta.filter.type === 'date-range' && c.filterFn == null) {
+        return { ...c, filterFn: dateRangeFilterFn }
+      }
+      return c
+    }),
+    [columns],
+  )
+
   // Prepend a selection column if requested. We build it inline rather
   // than export a helper so the caller's columns array stays untouched.
   const tableColumns: ColumnDef<T, any>[] = enableSelection
-    ? [selectColumn<T>(), ...columns]
-    : columns
+    ? [selectColumn<T>(), ...filteredColumns]
+    : filteredColumns
 
   const table = useReactTable({
     data,
@@ -104,12 +158,7 @@ export function DataTable<T>(props: DataTableProps<T>) {
                         )}
                       </button>
                       {col.getCanFilter() && (
-                        <input
-                          value={(col.getFilterValue() as string) ?? ''}
-                          onChange={(e) => col.setFilterValue(e.target.value || undefined)}
-                          placeholder="filter…"
-                          className="px-2 py-0.5 text-xs rounded bg-surface-3 placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent w-full"
-                        />
+                        <SmartFilterInput column={col} data={data} />
                       )}
                     </div>
                   </th>
@@ -165,6 +214,119 @@ function DataTableRow<T>({
       })}
     </tr>
   )
+}
+
+/**
+ * Filter input that picks its UI from the column's `meta.filter` config.
+ * For `select`, options derive from the data when not explicitly given;
+ * for `date-range`, two native date inputs drive a range filterFn.
+ */
+function SmartFilterInput<T>({ column, data }: { column: Column<T, unknown>; data: T[] }) {
+  const meta = column.columnDef.meta as
+    | { filter?: FilterConfig; formatOption?: (raw: unknown) => string }
+    | undefined
+  const filter = meta?.filter ?? { type: 'text' }
+
+  if (filter.type === 'select') {
+    return <SelectFilter column={column} data={data} explicit={filter.options} formatOption={meta?.formatOption} />
+  }
+  if (filter.type === 'date-range') {
+    return <DateRangeFilter column={column} />
+  }
+  // text — default, "contains" semantics via TanStack's includesString.
+  return (
+    <input
+      value={(column.getFilterValue() as string) ?? ''}
+      onChange={(e) => column.setFilterValue(e.target.value || undefined)}
+      placeholder="filter…"
+      className="px-2 py-0.5 text-xs rounded bg-surface-3 placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-accent w-full"
+    />
+  )
+}
+
+function SelectFilter<T>({
+  column, data, explicit, formatOption,
+}: {
+  column: Column<T, unknown>
+  data: T[]
+  explicit?: ReadonlyArray<{ value: string; label: string }>
+  formatOption?: (raw: unknown) => string
+}) {
+  const id = column.id
+  // When the caller didn't hand us options, derive them from the data
+  // by collecting the unique non-null values in this column. Memoised
+  // on (data, id) so the dropdown doesn't reshuffle on each render.
+  const options = useMemo(() => {
+    if (explicit && explicit.length > 0) return explicit
+    const seen = new Set<string>()
+    for (const row of data) {
+      const v = (row as Record<string, unknown>)[id]
+      if (v == null || v === '') continue
+      seen.add(String(v))
+    }
+    return Array.from(seen).sort().map((v) => ({
+      value: v,
+      label: formatOption ? formatOption(v) : humanize(v),
+    }))
+  }, [explicit, data, id, formatOption])
+
+  return (
+    <select
+      value={(column.getFilterValue() as string) ?? ''}
+      onChange={(e) => column.setFilterValue(e.target.value || undefined)}
+      className="px-1 py-0.5 text-xs rounded bg-surface-3 focus:outline-none focus:ring-1 focus:ring-accent w-full"
+    >
+      <option value="">All</option>
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>{o.label}</option>
+      ))}
+    </select>
+  )
+}
+
+function DateRangeFilter<T>({ column }: { column: Column<T, unknown> }) {
+  const value = (column.getFilterValue() as { from?: string; to?: string } | undefined) ?? {}
+  const set = (next: { from?: string; to?: string }) => {
+    const cleaned = {
+      from: next.from?.trim() || undefined,
+      to: next.to?.trim() || undefined,
+    }
+    column.setFilterValue(cleaned.from || cleaned.to ? cleaned : undefined)
+  }
+  return (
+    <div className="flex gap-1">
+      <input
+        type="date"
+        value={value.from ?? ''}
+        onChange={(e) => set({ ...value, from: e.target.value })}
+        title="From (inclusive)"
+        className="px-1 py-0.5 text-xs rounded bg-surface-3 focus:outline-none focus:ring-1 focus:ring-accent flex-1 min-w-0"
+      />
+      <input
+        type="date"
+        value={value.to ?? ''}
+        onChange={(e) => set({ ...value, to: e.target.value })}
+        title="To (inclusive)"
+        className="px-1 py-0.5 text-xs rounded bg-surface-3 focus:outline-none focus:ring-1 focus:ring-accent flex-1 min-w-0"
+      />
+    </div>
+  )
+}
+
+/**
+ * Inclusive [from, to] date filter. Compares the column value as an
+ * ISO string against the YYYY-MM-DD bounds; lexicographic compare works
+ * for ISO strings, so no Date parsing required.
+ */
+function dateRangeFilterFn<T>(row: Row<T>, columnId: string, filterValue: unknown): boolean {
+  const range = filterValue as { from?: string; to?: string } | undefined
+  if (!range || (!range.from && !range.to)) return true
+  const raw = row.getValue(columnId)
+  if (raw == null) return false
+  const iso = String(raw).slice(0, 10)  // YYYY-MM-DD
+  if (range.from && iso < range.from) return false
+  if (range.to && iso > range.to) return false
+  return true
 }
 
 function SortIcon({ dir }: { dir: 'asc' | 'desc' | null }) {
