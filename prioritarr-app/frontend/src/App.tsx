@@ -54,13 +54,13 @@ function Shell() {
         </div>
       )}
       <div className="flex-1 flex min-h-0">
-        <nav className="w-20 bg-surface-1 border-r border-surface-3 flex flex-col items-center py-4 gap-1">
+        <nav className="w-12 sm:w-20 bg-surface-1 border-r border-surface-3 flex flex-col items-center py-2 sm:py-4 gap-1 shrink-0">
           {NAV.map((n) => (
             <button
               key={n.view}
               onClick={() => navigate({ page: n.view })}
               title={n.label}
-              className={`p-3 rounded hover:bg-surface-3 ${view === n.view ? 'bg-surface-3 text-accent' : ''}`}
+              className={`p-2 sm:p-3 rounded hover:bg-surface-3 ${view === n.view ? 'bg-surface-3 text-accent' : ''}`}
             >
               {n.icon}
             </button>

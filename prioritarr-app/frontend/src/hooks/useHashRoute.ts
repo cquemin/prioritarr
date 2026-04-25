@@ -19,10 +19,31 @@ import { useEffect, useSyncExternalStore } from 'react'
 
 export type Page = 'series' | 'audit' | 'settings'
 
+/**
+ * Settings sub-sections. The Settings page renders a sidebar that
+ * navigates between these. URL shape: `#/settings/<section>`. Default
+ * (just `#/settings`) lands on `general`.
+ */
+export type SettingsSection =
+  | 'general'
+  | 'connections'
+  | 'bandwidth'
+  | 'priority-rules'
+  | 'jobs'
+  | 'mappings'
+  | 'webhooks'
+
 export interface Route {
   page: Page
   seriesId: number | null
+  settingsSection: SettingsSection | null
+  /** When inside `jobs`, the focused job id (for the detail page). */
+  jobId: string | null
 }
+
+const SETTINGS_SECTIONS: ReadonlyArray<SettingsSection> = [
+  'general', 'connections', 'bandwidth', 'priority-rules', 'jobs', 'mappings', 'webhooks',
+]
 
 function parseHash(hash: string): Route {
   const stripped = hash.startsWith('#') ? hash.slice(1) : hash
@@ -33,14 +54,18 @@ function parseHash(hash: string): Route {
     case 'series': {
       const idStr = rest[0]
       const id = idStr ? Number(idStr) : null
-      return { page: 'series', seriesId: Number.isFinite(id) ? id : null }
+      return { page: 'series', seriesId: Number.isFinite(id) ? id : null, settingsSection: null, jobId: null }
     }
     case 'audit':
-      return { page: 'audit', seriesId: null }
-    case 'settings':
-      return { page: 'settings', seriesId: null }
+      return { page: 'audit', seriesId: null, settingsSection: null, jobId: null }
+    case 'settings': {
+      const sectionStr = rest[0] as SettingsSection | undefined
+      const section: SettingsSection = sectionStr && SETTINGS_SECTIONS.includes(sectionStr) ? sectionStr : 'general'
+      const jobId = section === 'jobs' && rest[1] ? rest[1] : null
+      return { page: 'settings', seriesId: null, settingsSection: section, jobId }
+    }
     default:
-      return { page: 'series', seriesId: null }
+      return { page: 'series', seriesId: null, settingsSection: null, jobId: null }
   }
 }
 
@@ -65,8 +90,14 @@ export function useRoute(): Route {
  * undoes it naturally.
  */
 export function navigate(route: Partial<Route> & { page: Page }) {
-  const path = route.seriesId ? `/${route.page}/${route.seriesId}` : `/${route.page}`
-  window.location.hash = path
+  const parts: string[] = [route.page]
+  if (route.page === 'series' && route.seriesId) {
+    parts.push(String(route.seriesId))
+  } else if (route.page === 'settings' && route.settingsSection) {
+    parts.push(route.settingsSection)
+    if (route.settingsSection === 'jobs' && route.jobId) parts.push(route.jobId)
+  }
+  window.location.hash = '/' + parts.join('/')
 }
 
 /**
