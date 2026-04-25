@@ -172,7 +172,7 @@ class TraktUnmonitorReconciler(
                 sonarr.setEpisodesMonitored(toUnmonitor.map { it.first }, monitored = false)
                 try {
                     db.appendAudit(
-                        action = "trakt_unmonitored",
+                        action = org.yoshiz.app.prioritarr.backend.AuditAction.TRAKT_UNMONITORED,
                         seriesId = seriesId,
                         client = null,
                         clientId = null,

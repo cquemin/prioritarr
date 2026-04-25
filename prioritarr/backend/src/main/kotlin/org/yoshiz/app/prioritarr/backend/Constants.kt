@@ -72,3 +72,59 @@ enum class ConnectionTestStatus(val wire: String) {
     /** Reached + auth ok, but the response shape doesn't match (wrong path or unsupported version). */
     VERSION_FAILED("version-failed"),
 }
+
+/**
+ * Wire identifiers for our two download clients. Stored verbatim in
+ * `managed_downloads.client` and used as discriminator on every dispatch
+ * site. The interface impls in QBitClient / SABClient delegate their
+ * `clientName` to these so a rename here propagates to every layer.
+ */
+enum class DownloadClientName(val wire: String) {
+    QBIT("qbit"),
+    SAB("sab"),
+}
+
+/**
+ * Upstream services the connection-test endpoint accepts. The URL
+ * slug `/connections/{service}/test` parses straight to one of these.
+ * Sonarr is included even though we never store it as a "download
+ * client" — the test endpoint covers the full credentials grid.
+ */
+enum class ConnectionService(val wire: String) {
+    SONARR("sonarr"),
+    TAUTULLI("tautulli"),
+    QBIT("qbit"),
+    SAB("sab"),
+    PLEX("plex"),
+    TRAKT("trakt");
+
+    companion object {
+        fun fromWire(s: String?): ConnectionService? =
+            entries.firstOrNull { it.wire.equals(s, ignoreCase = true) }
+    }
+}
+
+/**
+ * Audit-log action codes. Each row in `audit_log.action` carries one
+ * of these. Single-use today — but operators grep for the action by
+ * name, so a const object beats inline literals scattered across the
+ * reconcilers + routes.
+ */
+object AuditAction {
+    /** A reconcile/decision that would have fired but is suppressed by dryRun=true. */
+    const val DRY_RUN_ACTION = "dry_run_action"
+    /** Stuck torrent / SAB job removed + blocklisted by the queue janitor. */
+    const val QUEUE_JANITOR_CLEANUP = "queue_janitor_cleanup"
+    /** Same, but with dryRun on. */
+    const val QUEUE_JANITOR_DRY_RUN = "queue_janitor_dry_run"
+    /** Reconciler set the priority on a download. */
+    const val PRIORITY_SET = "priority_set"
+    /** Reconciler reordered the SAB queue (priority bands). */
+    const val REORDER = "reorder"
+    /** Trakt-unmonitor reconciler flipped monitored=false on episodes. */
+    const val TRAKT_UNMONITORED = "trakt_unmonitored"
+    /** Watched-archiver removed an episode file + unmonitored it. */
+    const val WATCHED_ARCHIVED = "watched_archived"
+    /** Unmonitored-queue reaper cancelled a Sonarr queue entry. */
+    const val UNMONITORED_QUEUE_REMOVED = "unmonitored_queue_removed"
+}

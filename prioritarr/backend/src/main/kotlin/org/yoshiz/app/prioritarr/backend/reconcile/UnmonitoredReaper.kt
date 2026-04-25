@@ -126,7 +126,7 @@ class UnmonitoredReaper(
                     removed++
                     try {
                         db.appendAudit(
-                            action = "unmonitored_queue_removed",
+                            action = org.yoshiz.app.prioritarr.backend.AuditAction.UNMONITORED_QUEUE_REMOVED,
                             seriesId = seriesId,
                             client = null,
                             clientId = null,

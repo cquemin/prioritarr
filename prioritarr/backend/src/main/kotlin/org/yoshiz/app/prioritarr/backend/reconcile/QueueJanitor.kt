@@ -309,7 +309,7 @@ class QueueJanitor(
         )
         if (dryRun) {
             db.appendAudit(
-                action = "queue_janitor_dry_run",
+                action = org.yoshiz.app.prioritarr.backend.AuditAction.QUEUE_JANITOR_DRY_RUN,
                 seriesId = item.seriesId,
                 client = item.client,
                 clientId = item.clientId,
@@ -382,7 +382,7 @@ class QueueJanitor(
         }
 
         db.appendAudit(
-            action = "queue_janitor_cleanup",
+            action = org.yoshiz.app.prioritarr.backend.AuditAction.QUEUE_JANITOR_CLEANUP,
             seriesId = item.seriesId,
             client = item.client,
             clientId = item.clientId,

@@ -162,7 +162,7 @@ private suspend fun reconcileImpl(
                 firstSeenAt = now, lastReconciledAt = now,
             )
             db.appendAudit(
-                action = "priority_set",
+                action = org.yoshiz.app.prioritarr.backend.AuditAction.PRIORITY_SET,
                 seriesId = seriesId,
                 client = clientName,
                 clientId = clientId,
@@ -189,7 +189,7 @@ private suspend fun reconcileImpl(
                     firstSeenAt = row.first_seen_at, lastReconciledAt = now,
                 )
                 db.appendAudit(
-                    action = "reorder",
+                    action = org.yoshiz.app.prioritarr.backend.AuditAction.REORDER,
                     seriesId = seriesId,
                     client = clientName,
                     clientId = clientId,
@@ -308,7 +308,9 @@ private suspend fun applySabEnforcement(sab: SABClient, db: Database) {
         )
         try { sab.setPriority(row.client_id, sabPriority) } catch (_: Exception) {}
         db.appendAudit(
-            action = "priority_set", client = "sab", clientId = row.client_id,
+            action = org.yoshiz.app.prioritarr.backend.AuditAction.PRIORITY_SET,
+            client = org.yoshiz.app.prioritarr.backend.DownloadClientName.SAB.wire,
+            clientId = row.client_id,
             seriesId = row.series_id,
             details = buildJsonObject {
                 put("sab_priority", sabPriority)

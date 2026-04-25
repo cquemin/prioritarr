@@ -14,7 +14,7 @@ class SABClient(
     private val apiKey: String,
     private val http: HttpClient,
 ) : DownloadClient {
-    override val clientName: String = "sab"
+    override val clientName: String = org.yoshiz.app.prioritarr.backend.DownloadClientName.SAB.wire
 
     override suspend fun pauseOne(clientId: String) {
         setPriority(clientId, PRIORITY_MAP[5] ?: -1)

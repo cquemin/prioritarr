@@ -342,8 +342,8 @@ fun Route.v2Routes(state: AppState) {
                 titleSlug = titleSlug,
                 tvdbId = tvdbId,
                 plexKey = plexKey,
-                hasQbit = managed.any { it.client == "qbit" },
-                hasSab = managed.any { it.client == "sab" },
+                hasQbit = managed.any { it.client == org.yoshiz.app.prioritarr.backend.DownloadClientName.QBIT.wire },
+                hasSab = managed.any { it.client == org.yoshiz.app.prioritarr.backend.DownloadClientName.SAB.wire },
             )
             // Resolve the protect-unmonitor state from the Sonarr
             // series row's `tags` array. Cheap — tags list is small
@@ -534,7 +534,7 @@ fun Route.v2Routes(state: AppState) {
             } catch (_: Exception) { /* best effort */ }
 
             // SAB history entry — surfaces fail_message for failed jobs
-            if (client == "sab") {
+            if (client == org.yoshiz.app.prioritarr.backend.DownloadClientName.SAB.wire) {
                 try {
                     for (h in state.sab.getHistory(limit = 200)) {
                         val obj = (h as? JsonObject) ?: continue
@@ -573,7 +573,7 @@ fun Route.v2Routes(state: AppState) {
 
             if (state.settings.dryRun) {
                 state.db.appendAudit(
-                    action = "dry_run_action",
+                    action = org.yoshiz.app.prioritarr.backend.AuditAction.DRY_RUN_ACTION,
                     seriesId = row.series_id,
                     client = client,
                     clientId = clientId,
@@ -836,8 +836,10 @@ fun Route.v2Routes(state: AppState) {
     // [ConnectionTestResult] — success/failure plus a categorised
     // reason ("connection-failed" / "auth-failed" / "version-failed").
     post("/connections/{service}/test") {
-        val service = call.parameters["service"]?.lowercase()
+        val rawSlug = call.parameters["service"]
             ?: throw ValidationException("service", "missing")
+        val service = org.yoshiz.app.prioritarr.backend.ConnectionService.fromWire(rawSlug)
+            ?: throw ValidationException("service", "unknown service: $rawSlug")
         val body = call.receiveText()
         val patch = appJson.parseToJsonElement(body).jsonObject
         // Helper: read a field from the request body, falling back to
@@ -851,32 +853,31 @@ fun Route.v2Routes(state: AppState) {
         }
         val s = state.settings
         val result = when (service) {
-            "sonarr" -> org.yoshiz.app.prioritarr.backend.connections.testSonarr(
+            org.yoshiz.app.prioritarr.backend.ConnectionService.SONARR -> org.yoshiz.app.prioritarr.backend.connections.testSonarr(
                 rawUrl = field("sonarrUrl", s.sonarrUrl),
                 apiKey = field("sonarrApiKey", s.sonarrApiKey),
             )
-            "tautulli" -> org.yoshiz.app.prioritarr.backend.connections.testTautulli(
+            org.yoshiz.app.prioritarr.backend.ConnectionService.TAUTULLI -> org.yoshiz.app.prioritarr.backend.connections.testTautulli(
                 rawUrl = field("tautulliUrl", s.tautulliUrl),
                 apiKey = field("tautulliApiKey", s.tautulliApiKey),
             )
-            "qbit" -> org.yoshiz.app.prioritarr.backend.connections.testQbit(
+            org.yoshiz.app.prioritarr.backend.ConnectionService.QBIT -> org.yoshiz.app.prioritarr.backend.connections.testQbit(
                 rawUrl = field("qbitUrl", s.qbitUrl),
                 username = field("qbitUsername", s.qbitUsername),
                 password = field("qbitPassword", s.qbitPassword),
             )
-            "sab" -> org.yoshiz.app.prioritarr.backend.connections.testSab(
+            org.yoshiz.app.prioritarr.backend.ConnectionService.SAB -> org.yoshiz.app.prioritarr.backend.connections.testSab(
                 rawUrl = field("sabUrl", s.sabUrl),
                 apiKey = field("sabApiKey", s.sabApiKey),
             )
-            "plex" -> org.yoshiz.app.prioritarr.backend.connections.testPlex(
+            org.yoshiz.app.prioritarr.backend.ConnectionService.PLEX -> org.yoshiz.app.prioritarr.backend.connections.testPlex(
                 rawUrl = field("plexUrl", s.plexUrl),
                 token = field("plexToken", s.plexToken),
             )
-            "trakt" -> org.yoshiz.app.prioritarr.backend.connections.testTrakt(
+            org.yoshiz.app.prioritarr.backend.ConnectionService.TRAKT -> org.yoshiz.app.prioritarr.backend.connections.testTrakt(
                 clientId = field("traktClientId", s.traktClientId),
                 accessToken = field("traktAccessToken", s.traktAccessToken),
             )
-            else -> throw ValidationException("service", "unknown service: $service")
         }
         call.respond(result)
     }
@@ -1622,7 +1623,7 @@ private suspend fun applyDownloadAction(
 
     if (state.settings.dryRun) {
         state.db.appendAudit(
-            action = "dry_run_action",
+            action = org.yoshiz.app.prioritarr.backend.AuditAction.DRY_RUN_ACTION,
             seriesId = row.series_id,
             client = client,
             clientId = clientId,
@@ -1684,8 +1685,8 @@ internal suspend fun fetchLiveStates(
     managed: List<org.yoshiz.app.prioritarr.backend.database.Managed_downloads>,
 ): Map<String, LiveDownloadState> {
     val out = HashMap<String, LiveDownloadState>()
-    val qbitIds = managed.filter { it.client == "qbit" }.map { it.client_id }.toSet()
-    val sabIds = managed.filter { it.client == "sab" }.map { it.client_id }.toSet()
+    val qbitIds = managed.filter { it.client == org.yoshiz.app.prioritarr.backend.DownloadClientName.QBIT.wire }.map { it.client_id }.toSet()
+    val sabIds = managed.filter { it.client == org.yoshiz.app.prioritarr.backend.DownloadClientName.SAB.wire }.map { it.client_id }.toSet()
 
     if (qbitIds.isNotEmpty()) {
         try {

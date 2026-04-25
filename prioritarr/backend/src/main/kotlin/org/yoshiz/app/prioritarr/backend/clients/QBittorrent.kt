@@ -22,7 +22,7 @@ class QBitClient(
     private val password: String = "",
     private val http: HttpClient,
 ) : DownloadClient {
-    override val clientName: String = "qbit"
+    override val clientName: String = org.yoshiz.app.prioritarr.backend.DownloadClientName.QBIT.wire
 
     override suspend fun pauseOne(clientId: String) = pause(listOf(clientId))
     override suspend fun resumeOne(clientId: String) = resume(listOf(clientId))

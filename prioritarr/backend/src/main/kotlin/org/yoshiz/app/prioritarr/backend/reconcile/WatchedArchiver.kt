@@ -111,7 +111,7 @@ class WatchedArchiver(
                         deleted++
                         try {
                             db.appendAudit(
-                                action = "watched_archived",
+                                action = org.yoshiz.app.prioritarr.backend.AuditAction.WATCHED_ARCHIVED,
                                 seriesId = seriesId,
                                 client = null,
                                 clientId = null,
