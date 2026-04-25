@@ -165,7 +165,7 @@ data class SettingsRedacted(
     val traktUnmonitorEnabled: Boolean = false,
     val traktUnmonitorIntervalHours: Int = 6,
     val traktUnmonitorSkipSpecials: Boolean = false,
-    val traktUnmonitorProtectTag: String = "prioritarr-no-unmonitor",
+    val traktUnmonitorProtectTag: String = org.yoshiz.app.prioritarr.backend.DEFAULT_PROTECT_TAG,
     // Scheduler cadences — see [Intervals]. All live-editable.
     val intervals: IntervalsWire = IntervalsWire(),
     val orphanReaperIntervalMinutes: Int = 60,

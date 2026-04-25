@@ -4,7 +4,7 @@ import {
 } from 'lucide-react'
 
 import { navigate, useRoute, type SettingsSection } from '../hooks/useHashRoute'
-import { JOBS, JOBS_BY_ID, JOB_DISPLAY_ORDER, TRIGGER_CLASS, TRIGGER_LABEL, buildCadencePatch, readPath, type JobMeta, type JobSetting } from '../lib/jobs'
+import { DEFAULT_PROTECT_TAG, JOBS, JOBS_BY_ID, JOB_DISPLAY_ORDER, TRIGGER_CLASS, TRIGGER_LABEL, buildCadencePatch, readPath, type JobMeta, type JobSetting } from '../lib/jobs'
 import {
   useArchiveSweep,
   useBandwidth,
@@ -2203,7 +2203,7 @@ function TraktUnmonitorPanel() {
     traktUnmonitorIntervalHours?: number
   }
   const enabled = s.traktUnmonitorEnabled ?? false
-  const tag = s.traktUnmonitorProtectTag ?? 'prioritarr-no-unmonitor'
+  const tag = s.traktUnmonitorProtectTag ?? DEFAULT_PROTECT_TAG
   const [tagDraft, setTagDraft] = useState(tag)
   useEffect(() => { setTagDraft(tag) }, [tag])
   const tagDirty = tagDraft.trim() !== tag.trim() && tagDraft.trim().length > 0

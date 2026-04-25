@@ -94,7 +94,7 @@ private suspend inline fun trackJob(
             jobId = jobId,
             startedAt = started,
             finishedAt = java.time.Instant.now(),
-            status = if (out.noop) "noop" else "ok",
+            status = (if (out.noop) JobStatus.NOOP else JobStatus.OK).wire,
             summary = out.summary,
         )
     } catch (e: Exception) {
@@ -106,7 +106,7 @@ private suspend inline fun trackJob(
             jobId = jobId,
             startedAt = started,
             finishedAt = java.time.Instant.now(),
-            status = "error",
+            status = JobStatus.ERROR.wire,
             errorMessage = msg,
         )
         logger.warn("$jobId: ${e.message}")
@@ -376,7 +376,7 @@ fun main() {
     // changes propagate within at most one full interval — no restart.
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_mappings crashed", e) }) {
         while (isActive) {
-            trackJob(db, "refresh-mappings") {
+            trackJob(db, JobId.REFRESH_MAPPINGS) {
                 org.yoshiz.app.prioritarr.backend.mapping.refreshMappings(sonarr, tautulli, cache, mappings)
                 state.eventBus.publish("mapping-refreshed", kotlinx.serialization.json.JsonNull)
                 JobOutcome()
@@ -386,7 +386,7 @@ fun main() {
     }
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_series_cache crashed", e) }) {
         while (isActive) {
-            trackJob(db, "refresh-series-cache") {
+            trackJob(db, JobId.REFRESH_SERIES_CACHE) {
                 org.yoshiz.app.prioritarr.backend.series.refreshSeriesCache(sonarr, db)
                 JobOutcome()
             }
@@ -396,7 +396,7 @@ fun main() {
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_episode_cache crashed", e) }) {
         delay(30_000)
         while (isActive) {
-            trackJob(db, "refresh-episode-cache") {
+            trackJob(db, JobId.REFRESH_EPISODE_CACHE) {
                 org.yoshiz.app.prioritarr.backend.series.refreshEpisodeCache(sonarr, db)
                 JobOutcome()
             }
@@ -406,7 +406,7 @@ fun main() {
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("reconcile crashed", e) }) {
         while (isActive) {
             val s = liveSettings(db, settings)
-            trackJob(db, "reconcile") {
+            trackJob(db, JobId.RECONCILE) {
                 val lookup = org.yoshiz.app.prioritarr.backend.reconcile.fetchSonarrQueueLookup(sonarr)
                 org.yoshiz.app.prioritarr.backend.reconcile.reconcileQbit(
                     qbit, db, lookup, priorityService, s.dryRun,
@@ -421,7 +421,7 @@ fun main() {
     }
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_priorities crashed", e) }) {
         while (isActive) {
-            trackJob(db, "refresh-priorities") {
+            trackJob(db, JobId.REFRESH_PRIORITIES) {
                 org.yoshiz.app.prioritarr.backend.priority.refreshAllPriorities(sonarr, priorityService)
                 JobOutcome()
             }
@@ -437,7 +437,7 @@ fun main() {
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("queue_janitor crashed", e) }) {
         while (isActive) {
             val s = liveSettings(db, settings)
-            trackJob(db, "queue-janitor") {
+            trackJob(db, JobId.QUEUE_JANITOR) {
                 queueJanitor.sweep(dryRun = s.dryRun)
                 JobOutcome()
             }
@@ -448,7 +448,7 @@ fun main() {
         delay(2L * 60L * 1000L)
         while (isActive) {
             val s = liveSettings(db, settings)
-            trackJob(db, "unmonitored-reaper") {
+            trackJob(db, JobId.UNMONITORED_REAPER) {
                 unmonitoredReaper.sweep(dryRun = s.dryRun)
                 JobOutcome()
             }
@@ -466,7 +466,7 @@ fun main() {
         delay(15L * 60L * 1000L)
         while (isActive) {
             val s = liveSettings(db, settings)
-            trackJob(db, "trakt-unmonitor") {
+            trackJob(db, JobId.TRAKT_UNMONITOR) {
                 if (!s.traktUnmonitor.enabled) {
                     JobOutcome(summary = "scheduler disabled", noop = true)
                 } else {
@@ -489,7 +489,7 @@ fun main() {
             // and series cache time to warm before we touch tokens.
             delay(30L * 60L * 1000L)
             while (isActive) {
-                trackJob(db, "trakt-token-refresh") {
+                trackJob(db, JobId.TRAKT_TOKEN_REFRESH) {
                     val current = readEditableOverride(db)
                     val expiresIso = current.traktTokenExpiresAt?.takeIf { it.isNotBlank() }
                         ?: settings.traktTokenExpiresAt?.takeIf { it.isNotBlank() }
@@ -524,7 +524,7 @@ fun main() {
         delay(10L * 60L * 1000L)  // stagger 10 min after boot
         while (isActive) {
             val s = liveSettings(db, settings)
-            trackJob(db, "watched-archiver") {
+            trackJob(db, JobId.WATCHED_ARCHIVER) {
                 if (!s.archive.watchedEnabled) {
                     JobOutcome(summary = "watched_enabled=false", noop = true)
                 } else {
@@ -542,7 +542,7 @@ fun main() {
         delay(5L * 60L * 1000L)
         while (isActive) {
             val s = liveSettings(db, settings)
-            trackJob(db, "orphan-reaper") {
+            trackJob(db, JobId.ORPHAN_REAPER) {
                 orphanReaper.sweep(dryRun = s.dryRun)
                 JobOutcome()
             }
@@ -552,7 +552,7 @@ fun main() {
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("backfill_sweep crashed", e) }) {
         while (isActive) {
             val s = liveSettings(db, settings)
-            trackJob(db, "backfill-sweep") {
+            trackJob(db, JobId.BACKFILL_SWEEP) {
                 org.yoshiz.app.prioritarr.backend.sweep.runBackfillSweep(
                     sonarr, priorityService,
                     maxSearches = s.intervals.backfillMaxSearchesPerSweep,
@@ -567,7 +567,7 @@ fun main() {
     scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("cutoff_sweep crashed", e) }) {
         while (isActive) {
             val s = liveSettings(db, settings)
-            trackJob(db, "cutoff-sweep") {
+            trackJob(db, JobId.CUTOFF_SWEEP) {
                 org.yoshiz.app.prioritarr.backend.sweep.runCutoffSweep(
                     sonarr, priorityService,
                     maxSearches = s.intervals.cutoffMaxSearchesPerSweep,

@@ -43,7 +43,7 @@ class TraktClient(
     private val clientId: String,
     initialAccessToken: String,
     private val http: HttpClient,
-    private val baseUrl: String = "https://api.trakt.tv",
+    private val baseUrl: String = org.yoshiz.app.prioritarr.backend.TraktApi.BASE_URL,
     /**
      * Optional refresh callback. When a Trakt call returns 401, the
      * client invokes this once and retries. The callback should mint a
@@ -236,7 +236,7 @@ class TraktOAuth(
     private val clientId: String,
     private val clientSecret: String,
     private val http: HttpClient,
-    private val baseUrl: String = "https://api.trakt.tv",
+    private val baseUrl: String = org.yoshiz.app.prioritarr.backend.TraktApi.BASE_URL,
 ) {
     /** Begin a device-code flow. Returns the activation details to show the user. */
     suspend fun begin(): JsonObject = http.post("$baseUrl/oauth/device/code") {

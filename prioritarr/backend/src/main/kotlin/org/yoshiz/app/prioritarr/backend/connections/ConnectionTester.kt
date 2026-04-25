@@ -20,6 +20,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.yoshiz.app.prioritarr.backend.ConnectionTestStatus
+import org.yoshiz.app.prioritarr.backend.TraktApi
 
 /**
  * Connection test result. Shape is shared with the frontend wire
@@ -27,11 +29,11 @@ import kotlinx.serialization.json.jsonPrimitive
  * special-casing per service.
  *
  * `status` semantics:
- *   - "connected"         → upstream reachable AND auth accepted AND
+ *   - ConnectionTestStatus.CONNECTED.wire         → upstream reachable AND auth accepted AND
  *                            response parses as expected
- *   - "connection-failed" → can't reach the host (DNS, refused, timeout)
- *   - "auth-failed"       → reached the host but credentials rejected
- *   - "version-failed"    → reached + auth ok BUT response doesn't
+ *   - ConnectionTestStatus.CONNECTION_FAILED.wire → can't reach the host (DNS, refused, timeout)
+ *   - ConnectionTestStatus.AUTH_FAILED.wire       → reached the host but credentials rejected
+ *   - ConnectionTestStatus.VERSION_FAILED.wire    → reached + auth ok BUT response doesn't
  *                            match the schema we expect (wrong path
  *                            or unsupported upstream version)
  */
@@ -59,13 +61,13 @@ private fun testClient(): HttpClient = HttpClient(CIO) {
 
 private fun normalize(url: String): String = url.trimEnd('/')
 
-/** Convert any exception into a "connection-failed" result with a short reason. */
+/** Convert any exception into a ConnectionTestStatus.CONNECTION_FAILED.wire result with a short reason. */
 private fun connectionFailure(e: Throwable): ConnectionTestResult {
     val msg = (e.message ?: e::class.simpleName ?: "unknown error")
         // Strip Ktor-specific prefixes that don't help the user.
         .replace("Connect timeout has expired ", "Timeout: ")
         .take(200)
-    return ConnectionTestResult(ok = false, status = "connection-failed", detail = msg)
+    return ConnectionTestResult(ok = false, status = ConnectionTestStatus.CONNECTION_FAILED.wire, detail = msg)
 }
 
 /**
@@ -82,19 +84,19 @@ suspend fun testSonarr(rawUrl: String, apiKey: String): ConnectionTestResult = t
         in 200..299 -> {
             val body = try { resp.body<JsonObject>() }
             catch (_: Throwable) {
-                return@use ConnectionTestResult(false, "version-failed",
+                return@use ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire,
                     "Reached upstream but the response wasn't JSON — wrong URL path or unsupported Sonarr version.")
             }
             val version = body["version"]?.jsonPrimitive?.contentOrNull
             if (version == null) {
-                ConnectionTestResult(false, "version-failed", "Response missing `version` — likely wrong upstream.")
+                ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Response missing `version` — likely wrong upstream.")
             } else {
-                ConnectionTestResult(true, "connected", version = version)
+                ConnectionTestResult(true, ConnectionTestStatus.CONNECTED.wire, version = version)
             }
         }
-        401, 403 -> ConnectionTestResult(false, "auth-failed", "API key rejected (HTTP ${resp.status.value}).")
-        404 -> ConnectionTestResult(false, "version-failed", "404 — wrong URL path or Sonarr v2 (we need v3).")
-        else -> ConnectionTestResult(false, "version-failed", "Unexpected HTTP ${resp.status.value}.")
+        401, 403 -> ConnectionTestResult(false, ConnectionTestStatus.AUTH_FAILED.wire, "API key rejected (HTTP ${resp.status.value}).")
+        404 -> ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "404 — wrong URL path or Sonarr v2 (we need v3).")
+        else -> ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Unexpected HTTP ${resp.status.value}.")
     }
 }
 
@@ -113,23 +115,23 @@ suspend fun testTautulli(rawUrl: String, apiKey: String): ConnectionTestResult =
         }
     } catch (e: Throwable) { return@use connectionFailure(e) }
     if (resp.status.value !in 200..299) {
-        return@use ConnectionTestResult(false, "version-failed", "HTTP ${resp.status.value}.")
+        return@use ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "HTTP ${resp.status.value}.")
     }
     val body = try { resp.body<JsonObject>() }
     catch (_: Throwable) {
-        return@use ConnectionTestResult(false, "version-failed",
+        return@use ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire,
             "Reached upstream but the response wasn't JSON — wrong URL path or unsupported Tautulli version.")
     }
     val response = body["response"]?.jsonObject
-        ?: return@use ConnectionTestResult(false, "version-failed", "Missing `response` object.")
+        ?: return@use ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Missing `response` object.")
     val result = response["result"]?.jsonPrimitive?.contentOrNull
     when (result) {
-        "success" -> ConnectionTestResult(true, "connected")
+        "success" -> ConnectionTestResult(true, ConnectionTestStatus.CONNECTED.wire)
         "error" -> {
             val msg = response["message"]?.jsonPrimitive?.contentOrNull.orEmpty()
-            ConnectionTestResult(false, "auth-failed", msg.ifBlank { "API key rejected by Tautulli." })
+            ConnectionTestResult(false, ConnectionTestStatus.AUTH_FAILED.wire, msg.ifBlank { "API key rejected by Tautulli." })
         }
-        else -> ConnectionTestResult(false, "version-failed", "Unknown result: $result")
+        else -> ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Unknown result: $result")
     }
 }
 
@@ -152,7 +154,7 @@ suspend fun testQbit(rawUrl: String, username: String, password: String): Connec
     } catch (e: Throwable) { return@use connectionFailure(e) }
     val body = try { resp.bodyAsText().trim() } catch (_: Throwable) { "" }
     when {
-        resp.status.value == 403 -> ConnectionTestResult(false, "auth-failed", "qBit returned 403 — IP banned, or WebUI auth disabled but no host whitelisted.")
+        resp.status.value == 403 -> ConnectionTestResult(false, ConnectionTestStatus.AUTH_FAILED.wire, "qBit returned 403 — IP banned, or WebUI auth disabled but no host whitelisted.")
         body == "Ok." -> {
             // Probe the version too so the UI can show something useful.
             val v = try {
@@ -160,11 +162,11 @@ suspend fun testQbit(rawUrl: String, username: String, password: String): Connec
                     header("Cookie", resp.headers["set-cookie"] ?: "")
                 }.bodyAsText().trim()
             } catch (_: Throwable) { null }
-            ConnectionTestResult(true, "connected", version = v)
+            ConnectionTestResult(true, ConnectionTestStatus.CONNECTED.wire, version = v)
         }
-        body == "Fails." -> ConnectionTestResult(false, "auth-failed", "Username or password rejected.")
-        resp.status.value !in 200..299 -> ConnectionTestResult(false, "version-failed", "HTTP ${resp.status.value}.")
-        else -> ConnectionTestResult(false, "version-failed", "Unexpected response: ${body.take(80)}")
+        body == "Fails." -> ConnectionTestResult(false, ConnectionTestStatus.AUTH_FAILED.wire, "Username or password rejected.")
+        resp.status.value !in 200..299 -> ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "HTTP ${resp.status.value}.")
+        else -> ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Unexpected response: ${body.take(80)}")
     }
 }
 
@@ -179,20 +181,20 @@ suspend fun testSab(rawUrl: String, apiKey: String): ConnectionTestResult = test
         }
     } catch (e: Throwable) { return@use connectionFailure(e) }
     if (resp.status.value !in 200..299) {
-        return@use ConnectionTestResult(false, "version-failed", "HTTP ${resp.status.value}.")
+        return@use ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "HTTP ${resp.status.value}.")
     }
     val raw = try { resp.bodyAsText() } catch (_: Throwable) { "" }
     // SAB returns plain "API key incorrect" (not JSON) when the key is wrong.
     if (raw.contains("API key", ignoreCase = true) && raw.contains("incorrect", ignoreCase = true)) {
-        return@use ConnectionTestResult(false, "auth-failed", "API key rejected by SABnzbd.")
+        return@use ConnectionTestResult(false, ConnectionTestStatus.AUTH_FAILED.wire, "API key rejected by SABnzbd.")
     }
     val body = try { Json.parseToJsonElement(raw) as JsonObject }
     catch (_: Throwable) {
-        return@use ConnectionTestResult(false, "version-failed", "Reached upstream but the response wasn't JSON — wrong URL path or auth disabled.")
+        return@use ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Reached upstream but the response wasn't JSON — wrong URL path or auth disabled.")
     }
     val version = body["version"]?.jsonPrimitive?.contentOrNull
-    if (version != null) ConnectionTestResult(true, "connected", version = version)
-    else ConnectionTestResult(false, "version-failed", "Missing `version` field — wrong upstream.")
+    if (version != null) ConnectionTestResult(true, ConnectionTestStatus.CONNECTED.wire, version = version)
+    else ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Missing `version` field — wrong upstream.")
 }
 
 /** Plex: GET /identity with X-Plex-Token. XML response with MediaContainer root. */
@@ -211,19 +213,19 @@ suspend fun testPlex(rawUrl: String, token: String): ConnectionTestResult = test
                 // Try to extract version from the XML attribute. Cheap regex
                 // — full XML parser is overkill for an attribute scrape.
                 val v = Regex("""version="([^"]+)"""").find(raw)?.groupValues?.get(1)
-                ConnectionTestResult(true, "connected", version = v)
+                ConnectionTestResult(true, ConnectionTestStatus.CONNECTED.wire, version = v)
             } else {
-                ConnectionTestResult(false, "version-failed", "Reached upstream but body didn't look like Plex.")
+                ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Reached upstream but body didn't look like Plex.")
             }
         }
-        401 -> ConnectionTestResult(false, "auth-failed", "Plex token rejected (HTTP 401).")
-        else -> ConnectionTestResult(false, "version-failed", "HTTP ${resp.status.value}.")
+        401 -> ConnectionTestResult(false, ConnectionTestStatus.AUTH_FAILED.wire, "Plex token rejected (HTTP 401).")
+        else -> ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "HTTP ${resp.status.value}.")
     }
 }
 
 /** Trakt: GET /users/me with the configured client_id + access token. */
 suspend fun testTrakt(clientId: String, accessToken: String): ConnectionTestResult = testClient().use { http ->
-    val url = "https://api.trakt.tv/users/me"
+    val url = "${TraktApi.BASE_URL}/users/me"
     val resp: HttpResponse = try {
         http.get(url) {
             header("trakt-api-version", "2")
@@ -235,14 +237,14 @@ suspend fun testTrakt(clientId: String, accessToken: String): ConnectionTestResu
         in 200..299 -> {
             val body = try { resp.body<JsonObject>() }
             catch (_: Throwable) {
-                return@use ConnectionTestResult(false, "version-failed", "Trakt response wasn't JSON.")
+                return@use ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Trakt response wasn't JSON.")
             }
             val username = body["username"]?.jsonPrimitive?.contentOrNull
-            if (username != null) ConnectionTestResult(true, "connected", detail = "Logged in as @$username")
-            else ConnectionTestResult(false, "version-failed", "Trakt response missing `username`.")
+            if (username != null) ConnectionTestResult(true, ConnectionTestStatus.CONNECTED.wire, detail = "Logged in as @$username")
+            else ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Trakt response missing `username`.")
         }
-        401 -> ConnectionTestResult(false, "auth-failed", "Access token rejected — refresh or reconnect.")
-        403 -> ConnectionTestResult(false, "auth-failed", "Forbidden — client_id mismatch with token.")
-        else -> ConnectionTestResult(false, "version-failed", "HTTP ${resp.status.value}.")
+        401 -> ConnectionTestResult(false, ConnectionTestStatus.AUTH_FAILED.wire, "Access token rejected — refresh or reconnect.")
+        403 -> ConnectionTestResult(false, ConnectionTestStatus.AUTH_FAILED.wire, "Forbidden — client_id mismatch with token.")
+        else -> ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "HTTP ${resp.status.value}.")
     }
 }

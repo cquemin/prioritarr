@@ -23,6 +23,13 @@ import type { ReactNode } from 'react'
 
 export type JobTrigger = 'auto+manual' | 'auto' | 'event' | 'manual'
 
+/**
+ * Default name for the Sonarr tag that exempts a series from the
+ * Trakt→Sonarr unmonitor reconciler. Mirrors the backend
+ * `DEFAULT_PROTECT_TAG` constant — keep in sync.
+ */
+export const DEFAULT_PROTECT_TAG = 'prioritarr-no-unmonitor'
+
 export interface JobMeta {
   /** URL slug — `#/settings/jobs/<id>`. */
   id: string
@@ -160,7 +167,7 @@ export const JOBS: ReadonlyArray<JobMeta> = [
     settings: [
       { key: 'traktUnmonitorEnabled', label: 'Enabled', type: 'boolean', hint: 'Off by default. The manual trigger ignores this flag.' },
       { key: 'traktUnmonitorSkipSpecials', label: 'Skip specials (S00)', type: 'boolean', hint: 'Skip season 0 entirely. Default off.' },
-      { key: 'traktUnmonitorProtectTag', label: 'Protect tag', type: 'string', hint: 'Sonarr tag whose presence excludes a series from this job. Defaults to prioritarr-no-unmonitor.' },
+      { key: 'traktUnmonitorProtectTag', label: 'Protect tag', type: 'string', hint: `Sonarr tag whose presence excludes a series from this job. Defaults to ${DEFAULT_PROTECT_TAG}.` },
     ],
   },
   {

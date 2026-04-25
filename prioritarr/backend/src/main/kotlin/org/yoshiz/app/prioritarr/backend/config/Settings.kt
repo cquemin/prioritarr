@@ -158,7 +158,7 @@ data class TraktUnmonitorSettings(
     val enabled: Boolean = false,
     val intervalHours: Int = 6,
     val skipSpecials: Boolean = false,
-    val protectTag: String = "prioritarr-no-unmonitor",
+    val protectTag: String = org.yoshiz.app.prioritarr.backend.DEFAULT_PROTECT_TAG,
 )
 
 // YAML overlay is parsed as a generic Map<String, Any> — Hoplite was
