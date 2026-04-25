@@ -26,6 +26,8 @@ import java.time.Instant
  *   - trakt + tvdb id     → required for Trakt side. Missing → skip.
  * One missing side disables that direction; the other still runs.
  */
+enum class SyncDirection { BOTH, PLEX_TO_TRAKT, TRAKT_TO_PLEX }
+
 class CrossSourceSync(
     private val sonarr: SonarrClient,
     private val plex: PlexClient?,
@@ -43,8 +45,17 @@ class CrossSourceSync(
      *
      * `dryRun=true` plans the diff and returns counts but skips both
      * the Plex scrobbles and the Trakt POST. Logs what would happen.
+     *
+     * `direction` restricts writes to one leg (e.g. PLEX_TO_TRAKT
+     * skips Plex scrobbles — useful when Trakt is the source of
+     * truth and you don't want a Plex scrobble webhook looping back
+     * and creating a duplicate view entry in Trakt).
      */
-    suspend fun syncSeries(seriesId: Long, dryRun: Boolean): SeriesSyncReport {
+    suspend fun syncSeries(
+        seriesId: Long,
+        dryRun: Boolean,
+        direction: SyncDirection = SyncDirection.BOTH,
+    ): SeriesSyncReport {
         val sonarrSeries = try {
             sonarr.getSeries(seriesId)
         } catch (e: Exception) {
@@ -130,7 +141,8 @@ class CrossSourceSync(
         val pushedToTrakt = mutableListOf<EpisodeRef>()
 
         // ---- write to Plex ----
-        if (plex != null && plexKey != null && toPushToPlex.isNotEmpty()) {
+        if (direction != SyncDirection.PLEX_TO_TRAKT &&
+            plex != null && plexKey != null && toPushToPlex.isNotEmpty()) {
             for ((s, e) in toPushToPlex) {
                 val rk = plexRatingKeyByEpisode[s to e]
                 if (rk == null) {
@@ -152,7 +164,8 @@ class CrossSourceSync(
         }
 
         // ---- write to Trakt ----
-        if (trakt != null && traktShowId != null && toPushToTrakt.isNotEmpty()) {
+        if (direction != SyncDirection.TRAKT_TO_PLEX &&
+            trakt != null && traktShowId != null && toPushToTrakt.isNotEmpty()) {
             for ((s, e) in toPushToTrakt) pushedToTrakt += EpisodeRef(season = s, number = e)
             if (!dryRun) {
                 try {

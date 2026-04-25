@@ -7,10 +7,12 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.JsonArray
@@ -125,6 +127,76 @@ class SonarrClient(
     suspend fun deleteEpisodeFile(episodeFileId: Long) {
         http.delete("$root/api/v3/episodefile/$episodeFileId") {
             header("X-Api-Key", apiKey)
+        }.body<JsonElement?>()
+    }
+
+    /**
+     * List all Sonarr tags. Returns `[{id, label}, ...]`.
+     */
+    suspend fun listTags(): JsonArray = get("/api/v3/tag").jsonArray
+
+    /**
+     * Create a Sonarr tag with the given label. Returns the created
+     * object (including its assigned id). Sonarr returns 400 if the
+     * label is empty or already exists; callers should use
+     * [getOrCreateTag] to avoid the duplicate path.
+     */
+    suspend fun createTag(label: String): JsonObject =
+        post("/api/v3/tag", buildJsonObject { put("label", label) }) as JsonObject
+
+    /**
+     * Look up a tag by label (case-insensitive match). Returns the
+     * tag's id if it exists, or creates one and returns the new id.
+     * Safe to call on every reconciler tick — Sonarr's tag list is
+     * tiny and the result is memoised by the caller if desired.
+     */
+    suspend fun getOrCreateTag(label: String): Int {
+        val existing = listTags()
+            .map { it.jsonObject }
+            .firstOrNull { (it["label"]?.jsonPrimitive?.contentOrNull ?: "").equals(label, ignoreCase = true) }
+        if (existing != null) {
+            return existing["id"]!!.jsonPrimitive.content.toInt()
+        }
+        val created = createTag(label)
+        return created["id"]!!.jsonPrimitive.content.toInt()
+    }
+
+    /**
+     * Apply (or remove) a tag across multiple series atomically via
+     * Sonarr's series editor endpoint. `mode` is "add" or "remove" —
+     * either is idempotent: re-adding an already-present tag is a
+     * no-op, removing an absent one is a no-op. Passing "replace"
+     * would clobber other tags; we never want that.
+     */
+    suspend fun bulkApplySeriesTag(seriesIds: List<Long>, tagId: Int, mode: String) {
+        require(mode == "add" || mode == "remove") { "mode must be 'add' or 'remove'" }
+        if (seriesIds.isEmpty()) return
+        val body = buildJsonObject {
+            putJsonArray("seriesIds") { seriesIds.forEach { add(it) } }
+            putJsonArray("tags") { add(tagId) }
+            put("applyTags", mode)
+        }
+        http.put("$root/api/v3/series/editor") {
+            header("X-Api-Key", apiKey)
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }.body<JsonElement?>()
+    }
+
+    /**
+     * Bulk monitor-flag flip across multiple episodes. Sonarr accepts
+     * up to ~500 ids per request; the reconciler only deals with one
+     * series at a time so it stays well under that.
+     */
+    suspend fun setEpisodesMonitored(episodeIds: List<Long>, monitored: Boolean) {
+        if (episodeIds.isEmpty()) return
+        http.put("$root/api/v3/episode/monitor") {
+            header("X-Api-Key", apiKey)
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject {
+                put("episodeIds", buildJsonArray { episodeIds.forEach { add(it) } })
+                put("monitored", monitored)
+            })
         }.body<JsonElement?>()
     }
 
