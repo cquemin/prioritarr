@@ -3,6 +3,7 @@ import {
   Settings as SettingsIcon, Plug, Gauge, ListOrdered, RefreshCw, Link2, Webhook, Box,
 } from 'lucide-react'
 
+import { TableSkeleton } from '../components/Skeleton'
 import { navigate, useRoute, type SettingsSection } from '../hooks/useHashRoute'
 import { DEFAULT_PROTECT_TAG, JOBS, JOBS_BY_ID, JOB_DISPLAY_ORDER, TRIGGER_CLASS, TRIGGER_LABEL, buildCadencePatch, readPath, type JobMeta, type JobSetting } from '../lib/jobs'
 import {
@@ -366,7 +367,12 @@ function CredentialsGrid({
               className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
             />
             {!f.secret && live && draftVal === '' && (
-              <span className="opacity-50">current: <code>{String(live)}</code></span>
+              // Long values (Trakt's 64-char clientId, full URLs)
+              // overflow the card if not wrapped — break-all keeps
+              // them inside even when there are no whitespace breaks.
+              <span className="opacity-50 text-xs break-all">
+                current: <code className="font-mono">{String(live)}</code>
+              </span>
             )}
           </label>
         )
@@ -1916,7 +1922,12 @@ function OrphanReaperPanel() {
             {lastDelete && <>last delete: {lastDelete.ts.slice(0, 19)}</>}
           </div>
         </div>
-        {kept.length === 0 ? (
+        {orphans.isLoading ? (
+          // 500 audit rows means the GET takes a beat — show a
+          // skeleton instead of jumping from "Needs review (0)" to
+          // a full table on settle. Same chrome as Series/Audit.
+          <TableSkeleton rows={6} cols={7} />
+        ) : kept.length === 0 ? (
           <p className="text-xs opacity-60">Nothing flagged — every orphan was either deleted or imported.</p>
         ) : (
           <KeptOrphanTable rows={kept} />
