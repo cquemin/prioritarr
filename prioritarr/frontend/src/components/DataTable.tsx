@@ -11,16 +11,19 @@ import {
   type Column,
   type ColumnDef,
   type ColumnFiltersState,
+  type PaginationState,
   type Row,
   type RowSelectionState,
   type SortingState,
+  type Table as TableInstance,
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
+  getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
 } from '@tanstack/react-table'
-import { ArrowDown, ArrowUp, ArrowUpDown } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { humanize } from '../lib/humanize'
@@ -65,17 +68,32 @@ export interface DataTableProps<T> {
   enableSelection?: boolean
   onSelectionChange?: (selected: T[]) => void
   emptyMessage?: string
+  /**
+   * Default page size. Pass `0` (or `false`) to disable pagination
+   * entirely (rare — only for short fixed-size lists). The user can
+   * pick a different page size from the footer dropdown.
+   */
+  defaultPageSize?: number
+  /** Custom page-size choices for the footer dropdown. */
+  pageSizeOptions?: number[]
 }
 
 export function DataTable<T>(props: DataTableProps<T>) {
   const {
     data, columns, rowKey, onRowClick,
     enableSelection = false, onSelectionChange, emptyMessage = 'No rows',
+    defaultPageSize = 50,
+    pageSizeOptions = [25, 50, 100, 200],
   } = props
+  const paginationEnabled = defaultPageSize > 0
 
   const [sorting, setSorting] = useState<SortingState>([])
   const [filters, setFilters] = useState<ColumnFiltersState>([])
   const [selection, setSelection] = useState<RowSelectionState>({})
+  const [pagination, setPagination] = useState<PaginationState>({
+    pageIndex: 0,
+    pageSize: paginationEnabled ? defaultPageSize : 999_999,
+  })
 
   // Inject the right filterFn for any column whose meta declares a
   // non-text filter, so callers don't have to repeat themselves.
@@ -109,14 +127,16 @@ export function DataTable<T>(props: DataTableProps<T>) {
     data,
     columns: tableColumns,
     getRowId: (row) => String(rowKey(row)),
-    state: { sorting, columnFilters: filters, rowSelection: selection },
+    state: { sorting, columnFilters: filters, rowSelection: selection, pagination },
     onSortingChange: setSorting,
     onColumnFiltersChange: setFilters,
     onRowSelectionChange: setSelection,
+    onPaginationChange: setPagination,
     enableRowSelection: enableSelection,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    getPaginationRowModel: paginationEnabled ? getPaginationRowModel() : undefined,
   })
 
   // Push selection out. We map ids → original rows so consumers don't
@@ -183,6 +203,84 @@ export function DataTable<T>(props: DataTableProps<T>) {
           )}
         </tbody>
       </table>
+      {paginationEnabled && data.length > 0 && (
+        <PaginationFooter table={table} pageSizeOptions={pageSizeOptions} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Pagination footer rendered when [paginationEnabled] is true. Stacks
+ * vertically on mobile (< sm) — page-size selector on top, range +
+ * navigation buttons below — to keep things readable on narrow screens.
+ */
+function PaginationFooter<T>({
+  table, pageSizeOptions,
+}: { table: TableInstance<T>; pageSizeOptions: number[] }) {
+  const state = table.getState().pagination
+  const filteredCount = table.getFilteredRowModel().rows.length
+  const start = state.pageIndex * state.pageSize + 1
+  const end = Math.min((state.pageIndex + 1) * state.pageSize, filteredCount)
+  const totalPages = table.getPageCount()
+  return (
+    <div className="border-t border-surface-3 px-3 py-2 flex flex-col sm:flex-row sm:items-center gap-2 text-xs">
+      <div className="flex items-center gap-2">
+        <label className="opacity-70">Rows per page:</label>
+        <select
+          value={state.pageSize}
+          onChange={(e) => table.setPageSize(Number(e.target.value))}
+          className="bg-surface-3 border border-surface-2 rounded px-1 py-0.5"
+        >
+          {pageSizeOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </div>
+      <div className="opacity-70 sm:ml-auto">
+        {filteredCount === 0
+          ? '0 rows'
+          : `${start.toLocaleString()}–${end.toLocaleString()} of ${filteredCount.toLocaleString()}`}
+      </div>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => table.firstPage()}
+          disabled={!table.getCanPreviousPage()}
+          className="p-1 rounded hover:bg-surface-3 disabled:opacity-30 disabled:hover:bg-transparent"
+          aria-label="First page"
+        >
+          <ChevronsLeft size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={() => table.previousPage()}
+          disabled={!table.getCanPreviousPage()}
+          className="p-1 rounded hover:bg-surface-3 disabled:opacity-30 disabled:hover:bg-transparent"
+          aria-label="Previous page"
+        >
+          <ChevronLeft size={14} />
+        </button>
+        <span className="px-2 tabular-nums opacity-80">
+          {state.pageIndex + 1} / {Math.max(totalPages, 1)}
+        </span>
+        <button
+          type="button"
+          onClick={() => table.nextPage()}
+          disabled={!table.getCanNextPage()}
+          className="p-1 rounded hover:bg-surface-3 disabled:opacity-30 disabled:hover:bg-transparent"
+          aria-label="Next page"
+        >
+          <ChevronRight size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={() => table.lastPage()}
+          disabled={!table.getCanNextPage()}
+          className="p-1 rounded hover:bg-surface-3 disabled:opacity-30 disabled:hover:bg-transparent"
+          aria-label="Last page"
+        >
+          <ChevronsRight size={14} />
+        </button>
+      </div>
     </div>
   )
 }
