@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import {
   Settings as SettingsIcon, Plug, Gauge, ListOrdered, RefreshCw, Link2, Webhook, Box,
 } from 'lucide-react'
@@ -410,6 +410,23 @@ function ConnectionCard({
     }
     test.mutate({ service, body })
   }
+
+  // Auto-run a test on mount when the card has stored credentials —
+  // the badge state lives in component memory and would otherwise
+  // disappear on every page reload, making cards always look untested.
+  // Fires once per mount; future re-tests stay user-driven.
+  const allCredsPresent = fields.every((f) => {
+    const live = current?.[f.key]
+    return live != null && live !== ''
+  })
+  const autoTestFiredRef = React.useRef(false)
+  useEffect(() => {
+    if (autoTestFiredRef.current) return
+    if (!allCredsPresent) return
+    autoTestFiredRef.current = true
+    test.mutate({ service, body: {} })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allCredsPresent])
 
   return (
     <ConnectionCardShell
@@ -2281,6 +2298,18 @@ function TraktAuthPanel() {
   // so the badge is consistent.
   const test = useTestConnection()
 
+  // Auto-run on mount when an access_token is set, so the "Connected"
+  // badge survives page reload (mutation state lives in component
+  // memory; without this the card always looks untested).
+  const autoTestFiredRef = React.useRef(false)
+  useEffect(() => {
+    if (autoTestFiredRef.current) return
+    if (!hasAccessToken) return
+    autoTestFiredRef.current = true
+    test.mutate({ service: 'trakt', body: {} })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAccessToken])
+
   // Local draft for the OAuth-app credentials (clientId / clientSecret).
   // Replaces the now-deleted ServiceCredentialsPanel inputs — the user
   // sets these here on the same card that uses them, no jumping around.
@@ -2317,11 +2346,29 @@ function TraktAuthPanel() {
       title="Trakt"
       description={description}
       statusBadge={statusBadge}
-      banner={(!hasClientId || !hasClientSecret) ? (
-        <div className="text-xs text-amber-300 bg-amber-900/20 border border-amber-800/40 rounded p-2">
-          Set <strong>Client ID</strong> and <strong>Client secret</strong> below, then click <strong>Connect Trakt</strong>.
-        </div>
-      ) : undefined}
+      banner={(() => {
+        // Three states:
+        //   1. Has access_token + missing secret → read calls work
+        //      (Test will pass) but token refresh / OAuth reconnect
+        //      requires the secret. Soft warning.
+        //   2. No access_token + missing creds → blocking. Need both
+        //      ID + secret to run the device-code flow.
+        //   3. All set → no banner.
+        if (hasClientId && hasClientSecret) return undefined
+        if (hasAccessToken && hasClientId && !hasClientSecret) {
+          return (
+            <div className="text-xs text-amber-300 bg-amber-900/20 border border-amber-800/40 rounded p-2">
+              Read calls work (your access_token is valid) but <strong>Client secret</strong> is missing — you won't
+              be able to <strong>refresh tokens</strong> or <strong>reconnect</strong> until you paste it below and Save.
+            </div>
+          )
+        }
+        return (
+          <div className="text-xs text-amber-300 bg-amber-900/20 border border-amber-800/40 rounded p-2">
+            Set <strong>Client ID</strong> and <strong>Client secret</strong> below, then click <strong>Connect Trakt</strong>.
+          </div>
+        )
+      })()}
       inputs={<>
         {/* OAuth app credentials — entered on the same card that uses
             them. Save persists; the actual OAuth dance triggers when
