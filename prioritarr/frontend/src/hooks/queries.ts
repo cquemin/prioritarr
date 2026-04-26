@@ -486,6 +486,36 @@ export function useLibrarySync() {
   })
 }
 
+// ---- Webhook auto-config ----
+export interface WebhookStatus {
+  service: string
+  configured: boolean
+  manual?: boolean
+  url?: string | null
+  name?: string | null
+  detail?: string | null
+}
+
+export function useWebhookStatus(service: string | null) {
+  return useQuery({
+    queryKey: ['webhook-status', service],
+    queryFn: () => rawFetch<WebhookStatus>(`/api/v2/webhooks/${service}/status`),
+    enabled: service != null,
+    refetchInterval: 60_000,
+  })
+}
+
+export function useConfigureWebhook() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (service: string) =>
+      postJson<WebhookStatus>(`/api/v2/webhooks/${service}/configure`),
+    onSuccess: (_d, service) => {
+      qc.invalidateQueries({ queryKey: ['webhook-status', service] })
+    },
+  })
+}
+
 // ---- Connection tester ----
 export interface ConnectionTestResult {
   ok: boolean

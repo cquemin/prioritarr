@@ -4,6 +4,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -883,6 +884,66 @@ fun Route.v2Routes(state: AppState) {
             )
         }
         call.respond(result)
+    }
+
+    // ---- Webhook auto-config ----
+    //
+    // GET  /webhooks/{service}/status     — is our notifier registered?
+    // POST /webhooks/{service}/configure  — register/update idempotently
+    // GET  /webhooks/sab/script           — return the SAB script bytes
+    //                                        (manual setup; no API path)
+    get("/webhooks/{service}/status") {
+        val service = call.parameters["service"]?.lowercase()
+            ?: throw ValidationException("service", "missing")
+        val s = state.settings
+        val result = when (service) {
+            "sonarr" -> org.yoshiz.app.prioritarr.backend.webhooks.getSonarrWebhookStatus(
+                s.sonarrUrl, s.sonarrApiKey, state.httpClients.first(),
+            )
+            "tautulli" -> org.yoshiz.app.prioritarr.backend.webhooks.getTautulliWebhookStatus(
+                s.tautulliUrl, s.tautulliApiKey, state.httpClients.first(),
+            )
+            "sab" -> org.yoshiz.app.prioritarr.backend.webhooks.getSabWebhookStatus()
+            else -> throw ValidationException("service", "unknown service: $service")
+        }
+        call.respond(result)
+    }
+
+    post("/webhooks/{service}/configure") {
+        val service = call.parameters["service"]?.lowercase()
+            ?: throw ValidationException("service", "missing")
+        val s = state.settings
+        val result = when (service) {
+            "sonarr" -> org.yoshiz.app.prioritarr.backend.webhooks.configureSonarrWebhook(
+                s.sonarrUrl, s.sonarrApiKey, s.apiKey, state.httpClients.first(),
+            )
+            "tautulli" -> org.yoshiz.app.prioritarr.backend.webhooks.configureTautulliWebhook(
+                s.tautulliUrl, s.tautulliApiKey, s.apiKey, state.httpClients.first(),
+            )
+            "sab" -> throw ValidationException(
+                "service",
+                "SAB cannot be auto-configured — fetch the script via /webhooks/sab/script and place it in SAB's scripts directory.",
+            )
+            else -> throw ValidationException("service", "unknown service: $service")
+        }
+        call.respond(result)
+    }
+
+    get("/webhooks/sab/script") {
+        // Bundle is in /resources at compile time, lands on the
+        // classpath in the final jar. ClassLoader.getResource serves it.
+        val stream = javaClass.classLoader.getResourceAsStream("sab-notify.sh")
+        if (stream == null) {
+            call.respond(io.ktor.http.HttpStatusCode.InternalServerError, "sab-notify.sh not on classpath")
+            return@get
+        }
+        // Plain text; Content-Disposition so a browser save-as picks
+        // up the right filename.
+        call.response.headers.append(
+            io.ktor.http.HttpHeaders.ContentDisposition,
+            "attachment; filename=\"sab-notify.sh\"",
+        )
+        call.respondText(stream.reader().readText(), io.ktor.http.ContentType("text", "x-shellscript"))
     }
 
     // ---- Trakt OAuth device-code flow ----

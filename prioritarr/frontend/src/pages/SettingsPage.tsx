@@ -10,10 +10,12 @@ import {
   useBandwidth,
   useDeleteOrphans,
   useImportOrphan,
+  useConfigureWebhook,
   useJobRunHistory,
   useJobRuns,
   useLibrarySync,
   useTestConnection,
+  useWebhookStatus,
   useTraktAuthBegin,
   useTraktAuthDisconnect,
   useTraktAuthPoll,
@@ -787,88 +789,120 @@ function MappingsSection() {
 }
 
 function WebhooksSection() {
-  // Read-only docs for now. Each webhook URL is composed at the edge
-  // (Authelia + Traefik strip the prefix before reaching the app), so
-  // surfaces the format the user pastes into Sonarr/SAB/Tautulli.
   return (
     <>
       <SectionHeader
         title="Webhooks"
-        subtitle="Paste these URLs into the upstream services to drive real-time UI updates without polling."
+        subtitle="Outbound webhooks from upstream services that drive real-time UI updates here. Sonarr and Tautulli are auto-configured via API; SABnzbd needs a script file (download below)."
       />
       <WebhookCard
-        name="Sonarr"
-        method="POST"
-        path="/prioritarr/api/sonarr/on-grab"
-        purpose="Real-time grab/import/delete events so prioritarr can record managed downloads and invalidate caches without waiting for the 30-min refresh tick."
-        setup={[
-          'Sonarr → Settings → Connect → Add → Webhook',
-          'URL: paste the path above (Authelia at the edge auto-injects the API key)',
-          'Triggers: Grab, Download, Episode File Delete, Series Delete, Manual Interaction Required, Test',
-        ]}
+        service="sonarr"
+        purpose="Real-time grab / import / delete / manual-interaction events so prioritarr can record managed downloads and invalidate caches without waiting for the 30-min refresh tick."
       />
       <WebhookCard
-        name="SABnzbd"
-        method="POST"
-        path="/prioritarr/api/sab/webhook"
-        query="?nzo_id=$NZO&status=$STATUS&fail_message=$FAIL_MSG"
-        purpose="Post-processing notification so the UI flips download state immediately rather than waiting for the next reconcile."
-        setup={[
-          'SABnzbd → Config → Notifications → Notification Script (or a wrapper script that curls the URL above)',
-          'Pass nzo_id + status + fail_message as query parameters (SAB substitutes the variables automatically)',
-        ]}
-      />
-      <WebhookCard
-        name="Tautulli (Plex)"
-        method="POST"
-        path="/prioritarr/api/plex-event"
+        service="tautulli"
         purpose="Watched-event ingestion — drives priority recompute when you finish an episode in Plex."
-        setup={[
-          'Tautulli → Settings → Notification Agents → Add → Webhook',
-          'URL: paste the path above',
-          'Trigger: Watched (Episode)',
-          'Body: JSON payload (Tautulli has a built-in template; the route reads grandparent_rating_key + media_type)',
-        ]}
       />
+      <SabWebhookCard />
     </>
   )
 }
 
 /**
- * One webhook provider as its own card. Layout: header row with the
- * provider name + an HTTP method chip, the URL on its own monospace
- * row (selectable for one-tap copy), a "what it does" paragraph, and
- * a numbered setup checklist.
+ * Auto-configurable webhook card (Sonarr / Tautulli). Reads live
+ * status from the upstream's notifier API; Configure button POSTs to
+ * /webhooks/{service}/configure which idempotently registers our
+ * notifier with the right URL + headers + triggers.
  */
-function WebhookCard({
-  name, method, path, query, purpose, setup,
-}: {
-  name: string
-  method: string
-  path: string
-  query?: string
-  purpose: string
-  setup: string[]
-}) {
+function WebhookCard({ service, purpose }: { service: string; purpose: string }) {
+  const status = useWebhookStatus(service)
+  const configure = useConfigureWebhook()
+  const data = status.data
+  const configured = data?.configured === true
+
+  const badge = status.isLoading ? (
+    <span className="text-xs opacity-50">Checking…</span>
+  ) : configured ? (
+    <span className="text-xs px-2 py-0.5 rounded bg-green-700/40 text-green-300">✓ Configured</span>
+  ) : (
+    <span className="text-xs px-2 py-0.5 rounded bg-amber-700/40 text-amber-300">Not configured</span>
+  )
+
   return (
     <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
-      <div className="flex items-center gap-2 flex-wrap">
-        <h3 className="font-semibold">{name}</h3>
-        <span className="px-1.5 py-0.5 rounded text-xs bg-surface-3 font-mono">{method}</span>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <h3 className="font-semibold capitalize">{service}</h3>
+          <div className="text-xs opacity-80 mt-0.5">{purpose}</div>
+        </div>
+        <div className="shrink-0">{badge}</div>
       </div>
-      <div className="text-xs opacity-80">{purpose}</div>
-      <div>
-        <div className="text-xs opacity-60 uppercase tracking-wider mb-1">URL</div>
-        <code className="block text-xs font-mono px-2 py-1.5 bg-surface-3 rounded select-all overflow-x-auto whitespace-pre">
-          {path}{query ?? ''}
-        </code>
+      {data?.url && (
+        <div>
+          <div className="text-xs opacity-60 uppercase tracking-wider mb-1">Registered URL</div>
+          <code className="block text-xs font-mono px-2 py-1.5 bg-surface-3 rounded select-all overflow-x-auto whitespace-pre">
+            {data.url}
+          </code>
+        </div>
+      )}
+      {data?.detail && !configured && (
+        <div className="text-xs text-amber-300">{data.detail}</div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => configure.mutate(service)}
+          disabled={configure.isPending}
+          className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-50"
+          title={configured ? 'Re-register the notifier (replaces URL/headers if they drifted).' : 'Register the notifier on the upstream service.'}
+        >
+          {configure.isPending ? 'Configuring…' : configured ? 'Reconfigure' : 'Configure now'}
+        </button>
       </div>
-      <div>
-        <div className="text-xs opacity-60 uppercase tracking-wider mb-1">Setup</div>
-        <ol className="text-xs space-y-1 list-decimal pl-5 opacity-90">
-          {setup.map((s, i) => (<li key={i}>{s}</li>))}
-        </ol>
+      {configure.error && (
+        <div className="text-xs text-red-400 font-mono">
+          {String((configure.error as Error).message ?? configure.error)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * SAB is the odd one out — its post-processing scripts are file-based
+ * (a script file in SAB's `script_dir`), no API surface to inject one
+ * remotely. So we ship the script as a downloadable file + drop-in
+ * instructions. Status pill always reads "Manual setup".
+ */
+function SabWebhookCard() {
+  const status = useWebhookStatus('sab')
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <h3 className="font-semibold">SABnzbd</h3>
+          <div className="text-xs opacity-80 mt-0.5">
+            Post-processing notification so the UI flips download state immediately rather than waiting for the next reconcile.
+          </div>
+        </div>
+        <span className="text-xs px-2 py-0.5 rounded bg-zinc-700/40 text-zinc-300">Manual setup</span>
       </div>
+      <div className="text-xs opacity-70">
+        SAB doesn't accept URL-config for post-processing; scripts must be present on disk in SAB's
+        scripts folder. Download our script, drop it in, mark it executable, and assign it as
+        the default script.
+      </div>
+      <ol className="text-xs space-y-1 list-decimal pl-5 opacity-90">
+        <li>
+          Download <a className="underline" href="/prioritarr/api/v2/webhooks/sab/script">sab-notify.sh</a>
+        </li>
+        <li>Copy it into SABnzbd's <code className="font-mono bg-surface-3 px-1 rounded">script_dir</code> (Config → Folders → "Post-Processing Scripts Folder")</li>
+        <li><code className="font-mono bg-surface-3 px-1 rounded">chmod +x sab-notify.sh</code></li>
+        <li>Config → Switches → "Default Post-Processing Script" = <code className="font-mono bg-surface-3 px-1 rounded">sab-notify.sh</code></li>
+      </ol>
+      {status.data?.detail && (
+        <div className="text-xs opacity-60">{status.data.detail}</div>
+      )}
     </div>
   )
 }
