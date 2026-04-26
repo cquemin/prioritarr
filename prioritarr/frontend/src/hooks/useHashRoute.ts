@@ -30,6 +30,7 @@ export type SettingsSection =
   | 'bandwidth'
   | 'priority-rules'
   | 'jobs'
+  | 'orphans'
   | 'mappings'
   | 'webhooks'
 
@@ -42,7 +43,7 @@ export interface Route {
 }
 
 const SETTINGS_SECTIONS: ReadonlyArray<SettingsSection> = [
-  'general', 'connections', 'bandwidth', 'priority-rules', 'jobs', 'mappings', 'webhooks',
+  'general', 'connections', 'bandwidth', 'priority-rules', 'jobs', 'orphans', 'mappings', 'webhooks',
 ]
 
 function parseHash(hash: string): Route {

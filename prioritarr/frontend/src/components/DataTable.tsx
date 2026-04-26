@@ -293,22 +293,31 @@ function DateRangeFilter<T>({ column }: { column: Column<T, unknown> }) {
     }
     column.setFilterValue(cleaned.from || cleaned.to ? cleaned : undefined)
   }
+  // Stack vertically on mobile (< sm) with explicit labels for each
+  // input; row layout returns at sm+. The native date picker is wide
+  // enough that two of them on one mobile line don't fit cleanly.
   return (
-    <div className="flex gap-1">
-      <input
-        type="date"
-        value={value.from ?? ''}
-        onChange={(e) => set({ ...value, from: e.target.value })}
-        title="From (inclusive)"
-        className="px-1 py-0.5 text-xs rounded bg-surface-3 focus:outline-none focus:ring-1 focus:ring-accent flex-1 min-w-0"
-      />
-      <input
-        type="date"
-        value={value.to ?? ''}
-        onChange={(e) => set({ ...value, to: e.target.value })}
-        title="To (inclusive)"
-        className="px-1 py-0.5 text-xs rounded bg-surface-3 focus:outline-none focus:ring-1 focus:ring-accent flex-1 min-w-0"
-      />
+    <div className="flex flex-col sm:flex-row gap-1">
+      <label className="flex flex-col sm:flex-row sm:items-center sm:gap-1 flex-1 min-w-0">
+        <span className="text-[10px] uppercase tracking-wider opacity-60 sm:hidden">From</span>
+        <input
+          type="date"
+          value={value.from ?? ''}
+          onChange={(e) => set({ ...value, from: e.target.value })}
+          title="From (inclusive)"
+          className="px-1 py-0.5 text-xs rounded bg-surface-3 focus:outline-none focus:ring-1 focus:ring-accent flex-1 min-w-0"
+        />
+      </label>
+      <label className="flex flex-col sm:flex-row sm:items-center sm:gap-1 flex-1 min-w-0">
+        <span className="text-[10px] uppercase tracking-wider opacity-60 sm:hidden">To</span>
+        <input
+          type="date"
+          value={value.to ?? ''}
+          onChange={(e) => set({ ...value, to: e.target.value })}
+          title="To (inclusive)"
+          className="px-1 py-0.5 text-xs rounded bg-surface-3 focus:outline-none focus:ring-1 focus:ring-accent flex-1 min-w-0"
+        />
+      </label>
     </div>
   )
 }

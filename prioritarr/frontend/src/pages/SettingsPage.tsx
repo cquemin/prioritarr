@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  Settings as SettingsIcon, Plug, Gauge, ListOrdered, RefreshCw, Link2, Webhook,
+  Settings as SettingsIcon, Plug, Gauge, ListOrdered, RefreshCw, Link2, Webhook, Box,
 } from 'lucide-react'
 
 import { navigate, useRoute, type SettingsSection } from '../hooks/useHashRoute'
@@ -93,6 +93,7 @@ const SETTINGS_NAV: ReadonlyArray<{
   { id: 'bandwidth', label: 'Bandwidth', icon: <Gauge size={16} /> },
   { id: 'priority-rules', label: 'Priority rules', icon: <ListOrdered size={16} /> },
   { id: 'jobs', label: 'Background jobs', icon: <RefreshCw size={16} /> },
+  { id: 'orphans', label: 'Orphans', icon: <Box size={16} /> },
   { id: 'mappings', label: 'Mappings', icon: <Link2 size={16} /> },
   { id: 'webhooks', label: 'Webhooks', icon: <Webhook size={16} /> },
 ]
@@ -139,6 +140,7 @@ export function SettingsPage() {
         {section === 'bandwidth' && <BandwidthSection />}
         {section === 'priority-rules' && <PriorityRulesSection />}
         {section === 'jobs' && <JobsSection />}
+        {section === 'orphans' && <OrphansSection />}
         {section === 'mappings' && <MappingsSection />}
         {section === 'webhooks' && <WebhooksSection />}
       </div>
@@ -294,11 +296,89 @@ interface ConnectionCardField {
 }
 
 /**
- * One upstream-service connection card. Owns its own draft state +
- * save lifecycle so each service feels independent. The Test button
+ * Shared shell for every connection card — API-style and OAuth-style
+ * alike. Renders the title row (with status pill upper-right), the
+ * caller-provided credential inputs, and the caller-provided action
+ * row at the bottom. Children own state + behaviour; the shell owns
+ * the chrome so all cards line up visually on the Connections page.
+ */
+function ConnectionCardShell({
+  title, statusBadge, description, inputs, actions, banner,
+}: {
+  title: string
+  statusBadge: React.ReactNode
+  description?: React.ReactNode
+  inputs: React.ReactNode
+  actions: React.ReactNode
+  banner?: React.ReactNode
+}) {
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <h3 className="font-semibold">{title}</h3>
+          {description && <div className="text-xs opacity-70 mt-0.5">{description}</div>}
+        </div>
+        <div className="shrink-0">{statusBadge}</div>
+      </div>
+      {banner}
+      {inputs}
+      <div className="flex flex-wrap gap-2 pt-1">{actions}</div>
+    </div>
+  )
+}
+
+/**
+ * Reusable inputs grid: renders the field array (URL + secret inputs)
+ * with a Show/Hide secrets toggle. Used by both the API-style cards
+ * and the OAuth one (Trakt has its own clientId/clientSecret pair).
+ */
+function CredentialsGrid({
+  fields, current, draft, setField, revealSecrets,
+}: {
+  fields: ReadonlyArray<ConnectionCardField>
+  current: any
+  draft: Record<string, string>
+  setField: (k: string, v: string) => void
+  revealSecrets: boolean
+}) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {fields.map((f) => {
+        const live = current?.[f.key]
+        const draftVal = draft[f.key] ?? ''
+        const placeholder = f.secret
+          ? (live ? '••••• (leave blank to keep)' : '(not set)')
+          : (live ?? '(not set)')
+        return (
+          <label key={f.key} className="flex flex-col text-xs space-y-1">
+            <span className="opacity-80">
+              {f.label}
+              {draftVal !== '' && <span className="text-amber-400 ml-1">(modified)</span>}
+            </span>
+            <input
+              type={f.secret && !revealSecrets ? 'password' : (f.type === 'url' ? 'url' : 'text')}
+              value={draftVal}
+              onChange={(e) => setField(f.key, e.target.value)}
+              placeholder={placeholder}
+              className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
+            />
+            {!f.secret && live && draftVal === '' && (
+              <span className="opacity-50">current: <code>{String(live)}</code></span>
+            )}
+          </label>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
+ * Standard API-style connection card: URL + apiKey (or username +
+ * password) inputs, Test/Save/Show-secrets actions. The Test button
  * runs against the *draft* values (falling back to live secrets when
- * the user didn't re-type them) and renders a green/red badge with a
- * categorised reason on failure.
+ * the user didn't re-type them) and renders the result in the upper-
+ * right status pill.
  */
 function ConnectionCard({
   title, service, current, fields,
@@ -332,41 +412,19 @@ function ConnectionCard({
   }
 
   return (
-    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h3 className="font-semibold">{title}</h3>
-        <ConnectionTestBadge result={test.data} pending={test.isPending} error={test.error} />
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {fields.map((f) => {
-          const live = current?.[f.key]
-          const draftVal = draft[f.key] ?? ''
-          const placeholder = f.secret
-            ? (live ? '••••• (leave blank to keep)' : '(not set)')
-            : (live ?? '(not set)')
-          return (
-            <label key={f.key} className="flex flex-col text-xs space-y-1">
-              <span className="opacity-80">
-                {f.label}
-                {draftVal !== '' && <span className="text-amber-400 ml-1">(modified)</span>}
-              </span>
-              <input
-                type={f.secret && !revealSecrets ? 'password' : (f.type === 'url' ? 'url' : 'text')}
-                value={draftVal}
-                onChange={(e) => setField(f.key, e.target.value)}
-                placeholder={placeholder}
-                className="bg-surface-0 border border-surface-3 rounded px-2 py-1 font-mono text-sm"
-              />
-              {!f.secret && live && draftVal === '' && (
-                <span className="opacity-50">current: <code>{String(live)}</code></span>
-              )}
-            </label>
-          )
-        })}
-      </div>
-
-      <div className="flex flex-wrap gap-2">
+    <ConnectionCardShell
+      title={title}
+      statusBadge={<ConnectionTestBadge result={test.data} pending={test.isPending} error={test.error} />}
+      inputs={
+        <CredentialsGrid
+          fields={fields}
+          current={current}
+          draft={draft}
+          setField={setField}
+          revealSecrets={revealSecrets}
+        />
+      }
+      actions={<>
         <button
           type="button"
           onClick={onTest}
@@ -398,8 +456,8 @@ function ConnectionCard({
         >
           {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
         </button>
-      </div>
-    </div>
+      </>}
+    />
   )
 }
 
@@ -478,18 +536,31 @@ function PriorityRulesSection() {
   )
 }
 
+function OrphansSection() {
+  return (
+    <>
+      <SectionHeader
+        title="Orphans"
+        subtitle="Files in your download folders that Sonarr and SAB no longer track. The reaper auto-imports the importable and auto-deletes hardlink-twins; whatever's left needs a human decision (accept / delete / rename)."
+      />
+      <OrphanReaperPanel />
+    </>
+  )
+}
+
 function MappingsSection() {
   const mappings = useMappings()
   const refresh = useRefreshMappings()
   const m = mappings.data as any
+  const stats = m?.lastRefreshStats
   return (
     <>
       <SectionHeader
         title="Mappings"
         subtitle="Plex rating-key ↔ Sonarr series id resolution table. Refreshes hourly."
       />
-      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-2">
-        <div className="flex items-center justify-between">
+      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-4">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <h3 className="font-semibold">Plex ↔ Sonarr mappings</h3>
           <button
             onClick={() => refresh.mutate()}
@@ -500,11 +571,41 @@ function MappingsSection() {
           </button>
         </div>
         {m && (
-          <div className="text-xs opacity-70">
-            {Object.keys(m.plexKeyToSeriesId ?? {}).length} mappings · tautulli{' '}
-            {m.tautulliAvailable ? 'available' : 'unreachable'}
-            {m.lastRefreshStats && (
-              <> · last refresh: cached={m.lastRefreshStats.cached}, tvdb={m.lastRefreshStats.tvdb}, title={m.lastRefreshStats.title}, unmatched={m.lastRefreshStats.unmatched}</>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
+            <div>
+              <div className="text-xs opacity-60 uppercase tracking-wider">Mapped series</div>
+              <div className="text-2xl font-mono mt-0.5">
+                {Object.keys(m.plexKeyToSeriesId ?? {}).length}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs opacity-60 uppercase tracking-wider">Tautulli</div>
+              <div className={`text-base mt-1 ${m.tautulliAvailable ? 'text-green-400' : 'text-red-400'}`}>
+                {m.tautulliAvailable ? '✓ available' : '✗ unreachable'}
+              </div>
+            </div>
+            {stats && (
+              <div className="sm:col-span-2 pt-3 border-t border-surface-3">
+                <div className="text-xs opacity-60 uppercase tracking-wider mb-1">Last refresh — resolution sources</div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-1 text-xs">
+                  <div>
+                    <span className="opacity-60">cached:</span>{' '}
+                    <span className="font-mono">{stats.cached}</span>
+                  </div>
+                  <div>
+                    <span className="opacity-60">via tvdb:</span>{' '}
+                    <span className="font-mono">{stats.tvdb}</span>
+                  </div>
+                  <div>
+                    <span className="opacity-60">via title:</span>{' '}
+                    <span className="font-mono">{stats.title}</span>
+                  </div>
+                  <div>
+                    <span className="opacity-60">unmatched:</span>{' '}
+                    <span className={`font-mono ${stats.unmatched > 0 ? 'text-amber-400' : ''}`}>{stats.unmatched}</span>
+                  </div>
+                </div>
+              </div>
             )}
           </div>
         )}
@@ -521,37 +622,81 @@ function WebhooksSection() {
     <>
       <SectionHeader
         title="Webhooks"
-        subtitle="Paste these URLs into the upstream services to drive real-time UI updates."
+        subtitle="Paste these URLs into the upstream services to drive real-time UI updates without polling."
       />
-      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3 text-sm">
-        <WebhookRow
-          name="Sonarr"
-          path="/prioritarr/api/sonarr/on-grab"
-          notes="Sonarr → Settings → Connect → Webhook. Trigger on Grab, Download, Episode File Delete, Series Delete, Manual Interaction Required, Test."
-        />
-        <WebhookRow
-          name="SABnzbd"
-          path="/prioritarr/api/sab/webhook?nzo_id=$NZO&status=$STATUS&fail_message=$FAIL_MSG"
-          notes="SABnzbd → Config → Notifications → Notification scripts (or a wrapper script that curls this URL on post-processing)."
-        />
-        <WebhookRow
-          name="Plex / Tautulli"
-          path="/prioritarr/api/plex-event"
-          notes="Tautulli → Settings → Notification Agents → Webhook → POST on watched-event with JSON payload."
-        />
-      </div>
+      <WebhookCard
+        name="Sonarr"
+        method="POST"
+        path="/prioritarr/api/sonarr/on-grab"
+        purpose="Real-time grab/import/delete events so prioritarr can record managed downloads and invalidate caches without waiting for the 30-min refresh tick."
+        setup={[
+          'Sonarr → Settings → Connect → Add → Webhook',
+          'URL: paste the path above (Authelia at the edge auto-injects the API key)',
+          'Triggers: Grab, Download, Episode File Delete, Series Delete, Manual Interaction Required, Test',
+        ]}
+      />
+      <WebhookCard
+        name="SABnzbd"
+        method="POST"
+        path="/prioritarr/api/sab/webhook"
+        query="?nzo_id=$NZO&status=$STATUS&fail_message=$FAIL_MSG"
+        purpose="Post-processing notification so the UI flips download state immediately rather than waiting for the next reconcile."
+        setup={[
+          'SABnzbd → Config → Notifications → Notification Script (or a wrapper script that curls the URL above)',
+          'Pass nzo_id + status + fail_message as query parameters (SAB substitutes the variables automatically)',
+        ]}
+      />
+      <WebhookCard
+        name="Tautulli (Plex)"
+        method="POST"
+        path="/prioritarr/api/plex-event"
+        purpose="Watched-event ingestion — drives priority recompute when you finish an episode in Plex."
+        setup={[
+          'Tautulli → Settings → Notification Agents → Add → Webhook',
+          'URL: paste the path above',
+          'Trigger: Watched (Episode)',
+          'Body: JSON payload (Tautulli has a built-in template; the route reads grandparent_rating_key + media_type)',
+        ]}
+      />
     </>
   )
 }
 
-function WebhookRow({ name, path, notes }: { name: string; path: string; notes: string }) {
+/**
+ * One webhook provider as its own card. Layout: header row with the
+ * provider name + an HTTP method chip, the URL on its own monospace
+ * row (selectable for one-tap copy), a "what it does" paragraph, and
+ * a numbered setup checklist.
+ */
+function WebhookCard({
+  name, method, path, query, purpose, setup,
+}: {
+  name: string
+  method: string
+  path: string
+  query?: string
+  purpose: string
+  setup: string[]
+}) {
   return (
-    <div>
-      <div className="flex items-center gap-2">
-        <span className="font-semibold">{name}</span>
-        <code className="text-xs font-mono px-2 py-0.5 bg-surface-3 rounded select-all">{path}</code>
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <h3 className="font-semibold">{name}</h3>
+        <span className="px-1.5 py-0.5 rounded text-xs bg-surface-3 font-mono">{method}</span>
       </div>
-      <div className="text-xs opacity-70 mt-1">{notes}</div>
+      <div className="text-xs opacity-80">{purpose}</div>
+      <div>
+        <div className="text-xs opacity-60 uppercase tracking-wider mb-1">URL</div>
+        <code className="block text-xs font-mono px-2 py-1.5 bg-surface-3 rounded select-all overflow-x-auto whitespace-pre">
+          {path}{query ?? ''}
+        </code>
+      </div>
+      <div>
+        <div className="text-xs opacity-60 uppercase tracking-wider mb-1">Setup</div>
+        <ol className="text-xs space-y-1 list-decimal pl-5 opacity-90">
+          {setup.map((s, i) => (<li key={i}>{s}</li>))}
+        </ol>
+      </div>
     </div>
   )
 }
@@ -753,7 +898,20 @@ function JobDetail({ job }: { job: JobMeta }) {
         ) : job.id === 'library-sync' ? (
           <div className="-m-4 mt-2 pt-3 border-t border-surface-3"><LibrarySyncPanel /></div>
         ) : job.id === 'orphan-reaper' ? (
-          <div className="-m-4 mt-2 pt-3 border-t border-surface-3"><OrphanReaperPanel /></div>
+          // Orphan reaper review queue lives in its own Settings
+          // section ("Orphans"). The job detail keeps cadence + path
+          // settings; the reviewer is the high-traffic page so it
+          // gets first-class billing in the sidebar.
+          <div className="text-xs opacity-70 pt-3 border-t border-surface-3">
+            Orphan review queue moved to{' '}
+            <button
+              type="button"
+              className="underline hover:text-accent"
+              onClick={() => navigate({ page: 'settings', settingsSection: 'orphans' })}
+            >
+              Settings → Orphans
+            </button>.
+          </div>
         ) : job.manual ? (
           <ManualTriggerButton job={job} />
         ) : null}
@@ -2031,35 +2189,72 @@ function TraktAuthPanel() {
     }
   }
 
+  // Live "test connection" against Trakt. Hits /users/me with the
+  // current access_token; same hint logic as the other ConnectionCards
+  // so the badge is consistent.
+  const test = useTestConnection()
+
+  // Local draft for the OAuth-app credentials (clientId / clientSecret).
+  // Replaces the now-deleted ServiceCredentialsPanel inputs — the user
+  // sets these here on the same card that uses them, no jumping around.
+  const save = useSaveSettings()
+  const [credDraft, setCredDraft] = useState<Record<string, string>>({})
+  const [revealSecrets, setRevealSecrets] = useState(false)
+  useEffect(() => { setCredDraft({}) }, [s.traktClientId, s.traktClientSecret])
+  const credDirty = Object.values(credDraft).some((v) => v.length > 0)
+  const setField = (k: string, v: string) =>
+    setCredDraft((d) => ({ ...d, [k]: v }))
+
+  const description = (
+    <>
+      Trakt's device-code OAuth flow — no copy-pasting tokens. Requires
+      a Trakt app: create one at{' '}
+      <a className="underline" href="https://trakt.tv/oauth/applications" target="_blank" rel="noreferrer">
+        trakt.tv/oauth/applications
+      </a>{' '}and paste the client ID + secret below.
+    </>
+  )
+
+  // Status pill mirrors the API-style ConnectionCard chrome so the
+  // section reads uniformly. Resolves into one of: "✓ Connected · vX",
+  // a categorised failure, "Activating…" during the device-code flow,
+  // or a quiet "Not connected" sentinel.
+  const statusBadge = activeFlow
+    ? <span className="text-xs px-2 py-0.5 rounded bg-amber-700/40 text-amber-300">Activating…</span>
+    : hasAccessToken
+      ? <ConnectionTestBadge result={test.data} pending={test.isPending} error={test.error} />
+      : <span className="text-xs px-2 py-0.5 rounded bg-surface-3 opacity-70">Not connected</span>
+
   return (
-    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
-      <div>
-        <h2 className="font-semibold">Trakt connection</h2>
-        <p className="text-xs opacity-70 mt-0.5">
-          Connect prioritarr to your Trakt account using Trakt's
-          device-code OAuth flow — no copy-pasting tokens.
-          Requires <strong>traktClientId</strong> and <strong>traktClientSecret</strong>
-          {' '}from your Trakt app at{' '}
-          <a className="underline" href="https://trakt.tv/oauth/applications" target="_blank" rel="noreferrer">
-            trakt.tv/oauth/applications
-          </a>.
-        </p>
-      </div>
-
-      {(!hasClientId || !hasClientSecret) && (
+    <ConnectionCardShell
+      title="Trakt"
+      description={description}
+      statusBadge={statusBadge}
+      banner={(!hasClientId || !hasClientSecret) ? (
         <div className="text-xs text-amber-300 bg-amber-900/20 border border-amber-800/40 rounded p-2">
-          Set <strong>traktClientId</strong> and <strong>traktClientSecret</strong> in the credentials section above first, then return here.
+          Set <strong>Client ID</strong> and <strong>Client secret</strong> below, then click <strong>Connect Trakt</strong>.
         </div>
-      )}
-
-      {!activeFlow && hasAccessToken && (
-        <>
-          <div className="text-sm space-y-1">
+      ) : undefined}
+      inputs={<>
+        {/* OAuth app credentials — entered on the same card that uses
+            them. Save persists; the actual OAuth dance triggers when
+            you click Connect Trakt below. */}
+        <CredentialsGrid
+          fields={[
+            { key: 'traktClientId', label: 'Client ID' },
+            { key: 'traktClientSecret', label: 'Client secret', secret: true },
+          ]}
+          current={s}
+          draft={credDraft}
+          setField={setField}
+          revealSecrets={revealSecrets}
+        />
+        {!activeFlow && hasAccessToken && (
+          <div className="text-sm space-y-1 pt-2 border-t border-surface-3">
             <div>
-              <span className="text-green-400">✓ Connected</span>
               {tokenAgeDays !== null && (
-                <span className="opacity-70 ml-2">
-                  — last refreshed {tokenAgeDays === 0 ? 'today' : `${tokenAgeDays} day${tokenAgeDays === 1 ? '' : 's'} ago`}
+                <span className="opacity-70">
+                  Last refreshed {tokenAgeDays === 0 ? 'today' : `${tokenAgeDays} day${tokenAgeDays === 1 ? '' : 's'} ago`}
                 </span>
               )}
             </div>
@@ -2079,106 +2274,143 @@ function TraktAuthPanel() {
               Refresh + reconnect buttons are fallbacks for the rare cases (Trakt outage, &gt;90 days offline, revoked app).
             </div>
           </div>
-          {/* Buttons in their own row at the bottom — matches the
-              ConnectionCard layout above so the page reads cleanly. */}
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() =>
-                refresh.mutate(undefined, {
-                  onSuccess: (r) => {
-                    if (r.status === 'reconnect_required') {
-                      setPollMessage(
-                        `Refresh failed: ${(r as { detail?: string }).detail ?? 'refresh_token expired or revoked'}. Click "Connect Trakt" to start over.`,
-                      )
-                    } else {
-                      setPollMessage('Tokens refreshed.')
-                    }
-                  },
-                })
-              }
-              disabled={refresh.isPending}
-              className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
-              title="Mint a fresh access_token using the stored refresh_token. If Trakt rejects it (revoked / >90 days idle), tokens clear and you reconnect."
-            >
-              {refresh.isPending ? 'Refreshing…' : 'Refresh tokens'}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (!confirm('Disconnect Trakt? Sync + unmonitor reconciler will stop working until you reconnect (and restart).')) return
-                disconnect.mutate()
-              }}
-              disabled={disconnect.isPending}
-              className="ml-auto px-3 py-1 rounded text-sm bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
-            >
-              {disconnect.isPending ? 'Disconnecting…' : 'Disconnect'}
-            </button>
-          </div>
-        </>
-      )}
-
-      {!activeFlow && !hasAccessToken && hasClientId && hasClientSecret && (
-        <button
-          type="button"
-          onClick={startFlow}
-          disabled={begin.isPending}
-          className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50"
-        >
-          {begin.isPending ? 'Starting…' : 'Connect Trakt'}
-        </button>
-      )}
-
-      {activeFlow && (
-        <div className="space-y-3 border-t border-surface-3 pt-3">
-          <div>
-            <div className="text-xs opacity-70 uppercase tracking-wider mb-1">Step 1 — open</div>
-            <a
-              href={activeFlow.verificationUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-block px-3 py-1 rounded bg-surface-3 hover:bg-surface-2 underline text-sm"
-            >
-              {activeFlow.verificationUrl} ↗
-            </a>
-          </div>
-          <div>
-            <div className="text-xs opacity-70 uppercase tracking-wider mb-1">Step 2 — enter this code</div>
-            <div className="flex items-center gap-2">
-              <code className="text-2xl font-mono px-3 py-2 bg-surface-3 rounded tracking-widest">
-                {activeFlow.userCode}
-              </code>
+        )}
+        {activeFlow && (
+          <div className="space-y-3 pt-2 border-t border-surface-3">
+            <div>
+              <div className="text-xs opacity-70 uppercase tracking-wider mb-1">Step 1 — open</div>
+              <a
+                href={activeFlow.verificationUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-block px-3 py-1 rounded bg-surface-3 hover:bg-surface-2 underline text-sm"
+              >
+                {activeFlow.verificationUrl} ↗
+              </a>
+            </div>
+            <div>
+              <div className="text-xs opacity-70 uppercase tracking-wider mb-1">Step 2 — enter this code</div>
+              <div className="flex items-center gap-2">
+                <code className="text-2xl font-mono px-3 py-2 bg-surface-3 rounded tracking-widest">
+                  {activeFlow.userCode}
+                </code>
+                <button
+                  type="button"
+                  className="px-2 py-1 text-xs rounded bg-surface-3 hover:bg-surface-2"
+                  onClick={() => navigator.clipboard.writeText(activeFlow.userCode)}
+                >
+                  Copy
+                </button>
+              </div>
+            </div>
+            <div className="text-xs opacity-70">
+              Auto-polling every {activeFlow.intervalMs / 1000}s · waiting for you to activate…
               <button
                 type="button"
-                className="px-2 py-1 text-xs rounded bg-surface-3 hover:bg-surface-2"
-                onClick={() => navigator.clipboard.writeText(activeFlow.userCode)}
+                className="ml-3 underline opacity-80"
+                onClick={() => { setActiveFlow(null); setPollMessage('Cancelled.') }}
               >
-                Copy
+                cancel
               </button>
             </div>
           </div>
-          <div className="text-xs opacity-70">
-            Auto-polling every {activeFlow.intervalMs / 1000}s · waiting for you to activate…
-            <button
-              type="button"
-              className="ml-3 underline opacity-80"
-              onClick={() => { setActiveFlow(null); setPollMessage('Cancelled.') }}
-            >
-              cancel
-            </button>
+        )}
+        {pollMessage && (
+          <div className={`text-xs font-mono ${pollMessage.startsWith('Connected') ? 'text-green-400' : pollMessage.startsWith('Stopped') || pollMessage.startsWith('Failed') ? 'text-red-400' : 'opacity-70'}`}>
+            {pollMessage}
           </div>
-        </div>
-      )}
-
-      {pollMessage && (
-        <div className={`text-xs font-mono ${pollMessage.startsWith('Connected') ? 'text-green-400' : pollMessage.startsWith('Stopped') || pollMessage.startsWith('Failed') ? 'text-red-400' : 'opacity-70'}`}>
-          {pollMessage}
-        </div>
-      )}
-      {begin.error && !activeFlow && (
-        <div className="text-xs text-red-400 font-mono">{String((begin.error as Error).message ?? begin.error)}</div>
-      )}
-    </div>
+        )}
+        {begin.error && !activeFlow && (
+          <div className="text-xs text-red-400 font-mono">{String((begin.error as Error).message ?? begin.error)}</div>
+        )}
+      </>}
+      actions={<>
+        {/* Connect: only enabled when client_id+secret are saved. Save
+            credentials first — Connect itself doesn't accept the draft
+            because the device-code flow runs server-side against the
+            persisted creds. */}
+        {!activeFlow && !hasAccessToken && (
+          <button
+            type="button"
+            onClick={startFlow}
+            disabled={begin.isPending || !hasClientId || !hasClientSecret}
+            className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50"
+            title={!hasClientId || !hasClientSecret ? 'Save Client ID + Client secret first' : 'Begin Trakt device-code flow'}
+          >
+            {begin.isPending ? 'Starting…' : 'Connect Trakt'}
+          </button>
+        )}
+        {!activeFlow && hasAccessToken && (
+          <button
+            type="button"
+            onClick={() => test.mutate({ service: 'trakt', body: {} })}
+            disabled={test.isPending}
+            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
+            title="Real GET https://api.trakt.tv/users/me with the stored access_token to verify the connection."
+          >
+            {test.isPending ? 'Testing…' : 'Test connection'}
+          </button>
+        )}
+        {!activeFlow && hasAccessToken && (
+          <button
+            type="button"
+            onClick={() =>
+              refresh.mutate(undefined, {
+                onSuccess: (r) => {
+                  if (r.status === 'reconnect_required') {
+                    setPollMessage(
+                      `Refresh failed: ${(r as { detail?: string }).detail ?? 'refresh_token expired or revoked'}. Click "Connect Trakt" to start over.`,
+                    )
+                  } else {
+                    setPollMessage('Tokens refreshed.')
+                  }
+                },
+              })
+            }
+            disabled={refresh.isPending}
+            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
+            title="Mint a fresh access_token using the stored refresh_token. If Trakt rejects it (revoked / >90 days idle), tokens clear and you reconnect."
+          >
+            {refresh.isPending ? 'Refreshing…' : 'Refresh tokens'}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => setRevealSecrets(!revealSecrets)}
+          className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2"
+        >
+          {revealSecrets ? 'Hide' : 'Show'} secrets
+        </button>
+        <button
+          type="button"
+          disabled={!credDirty || save.isPending}
+          onClick={async () => {
+            const patch: Record<string, string | null> = {}
+            for (const [k, v] of Object.entries(credDraft)) {
+              if (v.length > 0) patch[k] = v
+            }
+            await save.mutateAsync(patch as any)
+            setCredDraft({})
+          }}
+          className="ml-auto px-3 py-1 rounded text-sm bg-accent disabled:opacity-30"
+        >
+          {save.isPending ? 'Saving…' : credDirty ? 'Save' : 'Saved'}
+        </button>
+        {!activeFlow && hasAccessToken && (
+          <button
+            type="button"
+            onClick={() => {
+              if (!confirm('Disconnect Trakt? Sync + unmonitor reconciler will stop working until you reconnect.')) return
+              disconnect.mutate()
+            }}
+            disabled={disconnect.isPending}
+            className="px-3 py-1 rounded text-sm bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
+          >
+            {disconnect.isPending ? 'Disconnecting…' : 'Disconnect'}
+          </button>
+        )}
+      </>}
+    />
   )
 }
 
