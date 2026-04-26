@@ -67,51 +67,9 @@ internal fun liveSettings(
 ): org.yoshiz.app.prioritarr.backend.config.Settings =
     org.yoshiz.app.prioritarr.backend.config.applySettingsOverride(baseline, readEditableOverride(db))
 
-/**
- * Outcome of a scheduler tick. `summary` lands in the job_runs table
- * for display in the UI; null = no special summary, just status='ok'.
- * `noop` means the tick was scheduled but did nothing intentionally
- * (e.g. trakt_unmonitor when disabled). 'noop' is recorded so the UI
- * shows "ran but skipped" rather than "never ran".
- */
-internal data class JobOutcome(val summary: String? = null, val noop: Boolean = false)
-
-/**
- * Wrap one scheduler iteration: time it, persist the outcome, swallow
- * exceptions so a single failure doesn't kill the supervised coroutine.
- * Existing logger.warn semantics are preserved — same message, same
- * level — so existing log greps keep working.
- */
-private suspend inline fun trackJob(
-    db: org.yoshiz.app.prioritarr.backend.database.Database,
-    jobId: String,
-    crossinline block: suspend () -> JobOutcome,
-) {
-    val started = java.time.Instant.now()
-    try {
-        val out = block()
-        db.recordJobRun(
-            jobId = jobId,
-            startedAt = started,
-            finishedAt = java.time.Instant.now(),
-            status = (if (out.noop) JobStatus.NOOP else JobStatus.OK).wire,
-            summary = out.summary,
-        )
-    } catch (e: Exception) {
-        // Truncate long stack-trace strings — SQLite handles big
-        // payloads, but the UI surfaces this verbatim and a 50KB
-        // stacktrace makes the page unusable.
-        val msg = (e.message ?: e::class.simpleName ?: "unknown").take(2000)
-        db.recordJobRun(
-            jobId = jobId,
-            startedAt = started,
-            finishedAt = java.time.Instant.now(),
-            status = JobStatus.ERROR.wire,
-            errorMessage = msg,
-        )
-        logger.warn("$jobId: ${e.message}")
-    }
-}
+// `JobOutcome` and the per-tick `trackJob` wrapper used to live here.
+// They're now provided by the [scheduler.Scheduler], which calls
+// `db.recordJobRun(...)` directly after each launched job finishes.
 
 /**
  * Mint a fresh Trakt access_token from the stored refresh_token,
@@ -370,215 +328,203 @@ fun main() {
     // SSE heartbeat event publisher (distinct from the db heartbeat above).
     org.yoshiz.app.prioritarr.backend.api.v2.startHeartbeat(state, scope.coroutineContext[Job]!!)
 
-    // Background jobs. Each runs in its own coroutine under the
-    // supervisor so one crashing doesn't take the others down. Every
-    // tick re-reads `liveSettings(db, settings)` so cadence + flag
-    // changes propagate within at most one full interval — no restart.
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_mappings crashed", e) }) {
-        while (isActive) {
-            trackJob(db, JobId.REFRESH_MAPPINGS) {
-                org.yoshiz.app.prioritarr.backend.mapping.refreshMappings(sonarr, tautulli, cache, mappings)
-                state.eventBus.publish("mapping-refreshed", kotlinx.serialization.json.JsonNull)
-                JobOutcome()
-            }
-            delay(liveSettings(db, settings).intervals.refreshMappingsMinutes.toLong() * 60L * 1000L)
-        }
-    }
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_series_cache crashed", e) }) {
-        while (isActive) {
-            trackJob(db, JobId.REFRESH_SERIES_CACHE) {
-                org.yoshiz.app.prioritarr.backend.series.refreshSeriesCache(sonarr, db)
-                JobOutcome()
-            }
-            delay(liveSettings(db, settings).intervals.refreshSeriesCacheMinutes.toLong() * 60L * 1000L)
-        }
-    }
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_episode_cache crashed", e) }) {
-        delay(30_000)
-        while (isActive) {
-            trackJob(db, JobId.REFRESH_EPISODE_CACHE) {
-                org.yoshiz.app.prioritarr.backend.series.refreshEpisodeCache(sonarr, db)
-                JobOutcome()
-            }
-            delay(liveSettings(db, settings).intervals.refreshEpisodeCacheMinutes.toLong() * 60L * 1000L)
-        }
-    }
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("reconcile crashed", e) }) {
-        while (isActive) {
-            val s = liveSettings(db, settings)
-            trackJob(db, JobId.RECONCILE) {
-                val lookup = org.yoshiz.app.prioritarr.backend.reconcile.fetchSonarrQueueLookup(sonarr)
-                org.yoshiz.app.prioritarr.backend.reconcile.reconcileQbit(
-                    qbit, db, lookup, priorityService, s.dryRun,
-                    bandwidth = state.bandwidthSource.current(),
-                    telemetry = state.downloadTelemetry,
-                )
-                org.yoshiz.app.prioritarr.backend.reconcile.reconcileSab(sab, db, lookup, priorityService, s.dryRun)
-                JobOutcome()
-            }
-            delay(s.intervals.reconcileMinutes.toLong() * 60L * 1000L)
-        }
-    }
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("refresh_priorities crashed", e) }) {
-        while (isActive) {
-            trackJob(db, JobId.REFRESH_PRIORITIES) {
-                org.yoshiz.app.prioritarr.backend.priority.refreshAllPriorities(sonarr, priorityService)
-                JobOutcome()
-            }
-            delay(liveSettings(db, settings).intervals.refreshPrioritiesMinutes.toLong() * 60L * 1000L)
-        }
-    }
+    // Background jobs — declarative registry driving a single tick
+    // loop in [Scheduler]. Each [JobDefinition]'s prerequisites +
+    // cadence are read live (same liveSettings pattern as before),
+    // so toggling a job mid-session takes effect on the next tick
+    // without a container restart. Heavy jobs are capped at 1 per
+    // tick to prevent dogpiling Sonarr.
     val queueJanitor = org.yoshiz.app.prioritarr.backend.reconcile.QueueJanitor(
         sonarr = sonarr, qbit = qbit, sab = sab, db = db,
     )
     val unmonitoredReaper = org.yoshiz.app.prioritarr.backend.reconcile.UnmonitoredReaper(
         sonarr = sonarr, db = db,
     )
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("queue_janitor crashed", e) }) {
-        while (isActive) {
-            val s = liveSettings(db, settings)
-            trackJob(db, JobId.QUEUE_JANITOR) {
-                queueJanitor.sweep(dryRun = s.dryRun)
-                JobOutcome()
-            }
-            delay(s.intervals.queueJanitorMinutes.toLong() * 60L * 1000L)
-        }
-    }
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("unmonitored_reaper crashed", e) }) {
-        delay(2L * 60L * 1000L)
-        while (isActive) {
-            val s = liveSettings(db, settings)
-            trackJob(db, JobId.UNMONITORED_REAPER) {
-                unmonitoredReaper.sweep(dryRun = s.dryRun)
-                JobOutcome()
-            }
-            delay(s.intervals.unmonitoredReaperMinutes.toLong() * 60L * 1000L)
-        }
-    }
 
-    // Trakt→Sonarr unmonitor reconciler — disabled by default; when
-    // on, every intervalHours it walks the library and unmonitors
-    // Sonarr episodes that Trakt says you've already watched but
-    // that aren't on disk. Protect-tag honoured inside the reconciler.
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("trakt_unmonitor crashed", e) }) {
-        // Stagger 15 min after boot so it doesn't race with the initial
-        // CrossSourceSync / series_cache warmup.
-        delay(15L * 60L * 1000L)
-        while (isActive) {
-            val s = liveSettings(db, settings)
-            trackJob(db, JobId.TRAKT_UNMONITOR) {
-                if (!s.traktUnmonitor.enabled) {
-                    JobOutcome(summary = "scheduler disabled", noop = true)
-                } else {
+    val scheduler = org.yoshiz.app.prioritarr.backend.scheduler.Scheduler(
+        db = db,
+        jobs = buildList {
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.REFRESH_MAPPINGS,
+                cadenceMinutes = { liveSettings(db, settings).intervals.refreshMappingsMinutes.toLong() },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.HEAVY,
+                run = {
+                    org.yoshiz.app.prioritarr.backend.mapping.refreshMappings(sonarr, tautulli, cache, mappings)
+                    state.eventBus.publish("mapping-refreshed", kotlinx.serialization.json.JsonNull)
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.REFRESH_SERIES_CACHE,
+                cadenceMinutes = { liveSettings(db, settings).intervals.refreshSeriesCacheMinutes.toLong() },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.HEAVY,
+                run = {
+                    org.yoshiz.app.prioritarr.backend.series.refreshSeriesCache(sonarr, db)
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.REFRESH_EPISODE_CACHE,
+                cadenceMinutes = { liveSettings(db, settings).intervals.refreshEpisodeCacheMinutes.toLong() },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.HEAVY,
+                firstRunDelayMinutes = 1,  // wait for series_cache to seed
+                run = {
+                    org.yoshiz.app.prioritarr.backend.series.refreshEpisodeCache(sonarr, db)
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.RECONCILE,
+                cadenceMinutes = { liveSettings(db, settings).intervals.reconcileMinutes.toLong() },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                run = {
+                    val s = liveSettings(db, settings)
+                    val lookup = org.yoshiz.app.prioritarr.backend.reconcile.fetchSonarrQueueLookup(sonarr)
+                    org.yoshiz.app.prioritarr.backend.reconcile.reconcileQbit(
+                        qbit, db, lookup, priorityService, s.dryRun,
+                        bandwidth = state.bandwidthSource.current(),
+                        telemetry = state.downloadTelemetry,
+                    )
+                    org.yoshiz.app.prioritarr.backend.reconcile.reconcileSab(sab, db, lookup, priorityService, s.dryRun)
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.REFRESH_PRIORITIES,
+                cadenceMinutes = { liveSettings(db, settings).intervals.refreshPrioritiesMinutes.toLong() },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.HEAVY,
+                run = {
+                    org.yoshiz.app.prioritarr.backend.priority.refreshAllPriorities(sonarr, priorityService)
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.QUEUE_JANITOR,
+                cadenceMinutes = { liveSettings(db, settings).intervals.queueJanitorMinutes.toLong() },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                run = {
+                    queueJanitor.sweep(dryRun = liveSettings(db, settings).dryRun)
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.UNMONITORED_REAPER,
+                cadenceMinutes = { liveSettings(db, settings).intervals.unmonitoredReaperMinutes.toLong() },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                firstRunDelayMinutes = 2,
+                run = {
+                    unmonitoredReaper.sweep(dryRun = liveSettings(db, settings).dryRun)
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.TRAKT_UNMONITOR,
+                cadenceMinutes = { liveSettings(db, settings).traktUnmonitor.intervalHours.toLong() * 60L },
+                // Reactive prereq: enabling the toggle flips this true,
+                // and the next tick (≤60s later) runs the reconciler —
+                // no restart needed.
+                prerequisites = { liveSettings(db, settings).traktUnmonitor.enabled },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.HEAVY,
+                firstRunDelayMinutes = 15,
+                run = {
+                    val s = liveSettings(db, settings)
                     val report = traktUnmonitor.reconcileAll(s.traktUnmonitor, dryRun = s.dryRun)
-                    JobOutcome(summary = "${report.totalSeries} series, ${report.unmonitoredTotal} unmonitored")
-                }
-            }
-            delay(s.traktUnmonitor.intervalHours.toLong() * 60L * 60L * 1000L)
-        }
-    }
-
-    // Proactive Trakt token refresh — daily check; if the access token
-    // expires within 7 days we mint a fresh one ahead of the deadline.
-    // The reactive on-401 path inside TraktClient covers the case where
-    // the container was off long enough that the proactive job missed
-    // a window. Both feed the same `refreshTraktTokensFromDb` helper.
-    if (traktOAuth != null && traktClient != null) {
-        scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("trakt_token_refresh crashed", e) }) {
-            // 30 min stagger after boot — gives the cross-source sync
-            // and series cache time to warm before we touch tokens.
-            delay(30L * 60L * 1000L)
-            while (isActive) {
-                trackJob(db, JobId.TRAKT_TOKEN_REFRESH) {
-                    val current = readEditableOverride(db)
-                    val expiresIso = current.traktTokenExpiresAt?.takeIf { it.isNotBlank() }
-                        ?: settings.traktTokenExpiresAt?.takeIf { it.isNotBlank() }
-                    if (expiresIso == null) {
-                        JobOutcome(summary = "no expiry set", noop = true)
-                    } else {
-                        val expires = OffsetDateTime.parse(expiresIso).toInstant()
-                        val daysLeft = Duration.between(Instant.now(), expires).toDays()
-                        if (daysLeft > 7) {
-                            JobOutcome(summary = "$daysLeft days left, no refresh needed", noop = true)
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(
+                        summary = "${report.totalSeries} series, ${report.unmonitoredTotal} unmonitored",
+                    )
+                },
+            ))
+            if (traktOAuth != null && traktClient != null) {
+                add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                    id = JobId.TRAKT_TOKEN_REFRESH,
+                    cadenceMinutes = { liveSettings(db, settings).intervals.traktTokenRefreshHours.toLong() * 60L },
+                    weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                    firstRunDelayMinutes = 30,
+                    run = {
+                        val current = readEditableOverride(db)
+                        val expiresIso = current.traktTokenExpiresAt?.takeIf { it.isNotBlank() }
+                            ?: settings.traktTokenExpiresAt?.takeIf { it.isNotBlank() }
+                        if (expiresIso == null) {
+                            org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(summary = "no expiry set", noop = true)
                         } else {
-                            logger.info("trakt-refresh: token expires in {} days; proactively refreshing", daysLeft)
-                            val newToken = refreshTraktTokensFromDb(db, settings, traktOAuth)
-                            if (newToken != null) {
-                                traktClient.updateAccessToken(newToken)
-                                JobOutcome(summary = "refreshed (was $daysLeft days from expiry)")
+                            val expires = OffsetDateTime.parse(expiresIso).toInstant()
+                            val daysLeft = Duration.between(Instant.now(), expires).toDays()
+                            if (daysLeft > 7) {
+                                org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(summary = "$daysLeft days left, no refresh needed", noop = true)
                             } else {
-                                JobOutcome(summary = "refresh failed; tokens cleared, awaits reconnect")
+                                logger.info("trakt-refresh: token expires in {} days; proactively refreshing", daysLeft)
+                                val newToken = refreshTraktTokensFromDb(db, settings, traktOAuth)
+                                if (newToken != null) {
+                                    traktClient.updateAccessToken(newToken)
+                                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(summary = "refreshed (was $daysLeft days from expiry)")
+                                } else {
+                                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(summary = "refresh failed; tokens cleared, awaits reconnect")
+                                }
                             }
                         }
-                    }
-                }
-                delay(liveSettings(db, settings).intervals.traktTokenRefreshHours.toLong() * 60L * 60L * 1000L)
+                    },
+                ))
             }
-        }
-    }
-
-    // Watched archiver — deletes watched episodes outside the keep
-    // window (latest season or last N). Off by default. Cadence is
-    // configurable via settings.archive.intervalHours (default weekly).
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("watched_archiver crashed", e) }) {
-        delay(10L * 60L * 1000L)  // stagger 10 min after boot
-        while (isActive) {
-            val s = liveSettings(db, settings)
-            trackJob(db, JobId.WATCHED_ARCHIVER) {
-                if (!s.archive.watchedEnabled) {
-                    JobOutcome(summary = "watched_enabled=false", noop = true)
-                } else {
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.WATCHED_ARCHIVER,
+                cadenceMinutes = { liveSettings(db, settings).archive.intervalHours.toLong() * 60L },
+                prerequisites = { liveSettings(db, settings).archive.watchedEnabled },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.HEAVY,
+                firstRunDelayMinutes = 10,
+                run = {
+                    val s = liveSettings(db, settings)
                     val report = watchedArchiver.sweep(s.archive, dryRun = s.dryRun)
-                    JobOutcome(summary = "${report.seriesVisited} series, ${report.deleted} deleted")
-                }
-            }
-            delay(s.archive.intervalHours.toLong() * 60L * 60L * 1000L)
-        }
-    }
-
-    // Orphan reaper — sweeps download folders for files Sonarr/SAB
-    // no longer track.
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("orphan_reaper crashed", e) }) {
-        delay(5L * 60L * 1000L)
-        while (isActive) {
-            val s = liveSettings(db, settings)
-            trackJob(db, JobId.ORPHAN_REAPER) {
-                orphanReaper.sweep(dryRun = s.dryRun)
-                JobOutcome()
-            }
-            delay(s.orphanReaperIntervalMinutes.toLong() * 60L * 1000L)
-        }
-    }
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("backfill_sweep crashed", e) }) {
-        while (isActive) {
-            val s = liveSettings(db, settings)
-            trackJob(db, JobId.BACKFILL_SWEEP) {
-                org.yoshiz.app.prioritarr.backend.sweep.runBackfillSweep(
-                    sonarr, priorityService,
-                    maxSearches = s.intervals.backfillMaxSearchesPerSweep,
-                    delaySeconds = s.intervals.backfillDelayBetweenSearchesSeconds,
-                    dryRun = s.dryRun,
-                )
-                JobOutcome()
-            }
-            delay(s.intervals.backfillSweepHours.toLong() * 60L * 60L * 1000L)
-        }
-    }
-    scope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, e -> logger.error("cutoff_sweep crashed", e) }) {
-        while (isActive) {
-            val s = liveSettings(db, settings)
-            trackJob(db, JobId.CUTOFF_SWEEP) {
-                org.yoshiz.app.prioritarr.backend.sweep.runCutoffSweep(
-                    sonarr, priorityService,
-                    maxSearches = s.intervals.cutoffMaxSearchesPerSweep,
-                    delaySeconds = s.intervals.backfillDelayBetweenSearchesSeconds,
-                    dryRun = s.dryRun,
-                )
-                JobOutcome()
-            }
-            delay(s.intervals.cutoffSweepHours.toLong() * 60L * 60L * 1000L)
-        }
-    }
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(
+                        summary = "${report.seriesVisited} series, ${report.deleted} deleted",
+                    )
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.ORPHAN_REAPER,
+                cadenceMinutes = { liveSettings(db, settings).orphanReaperIntervalMinutes.toLong() },
+                // Skip if the path list is empty — operator's way of
+                // disabling the reaper without disabling the cadence.
+                prerequisites = { liveSettings(db, settings).orphanReaperPaths.isNotEmpty() },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                firstRunDelayMinutes = 5,
+                run = {
+                    orphanReaper.sweep(dryRun = liveSettings(db, settings).dryRun)
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.BACKFILL_SWEEP,
+                cadenceMinutes = { liveSettings(db, settings).intervals.backfillSweepHours.toLong() * 60L },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                run = {
+                    val s = liveSettings(db, settings)
+                    org.yoshiz.app.prioritarr.backend.sweep.runBackfillSweep(
+                        sonarr, priorityService,
+                        maxSearches = s.intervals.backfillMaxSearchesPerSweep,
+                        delaySeconds = s.intervals.backfillDelayBetweenSearchesSeconds,
+                        dryRun = s.dryRun,
+                    )
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.CUTOFF_SWEEP,
+                cadenceMinutes = { liveSettings(db, settings).intervals.cutoffSweepHours.toLong() * 60L },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                run = {
+                    val s = liveSettings(db, settings)
+                    org.yoshiz.app.prioritarr.backend.sweep.runCutoffSweep(
+                        sonarr, priorityService,
+                        maxSearches = s.intervals.cutoffMaxSearchesPerSweep,
+                        delaySeconds = s.intervals.backfillDelayBetweenSearchesSeconds,
+                        dryRun = s.dryRun,
+                    )
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+        },
+    )
+    scheduler.start(scope)
 
     embeddedServer(Netty, port = 8000, host = "0.0.0.0") {
         prioritarrModule(state)
