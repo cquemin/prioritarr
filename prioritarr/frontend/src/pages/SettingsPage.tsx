@@ -560,9 +560,77 @@ function OrphansSection() {
         title="Orphans"
         subtitle="Files in your download folders that Sonarr and SAB no longer track. The reaper auto-imports the importable and auto-deletes hardlink-twins; whatever's left needs a human decision (accept / delete / rename)."
       />
+      <OrphanLegendCard />
       <OrphanPathsCard />
       <OrphanReaperPanel />
     </>
+  )
+}
+
+/**
+ * Color-coded legend explaining the rejection reasons the reaper
+ * surfaces in the "Needs review" table. Same chrome as the
+ * Background-jobs color-code legend so the visual language is
+ * consistent across Settings.
+ */
+function OrphanLegendCard() {
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-3 text-xs space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="opacity-70">What the rejection reasons mean:</div>
+        <button
+          type="button"
+          onClick={() => navigate({ page: 'settings', settingsSection: 'jobs', jobId: 'orphan-reaper' })}
+          className="text-xs underline opacity-80 hover:opacity-100"
+        >
+          Open orphan-reaper job settings →
+        </button>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-5 gap-y-2">
+        <ReasonRow
+          label="Sonarr can't parse this file"
+          color="bg-amber-500"
+          desc="Filename doesn't match Sonarr's title/episode regex. Try Rename to fix the filename, or Delete if it's junk."
+        />
+        <ReasonRow
+          label="Unknown series"
+          color="bg-amber-500"
+          desc="Sonarr parsed Show + S01E02 but the show isn't in your Sonarr library. Either add the series in Sonarr first, then Re-probe, or Delete."
+        />
+        <ReasonRow
+          label="Unknown episode"
+          color="bg-amber-500"
+          desc="Show is in Sonarr but that exact season/episode doesn't exist in metadata. TVDB metadata gap — try Re-probe later, or Rename."
+        />
+        <ReasonRow
+          label="Already imported"
+          color="bg-blue-500"
+          desc="Sonarr already has a copy of this episode at higher/equal quality. Safe to Delete (the reaper does this automatically when classified as 'not an upgrade')."
+        />
+        <ReasonRow
+          label="Sample file"
+          color="bg-blue-500"
+          desc="Sonarr flagged this as a sample/preview clip rather than the full episode. Almost always Delete."
+        />
+        <ReasonRow
+          label="Sonarr probe failed: …"
+          color="bg-red-500"
+          desc="Sonarr threw on the probe call (service down or timeout). Re-probe later; not the file's fault."
+        />
+      </div>
+    </div>
+  )
+}
+
+function ReasonRow({ label, color, desc }: { label: string; color: string; desc: string }) {
+  return (
+    <div className="flex gap-2">
+      <span className={`w-2 h-2 rounded-full ${color} mt-1 shrink-0`} />
+      <div className="flex-1 min-w-0">
+        <div className="font-mono">{label}</div>
+        <div className="opacity-70 mt-0.5">{desc}</div>
+      </div>
+    </div>
   )
 }
 
