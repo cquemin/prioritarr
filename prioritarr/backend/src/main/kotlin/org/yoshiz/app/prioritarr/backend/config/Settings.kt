@@ -295,6 +295,12 @@ data class EditableSettings(
     // ---- Other cadences not in [Intervals] ----
     val orphanReaperIntervalMinutes: Int? = null,
     val archiveIntervalHours: Int? = null,
+    /**
+     * Paths the orphan reaper sweeps. Null = use baseline (env). Empty
+     * list explicitly disables the reaper. Each entry is a container-
+     * absolute path mounted into the prioritarr container.
+     */
+    val orphanReaperPaths: List<String>? = null,
 )
 
 /** Apply [override] on top of [base], returning a new [Settings]. */
@@ -340,6 +346,7 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
         traktTokenRefreshHours = override.traktTokenRefreshHours ?: base.intervals.traktTokenRefreshHours,
     ),
     orphanReaperIntervalMinutes = override.orphanReaperIntervalMinutes ?: base.orphanReaperIntervalMinutes,
+    orphanReaperPaths = override.orphanReaperPaths ?: base.orphanReaperPaths,
     archive = base.archive.copy(
         intervalHours = override.archiveIntervalHours ?: base.archive.intervalHours,
     ),

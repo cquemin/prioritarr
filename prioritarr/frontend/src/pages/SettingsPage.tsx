@@ -543,8 +543,86 @@ function OrphansSection() {
         title="Orphans"
         subtitle="Files in your download folders that Sonarr and SAB no longer track. The reaper auto-imports the importable and auto-deletes hardlink-twins; whatever's left needs a human decision (accept / delete / rename)."
       />
+      <OrphanPathsCard />
       <OrphanReaperPanel />
     </>
+  )
+}
+
+/**
+ * Editor for the list of paths the reaper sweeps. Live-editable via
+ * settings override; the next scheduled tick + manual run pick up the
+ * new list immediately. Restart not required because OrphanReaper's
+ * cleanupPaths is a lambda that re-reads liveSettings each call.
+ */
+function OrphanPathsCard() {
+  const settings = useSettings()
+  const save = useSaveSettings()
+  const live = ((settings.data ?? {}) as { orphanReaperPaths?: string[] }).orphanReaperPaths ?? []
+  const [draft, setDraft] = useState<string[]>(live)
+  useEffect(() => { setDraft(live) }, [JSON.stringify(live)])  // re-seed when server changes
+  const dirty = JSON.stringify(draft) !== JSON.stringify(live)
+
+  const setAt = (i: number, v: string) =>
+    setDraft((d) => d.map((p, j) => j === i ? v : p))
+  const addRow = () => setDraft((d) => [...d, ''])
+  const removeAt = (i: number) =>
+    setDraft((d) => d.filter((_, j) => j !== i))
+
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h3 className="font-semibold">Watched paths</h3>
+          <p className="text-xs opacity-70 mt-0.5">
+            Container-absolute paths the reaper sweeps for orphans. Each entry
+            must already be mounted into the prioritarr container (volumes
+            block in compose). Empty list disables the reaper.
+          </p>
+        </div>
+        <button
+          type="button"
+          disabled={!dirty || save.isPending}
+          onClick={async () => {
+            await save.mutateAsync({ orphanReaperPaths: draft.map((s) => s.trim()).filter(Boolean) } as any)
+          }}
+          className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-30"
+        >
+          {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+        </button>
+      </div>
+      <div className="space-y-1">
+        {draft.length === 0 && (
+          <div className="text-xs opacity-60 italic">No paths configured — reaper is disabled.</div>
+        )}
+        {draft.map((p, i) => (
+          <div key={i} className="flex gap-2">
+            <input
+              type="text"
+              value={p}
+              onChange={(e) => setAt(i, e.target.value)}
+              placeholder="/storage/torrents/series"
+              className="flex-1 bg-surface-3 border border-surface-2 rounded px-2 py-1 font-mono text-sm"
+            />
+            <button
+              type="button"
+              onClick={() => removeAt(i)}
+              className="px-2 py-1 rounded text-xs bg-red-900/40 hover:bg-red-700/60"
+              title="Remove this path"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={addRow}
+          className="text-xs px-3 py-1 rounded bg-surface-3 hover:bg-surface-2 mt-1"
+        >
+          + Add path
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -556,12 +634,12 @@ function MappingsSection() {
   return (
     <>
       <SectionHeader
-        title="Mappings"
-        subtitle="Plex rating-key ↔ Sonarr series id resolution table. Refreshes hourly."
+        title="Watch-source mappings"
+        subtitle="External watch-source rating-key → Sonarr series id. Watch webhooks (Plex / Tautulli / future Jellyfin) need this to find the series their event refers to. Refreshes hourly."
       />
       <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h3 className="font-semibold">Plex ↔ Sonarr mappings</h3>
+          <h3 className="font-semibold">Mapped rating-keys</h3>
           <button
             onClick={() => refresh.mutate()}
             disabled={refresh.isPending}
@@ -571,21 +649,30 @@ function MappingsSection() {
           </button>
         </div>
         {m && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <div>
-              <div className="text-xs opacity-60 uppercase tracking-wider">Mapped series</div>
-              <div className="text-2xl font-mono mt-0.5">
-                {Object.keys(m.plexKeyToSeriesId ?? {}).length}
+          <div className="space-y-4 text-sm">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
+              <div>
+                <div className="text-xs opacity-60 uppercase tracking-wider">Plex / Tautulli keys</div>
+                <div className="text-2xl font-mono mt-0.5">
+                  {Object.keys(m.plexKeyToSeriesId ?? {}).length}
+                </div>
+                <div className="text-xs opacity-60 mt-1">
+                  Tautulli reuses Plex's rating-keys, so a single map covers both.
+                </div>
+              </div>
+              <div>
+                <div className="text-xs opacity-60 uppercase tracking-wider">Tautulli upstream</div>
+                <div className={`text-base mt-1 ${m.tautulliAvailable ? 'text-green-400' : 'text-red-400'}`}>
+                  {m.tautulliAvailable ? '✓ available' : '✗ unreachable'}
+                </div>
               </div>
             </div>
-            <div>
-              <div className="text-xs opacity-60 uppercase tracking-wider">Tautulli</div>
-              <div className={`text-base mt-1 ${m.tautulliAvailable ? 'text-green-400' : 'text-red-400'}`}>
-                {m.tautulliAvailable ? '✓ available' : '✗ unreachable'}
-              </div>
+            <div className="pt-3 border-t border-surface-3 text-xs opacity-70">
+              <span className="font-semibold">Trakt</span> doesn't need a mapping — it
+              joins via TVDB id, which Sonarr already carries on every series. No row in this table.
             </div>
             {stats && (
-              <div className="sm:col-span-2 pt-3 border-t border-surface-3">
+              <div className="pt-3 border-t border-surface-3">
                 <div className="text-xs opacity-60 uppercase tracking-wider mb-1">Last refresh — resolution sources</div>
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-x-3 gap-y-1 text-xs">
                   <div>

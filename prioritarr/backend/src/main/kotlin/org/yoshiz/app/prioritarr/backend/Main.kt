@@ -315,7 +315,7 @@ fun main() {
 
     val orphanReaper = org.yoshiz.app.prioritarr.backend.reconcile.OrphanReaper(
         qbit = qbit, sab = sab, sonarr = sonarr, db = db,
-        cleanupPaths = settings.orphanReaperPaths,
+        cleanupPaths = { liveSettings(db, settings).orphanReaperPaths },
         autoImport = true,
     )
     val watchedArchiver = org.yoshiz.app.prioritarr.backend.reconcile.WatchedArchiver(

@@ -53,7 +53,13 @@ class OrphanReaper(
     private val sab: SABClient,
     private val sonarr: SonarrClient,
     private val db: Database,
-    private val cleanupPaths: List<String>,
+    /**
+     * Lambda so the schedule + manual run + per-path predicates all
+     * read live settings (live-editable). Each call dereferences the
+     * lambda once — the list is small (≤ ~10 paths) so the cost is
+     * negligible.
+     */
+    private val cleanupPaths: () -> List<String>,
     /**
      * When true, the reaper triggers Sonarr ManualImport for orphans
      * that Sonarr is willing to import. When false, it just reports
@@ -71,7 +77,7 @@ class OrphanReaper(
      */
     fun isWithinCleanupPath(path: Path): Boolean {
         val abs = try { path.toAbsolutePath().normalize() } catch (_: Exception) { return false }
-        return cleanupPaths.any { root ->
+        return cleanupPaths().any { root ->
             try {
                 val rootAbs = Paths.get(root).toAbsolutePath().normalize()
                 abs.startsWith(rootAbs)
@@ -132,14 +138,15 @@ class OrphanReaper(
     }
 
     suspend fun sweep(dryRun: Boolean): OrphanReport {
+        val paths = cleanupPaths()
         val tracked = collectTrackedNames()
         val report = OrphanReport()
-        for (path in cleanupPaths) {
+        for (path in paths) {
             sweepPath(Paths.get(path), tracked, dryRun, report)
         }
         logger.info(
             "orphan-reaper: paths={} matched={} deleted={} imported={} importPending={} kept={} emptyDirs={} dryRun={}",
-            cleanupPaths.size, report.matched, report.deleted, report.imported,
+            paths.size, report.matched, report.deleted, report.imported,
             report.importPending, report.kept, report.emptyDirsRemoved, dryRun,
         )
         return report

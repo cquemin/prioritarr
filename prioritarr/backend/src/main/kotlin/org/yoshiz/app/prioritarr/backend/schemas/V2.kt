@@ -169,6 +169,7 @@ data class SettingsRedacted(
     // Scheduler cadences — see [Intervals]. All live-editable.
     val intervals: IntervalsWire = IntervalsWire(),
     val orphanReaperIntervalMinutes: Int = 60,
+    val orphanReaperPaths: List<String> = emptyList(),
     val archiveIntervalHours: Int = 168,
 )
 

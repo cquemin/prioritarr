@@ -166,6 +166,7 @@ private fun mergeEditable(
     unmonitoredReaperMinutes = patch.unmonitoredReaperMinutes ?: existing.unmonitoredReaperMinutes,
     traktTokenRefreshHours = patch.traktTokenRefreshHours ?: existing.traktTokenRefreshHours,
     orphanReaperIntervalMinutes = patch.orphanReaperIntervalMinutes ?: existing.orphanReaperIntervalMinutes,
+    orphanReaperPaths = patch.orphanReaperPaths ?: existing.orphanReaperPaths,
     archiveIntervalHours = patch.archiveIntervalHours ?: existing.archiveIntervalHours,
 )
 
@@ -727,6 +728,7 @@ fun Route.v2Routes(state: AppState) {
                 traktTokenRefreshHours = s.intervals.traktTokenRefreshHours,
             ),
             orphanReaperIntervalMinutes = s.orphanReaperIntervalMinutes,
+            orphanReaperPaths = s.orphanReaperPaths,
             archiveIntervalHours = s.archive.intervalHours,
         ))
     }
@@ -818,6 +820,7 @@ fun Route.v2Routes(state: AppState) {
                 traktTokenRefreshHours = s.intervals.traktTokenRefreshHours,
             ),
             orphanReaperIntervalMinutes = s.orphanReaperIntervalMinutes,
+            orphanReaperPaths = s.orphanReaperPaths,
             archiveIntervalHours = s.archive.intervalHours,
         ))
     }

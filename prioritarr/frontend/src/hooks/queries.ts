@@ -196,6 +196,7 @@ export interface EditableSettings {
   traktUnmonitorIntervalHours?: number | null
   traktUnmonitorSkipSpecials?: boolean | null
   traktUnmonitorProtectTag?: string | null
+  orphanReaperPaths?: string[] | null
 }
 
 export function useSaveSettings() {
