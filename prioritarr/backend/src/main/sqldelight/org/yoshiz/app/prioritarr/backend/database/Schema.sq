@@ -119,6 +119,25 @@ CREATE TABLE IF NOT EXISTS mapping_cache (
     updated_at TEXT NOT NULL
 );
 
+-- Per-upstream health snapshot for the dashboard banner. One row per
+-- provider id (e.g. 'sonarr', 'plex'). Updated every health-monitor
+-- tick. The banner reads this directly — no historical retention.
+CREATE TABLE IF NOT EXISTS provider_health (
+    provider TEXT PRIMARY KEY,
+    -- 'ok' | 'unauth' | 'unreachable' | 'unknown'. Free text on
+    -- purpose so adding a status (e.g. 'degraded') doesn't need a
+    -- migration; the Kotlin enum is the source of truth.
+    status TEXT NOT NULL,
+    -- ISO-8601 timestamp of the most recent successful probe. Null
+    -- until the first ok response is seen.
+    last_ok TEXT,
+    -- ISO-8601 timestamp of the most recent probe attempt (ok or not).
+    last_check TEXT NOT NULL,
+    -- One-line human diagnostic shown in the banner detail line.
+    -- Truncated to 500 chars at write time to bound the table.
+    detail TEXT
+);
+
 -- Background-job run history. Each scheduler tick (or webhook handler)
 -- records one row here so the Settings → Background jobs page can show
 -- last-run status, duration, and a short summary. Trimmed to the most
@@ -449,3 +468,26 @@ FROM job_runs
 WHERE job_id = ?
 ORDER BY started_at DESC
 LIMIT ?;
+
+-- ------------------------------------------------------------------
+-- provider_health
+-- ------------------------------------------------------------------
+
+upsertProviderHealth:
+INSERT INTO provider_health (provider, status, last_ok, last_check, detail)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(provider) DO UPDATE SET
+    status     = excluded.status,
+    -- Preserve last_ok across non-ok updates: only overwrite when the
+    -- caller passes a non-null value (i.e. status='ok' bumps it).
+    last_ok    = COALESCE(excluded.last_ok, provider_health.last_ok),
+    last_check = excluded.last_check,
+    detail     = excluded.detail;
+
+listProviderHealth:
+SELECT provider, status, last_ok, last_check, detail
+FROM provider_health
+ORDER BY provider;
+
+deleteAllProviderHealth:
+DELETE FROM provider_health;

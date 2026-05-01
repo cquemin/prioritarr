@@ -46,6 +46,22 @@
         "title": "HealthOk",
         "type": "object"
       },
+      "HealthProvidersResponse": {
+        "properties": {
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderHealthEntry"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "title": "HealthProvidersResponse",
+        "type": "object"
+      },
       "HealthUnhealthy": {
         "examples": [
           {
@@ -241,6 +257,64 @@
         ],
         "title": "ProblemDetail",
         "type": "object"
+      },
+      "ProviderHealthEntry": {
+        "properties": {
+          "detail": {
+            "description": "One-line diagnostic surfaced under the banner row. Truncated to ~500 chars.",
+            "nullable": true,
+            "title": "Detail",
+            "type": "string"
+          },
+          "label": {
+            "description": "Human-readable provider name shown in the banner.",
+            "title": "Label",
+            "type": "string"
+          },
+          "lastCheckAt": {
+            "description": "ISO-8601 of the most recent probe attempt.",
+            "title": "LastCheckAt",
+            "type": "string"
+          },
+          "lastOkAt": {
+            "description": "ISO-8601 of the last successful probe; null if never seen healthy.",
+            "nullable": true,
+            "title": "LastOkAt",
+            "type": "string"
+          },
+          "name": {
+            "description": "Stable provider id (e.g. 'sonarr', 'plex').",
+            "title": "Name",
+            "type": "string"
+          },
+          "settingsAnchor": {
+            "description": "Hash anchor in /settings to deep-link the user to the matching detail view.",
+            "title": "SettingsAnchor",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ProviderStatus"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "status",
+          "settingsAnchor",
+          "lastCheckAt"
+        ],
+        "title": "ProviderHealthEntry",
+        "type": "object"
+      },
+      "ProviderStatus": {
+        "enum": [
+          "ok",
+          "unauth",
+          "unreachable",
+          "unknown"
+        ],
+        "title": "ProviderStatus",
+        "type": "string"
       },
       "ReadyResponse": {
         "examples": [
@@ -877,6 +951,48 @@
           }
         ],
         "summary": "Server-Sent Events stream"
+      }
+    },
+    "/api/v2/health/providers": {
+      "get": {
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthProvidersResponse"
+                }
+              }
+            },
+            "description": "Snapshot of every probed upstream's status."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Unauthorized"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            },
+            "description": "Internal"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ],
+        "summary": "Provider health snapshot — powers the dashboard banner"
       }
     },
     "/api/v2/mappings": {

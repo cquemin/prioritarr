@@ -306,9 +306,15 @@ interface ConnectionCardField {
  * the chrome so all cards line up visually on the Connections page.
  */
 function ConnectionCardShell({
-  title, statusBadge, description, inputs, actions, banner,
+  title, service, statusBadge, description, inputs, actions, banner,
 }: {
   title: string
+  /**
+   * Provider id (e.g. "sonarr"). Used as the DOM id anchor target so
+   * the health banner can scroll the user straight to the matching
+   * card via id="settings-{service}-card".
+   */
+  service?: string
   statusBadge: React.ReactNode
   description?: React.ReactNode
   inputs: React.ReactNode
@@ -316,7 +322,10 @@ function ConnectionCardShell({
   banner?: React.ReactNode
 }) {
   return (
-    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+    <div
+      id={service ? `settings-${service}-card` : undefined}
+      className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3 transition-shadow"
+    >
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="flex-1 min-w-0">
           <h3 className="font-semibold">{title}</h3>
@@ -439,6 +448,7 @@ function ConnectionCard({
   return (
     <ConnectionCardShell
       title={title}
+      service={service}
       statusBadge={<ConnectionTestBadge result={test.data} pending={test.isPending} error={test.error} />}
       inputs={
         <CredentialsGrid
@@ -2457,6 +2467,7 @@ function TraktAuthPanel() {
   return (
     <ConnectionCardShell
       title="Trakt"
+      service="trakt"
       description={description}
       statusBadge={statusBadge}
       banner={(() => {

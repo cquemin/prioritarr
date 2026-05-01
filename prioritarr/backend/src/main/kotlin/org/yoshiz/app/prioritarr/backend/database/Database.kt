@@ -263,6 +263,35 @@ class Database(dbPath: String) {
     }
 
     // ------------------------------------------------------------------
+    // provider_health
+    // ------------------------------------------------------------------
+
+    /**
+     * Persist the latest probe result for a single upstream. When
+     * [status] is `"ok"`, [lastOk] is bumped; on non-ok results pass
+     * `lastOk = null` so the SQL COALESCE preserves the previous good
+     * timestamp (banner can show "last seen healthy" alongside the
+     * current failure).
+     */
+    fun upsertProviderHealth(
+        provider: String,
+        status: String,
+        lastOk: String?,
+        lastCheck: String,
+        detail: String?,
+    ) {
+        q.upsertProviderHealth(
+            provider = provider,
+            status = status,
+            last_ok = lastOk,
+            last_check = lastCheck,
+            detail = detail?.take(500),
+        )
+    }
+
+    fun listProviderHealth() = q.listProviderHealth().executeAsList()
+
+    // ------------------------------------------------------------------
     // prune
     // ------------------------------------------------------------------
 

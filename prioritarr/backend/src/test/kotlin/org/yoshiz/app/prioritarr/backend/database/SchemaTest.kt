@@ -81,4 +81,46 @@ class SchemaTest {
         val db = freshDb()
         assertNull(db.schemaQueries.selectHeartbeat().executeAsOneOrNull())
     }
+
+    @Test
+    fun `provider_health upsert preserves last_ok across non-ok updates`() {
+        val db = freshDb()
+        // First probe: healthy.
+        db.schemaQueries.upsertProviderHealth(
+            provider = "sonarr",
+            status = "ok",
+            last_ok = "2026-04-30T10:00:00+00:00",
+            last_check = "2026-04-30T10:00:00+00:00",
+            detail = null,
+        )
+        // Second probe: unauth — last_ok is passed null, should be preserved by COALESCE.
+        db.schemaQueries.upsertProviderHealth(
+            provider = "sonarr",
+            status = "unauth",
+            last_ok = null,
+            last_check = "2026-04-30T10:05:00+00:00",
+            detail = "HTTP 401 Unauthorized",
+        )
+        val row = db.schemaQueries.listProviderHealth().executeAsOneOrNull()
+        assertNotNull(row)
+        assertEquals("unauth", row.status)
+        assertEquals("2026-04-30T10:00:00+00:00", row.last_ok)
+        assertEquals("HTTP 401 Unauthorized", row.detail)
+    }
+
+    @Test
+    fun `provider_health upsert bumps last_ok when ok again`() {
+        val db = freshDb()
+        db.schemaQueries.upsertProviderHealth(
+            provider = "trakt", status = "unauth",
+            last_ok = null, last_check = "t1", detail = null,
+        )
+        db.schemaQueries.upsertProviderHealth(
+            provider = "trakt", status = "ok",
+            last_ok = "t2", last_check = "t2", detail = null,
+        )
+        val row = db.schemaQueries.listProviderHealth().executeAsList().single()
+        assertEquals("ok", row.status)
+        assertEquals("t2", row.last_ok)
+    }
 }

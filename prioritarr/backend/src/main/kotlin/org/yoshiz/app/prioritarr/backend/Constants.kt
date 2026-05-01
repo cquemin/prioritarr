@@ -43,6 +43,7 @@ object JobId {
     const val ORPHAN_REAPER = "orphan-reaper"
     const val BACKFILL_SWEEP = "backfill-sweep"
     const val CUTOFF_SWEEP = "cutoff-sweep"
+    const val HEALTH_MONITOR = "health-monitor"
 }
 
 /**

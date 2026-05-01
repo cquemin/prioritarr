@@ -185,6 +185,10 @@ fun main() {
     val qbitHttp = qbitClient()
     val sabHttp = defaultJsonClient()
     val traktHttp = defaultJsonClient()
+    // Tiny dedicated HTTP client for health probes — short timeouts so a
+    // hung upstream can't stall a scheduler tick the way a 120s default
+    // probe would. Closing handled via AppState.httpClients ownership.
+    val healthHttp = defaultJsonClient(timeoutMs = 10_000)
 
     val sonarr = SonarrClient(settings.sonarrUrl, settings.sonarrApiKey, sonarrHttp)
     val tautulli = TautulliClient(settings.tautulliUrl, settings.tautulliApiKey, tautulliHttp)
@@ -309,7 +313,7 @@ fun main() {
         traktClient = traktClient,
         traktOAuth = traktOAuth,
         eventBus = EventBus(),
-        httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp),
+        httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp, healthHttp),
     )
 
     // Heartbeat coroutine — enough to make /health flip to 200 after startup.
@@ -339,6 +343,12 @@ fun main() {
     )
     val unmonitoredReaper = org.yoshiz.app.prioritarr.backend.reconcile.UnmonitoredReaper(
         sonarr = sonarr, db = db,
+    )
+
+    val healthMonitor = org.yoshiz.app.prioritarr.backend.health.HealthMonitor(
+        db = db,
+        settings = settings,
+        http = healthHttp,
     )
 
     val scheduler = org.yoshiz.app.prioritarr.backend.scheduler.Scheduler(
@@ -520,6 +530,24 @@ fun main() {
                         dryRun = s.dryRun,
                     )
                     org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.HEALTH_MONITOR,
+                // Cadence intentionally hard-coded for now — surfacing it
+                // as a setting buys little (5 min is a fine default and
+                // changing it doesn't change correctness) and adds a UI
+                // knob users would mostly leave alone.
+                cadenceMinutes = { 5L },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                // Run once a few seconds after boot so the dashboard
+                // banner doesn't sit empty on first paint.
+                firstRunDelayMinutes = 0,
+                run = {
+                    val unhealthy = healthMonitor.probeAll()
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(
+                        summary = if (unhealthy == 0) "all healthy" else "$unhealthy unhealthy",
+                    )
                 },
             ))
         },

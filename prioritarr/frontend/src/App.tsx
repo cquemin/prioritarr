@@ -7,6 +7,7 @@ import { SettingsPage } from './pages/SettingsPage'
 import { useEventStream } from './hooks/useEventStream'
 import { useSettings } from './hooks/queries'
 import { navigate, useEnsureHash, useRoute, type Page } from './hooks/useHashRoute'
+import { HealthBanner } from './components/HealthBanner'
 
 // Downloads was its own tab; as of the unified-series-view change
 // every download surface lives inside the Series drawer alongside the
@@ -53,6 +54,8 @@ function Shell() {
           PRIORITARR_DRY_RUN is enabled — actions are logged but not applied upstream.
         </div>
       )}
+      <HealthBanner />
+
       <div className="flex-1 flex min-h-0">
         <nav className="w-12 sm:w-20 bg-surface-1 border-r border-surface-3 flex flex-col items-center py-2 sm:py-4 gap-1 shrink-0">
           {NAV.map((n) => (

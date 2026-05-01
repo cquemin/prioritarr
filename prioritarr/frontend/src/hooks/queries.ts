@@ -165,6 +165,23 @@ export function useSettings() {
   })
 }
 
+// Provider health snapshot — drives the dashboard banner. Polled every
+// minute and on window focus so a freshly-broken Trakt token shows up
+// quickly without spamming the backend.
+export function useHealthProviders() {
+  return useQuery({
+    queryKey: ['health', 'providers'],
+    queryFn: async () => {
+      const { data, error } = await apiClient.GET('/api/v2/health/providers')
+      if (error) throw error
+      return data
+    },
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+  })
+}
+
 // Operator-editable settings (URLs, API keys, dryRun, logLevel,
 // uiOrigin). Persisted as a DB override on top of the env baseline;
 // changes only take effect after a container restart because clients

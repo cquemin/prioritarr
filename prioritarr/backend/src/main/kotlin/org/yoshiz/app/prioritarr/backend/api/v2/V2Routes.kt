@@ -178,6 +178,9 @@ fun Route.v2Routes(state: AppState) {
     // ---- Stats ----
     statsRoute(state)
 
+    // ---- Health (banner) ----
+    healthProvidersRoute(state)
+
     // ---- Reads ----
 
     route("/series") {
