@@ -131,6 +131,21 @@ export const JOBS: ReadonlyArray<JobMeta> = [
     manual: { method: 'POST', path: '/api/v2/mappings/refresh', label: 'Refresh now' },
   },
   {
+    id: 'health-monitor',
+    name: 'Provider health monitor',
+    icon: <Activity size={18} />,
+    trigger: 'auto',
+    short: 'Probe upstream services for the dashboard banner.',
+    description:
+      'Every 5 minutes, runs a tiny HTTP probe against each upstream Prioritarr depends on (Sonarr, Tautulli, Plex, Trakt, qBit, SAB) and writes the latest status into the provider_health table. The dashboard banner reads from there. 401/403 maps to "auth failed" so the banner can deep-link to the matching settings card.',
+    why:
+      'When a Trakt token expires or a download client password rotates, all sorts of things start failing silently — backfill stops finding episodes, watch history goes stale, queue reconcile spins. Catching that at the source means the user gets one clear "click here to re-auth" prompt instead of debugging from the symptoms.',
+    // Cadence is hard-coded at 5 minutes — surfacing it as a setting
+    // buys little (correctness doesn't change with the cadence) and
+    // adds a knob users would mostly leave alone. Documented in the
+    // description above for transparency.
+  },
+  {
     id: 'queue-janitor',
     name: 'Queue janitor',
     icon: <ListChecks size={18} />,

@@ -2388,7 +2388,15 @@ function TraktAuthPanel() {
         const r = await poll.mutateAsync(activeFlow.deviceCode)
         if (cancelled) return
         if (r.status === 'connected') {
-          setPollMessage('Connected! Restart the container to start using the new tokens.')
+          // Backend hot-swaps the running TraktClient on success — no
+          // restart needed in normal use. The `restartRequired` flag is
+          // only true if Trakt was disabled at boot (no client to swap),
+          // which is the rare first-time-setup path.
+          setPollMessage(
+            r.restartRequired
+              ? 'Connected! Restart the container so the running app picks up the new tokens (Trakt was disabled at boot).'
+              : 'Connected. Tokens hot-swapped — no restart needed.',
+          )
           setActiveFlow(null)
           settings.refetch()
           return
