@@ -2328,6 +2328,7 @@ function TraktAuthPanel() {
     traktClientId?: string | null
     traktClientSecret?: string | null
     traktAccessToken?: string | null
+    traktRefreshToken?: string | null
     traktTokenExpiresAt?: string | null
   }
   // Treat "***" (the redacted-secret marker) as "set"; "" or null as
@@ -2335,6 +2336,14 @@ function TraktAuthPanel() {
   const hasClientId = !!s.traktClientId && s.traktClientId.length > 0
   const hasClientSecret = !!s.traktClientSecret && s.traktClientSecret.length > 0
   const hasAccessToken = !!s.traktAccessToken && s.traktAccessToken.length > 0
+  const hasRefreshToken = !!s.traktRefreshToken && s.traktRefreshToken.length > 0
+  // "Zombie" auth state: an access_token is stored but no refresh_token
+  // exists to mint a new one when it expires. Test will fail with 401
+  // and Refresh has nothing to call. The only recovery is wipe +
+  // device-code re-auth, which the dedicated "Reconnect" button below
+  // does atomically. Without that button, the user sees no error and
+  // no clear path forward.
+  const zombieAuth = hasAccessToken && !hasRefreshToken
   const expiresAt = s.traktTokenExpiresAt && s.traktTokenExpiresAt.length > 0
     ? new Date(s.traktTokenExpiresAt)
     : null
@@ -2471,13 +2480,27 @@ function TraktAuthPanel() {
       description={description}
       statusBadge={statusBadge}
       banner={(() => {
-        // Three states:
-        //   1. Has access_token + missing secret → read calls work
-        //      (Test will pass) but token refresh / OAuth reconnect
-        //      requires the secret. Soft warning.
-        //   2. No access_token + missing creds → blocking. Need both
+        // Four states, checked in priority order:
+        //   1. Zombie auth (access_token without refresh_token) — every
+        //      button below is a no-op because Refresh has nothing to
+        //      call and Test will 401 forever. The only recovery is to
+        //      wipe + redo the device-code flow; the "Reconnect" button
+        //      in the action row does this atomically.
+        //   2. Has access_token + missing secret → read calls work but
+        //      refresh + reconnect can't run. Soft warning.
+        //   3. No access_token + missing creds → blocking. Need both
         //      ID + secret to run the device-code flow.
-        //   3. All set → no banner.
+        //   4. All set → no banner.
+        if (zombieAuth) {
+          return (
+            <div className="text-xs text-red-300 bg-red-900/30 border border-red-800/60 rounded p-2">
+              <strong>Authentication needs a fresh start.</strong> Your access token is stored but the matching
+              refresh token is missing — Trakt rejects the token and there's no way to mint a new one
+              without re-authorising. Click <strong>Reconnect</strong> below to wipe the dead state and run
+              the device-code flow again. Your Client ID + secret will be kept.
+            </div>
+          )
+        }
         if (hasClientId && hasClientSecret) return undefined
         if (hasAccessToken && hasClientId && !hasClientSecret) {
           return (
@@ -2609,7 +2632,7 @@ function TraktAuthPanel() {
             {test.isPending ? 'Testing…' : 'Test connection'}
           </button>
         )}
-        {!activeFlow && hasAccessToken && (
+        {!activeFlow && hasAccessToken && hasRefreshToken && (
           <button
             type="button"
             onClick={() =>
@@ -2617,7 +2640,7 @@ function TraktAuthPanel() {
                 onSuccess: (r) => {
                   if (r.status === 'reconnect_required') {
                     setPollMessage(
-                      `Refresh failed: ${(r as { detail?: string }).detail ?? 'refresh_token expired or revoked'}. Click "Connect Trakt" to start over.`,
+                      `Refresh failed: ${(r as { detail?: string }).detail ?? 'refresh_token expired or revoked'}. Click "Reconnect" to start over.`,
                     )
                   } else {
                     setPollMessage('Tokens refreshed.')
@@ -2630,6 +2653,33 @@ function TraktAuthPanel() {
             title="Mint a fresh access_token using the stored refresh_token. If Trakt rejects it (revoked / >90 days idle), tokens clear and you reconnect."
           >
             {refresh.isPending ? 'Refreshing…' : 'Refresh tokens'}
+          </button>
+        )}
+        {/* Reconnect — always available when ANY token state is set
+            (including zombie state where refresh is missing). Wipes
+            tokens server-side, then begins the device-code flow in a
+            single click so the user never has to navigate away to
+            recover. Requires clientId+secret; without them the device-
+            code endpoint will refuse and we surface the error inline. */}
+        {!activeFlow && hasAccessToken && (
+          <button
+            type="button"
+            onClick={async () => {
+              if (!confirm('Reconnect Trakt? This wipes your stored tokens and starts a fresh device-code flow. Client ID + secret are kept.')) return
+              setPollMessage(null)
+              try {
+                await disconnect.mutateAsync()
+                await settings.refetch()
+                await startFlow()
+              } catch (e) {
+                setPollMessage(`Reconnect failed: ${(e as Error).message ?? e}`)
+              }
+            }}
+            disabled={disconnect.isPending || begin.isPending || !hasClientId || !hasClientSecret}
+            className={`px-3 py-1 rounded text-sm disabled:opacity-50 ${zombieAuth ? 'bg-accent hover:opacity-90' : 'bg-surface-3 hover:bg-surface-2'}`}
+            title={!hasClientId || !hasClientSecret ? 'Save Client ID + Client secret first' : 'Wipe stored tokens and re-run the device-code flow'}
+          >
+            {disconnect.isPending || begin.isPending ? 'Reconnecting…' : 'Reconnect'}
           </button>
         )}
         <button
