@@ -2188,11 +2188,33 @@ function BandwidthPanel() {
   const reset = useResetBandwidth()
   const [draft, setDraft] = useState<BandwidthSettings | null>(null)
 
-  useEffect(() => {
-    if (live.data) setDraft(live.data.settings)
-  }, [live.data])
+  // /settings/bandwidth refetches every 10s for the live measurements
+  // (currentTotalBps, observedPeakBps, etc.). Each refetch produces a
+  // new live.data reference, even though live.data.settings is
+  // structurally shared by React Query. Depending the seeding effect
+  // on live.data would clobber the user's in-progress edits every 10s.
+  // Memoize the settings subset by value instead — its reference only
+  // changes when the saved settings actually change (after save/reset).
+  const liveSettings = useMemo<BandwidthSettings | null>(() => {
+    return live.data?.settings ?? null
+  }, [
+    live.data?.settings.maxMbps,
+    live.data?.settings.observedPeakMbps,
+    live.data?.settings.utilisationThresholdPct,
+    live.data?.settings.etaBufferMinutes,
+    live.data?.settings.p1MinSpeedKbps,
+    live.data?.settings.peakHoursStart,
+    live.data?.settings.peakHoursEnd,
+    live.data?.settings.peakHoursMaxMbps,
+    live.data?.settings.quietModeEnabled,
+    live.data?.settings.quietModeMaxMbps,
+  ])
 
-  if (live.isLoading || !draft || !live.data) {
+  useEffect(() => {
+    if (liveSettings) setDraft(liveSettings)
+  }, [liveSettings])
+
+  if (live.isLoading || !draft || !live.data || !liveSettings) {
     return (
       <div className="bg-surface-1 rounded-lg border border-surface-3 p-4">
         <h2 className="font-semibold">Bandwidth</h2>
@@ -2203,7 +2225,7 @@ function BandwidthPanel() {
 
   const disabled = draft.maxMbps <= 0
   const mbps = (bps: number) => (bps / 125_000).toFixed(1)
-  const dirty = JSON.stringify(draft) !== JSON.stringify(live.data.settings)
+  const dirty = JSON.stringify(draft) !== JSON.stringify(liveSettings)
 
   return (
     <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
