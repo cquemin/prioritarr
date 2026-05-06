@@ -3,6 +3,7 @@ package org.yoshiz.app.prioritarr.backend.reconcile
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -20,21 +21,32 @@ import org.yoshiz.app.prioritarr.backend.priority.PriorityService
 
 private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.reconcile")
 
-/** Build the `download_id (lowercase) → {seriesId, episodeId}` map from Sonarr's /queue. */
-suspend fun fetchSonarrQueueLookup(sonarr: SonarrClient): Map<String, Pair<Long, Long>> {
+data class SonarrQueueInfo(
+    val seriesId: Long,
+    val episodeId: Long,
+    val seasonNumber: Int?,
+    val episodeNumber: Int?,
+)
+
+/** Build the `download_id (lowercase) → SonarrQueueInfo` map from Sonarr's /queue. */
+suspend fun fetchSonarrQueueLookup(sonarr: SonarrClient): Map<String, SonarrQueueInfo> {
     val queue = try {
         sonarr.getQueue()
     } catch (e: Exception) {
         logger.warn("fetchSonarrQueueLookup: failed to fetch sonarr queue: ${e.message}")
         return emptyMap()
     }
-    val out = mutableMapOf<String, Pair<Long, Long>>()
+    val out = mutableMapOf<String, SonarrQueueInfo>()
     for (el in queue) {
         val obj = el.jsonObject
         val dlId = obj["downloadId"]?.jsonPrimitive?.contentOrNull ?: continue
         val seriesId = obj["seriesId"]?.jsonPrimitive?.longOrNull ?: continue
         val episodeId = obj["episodeId"]?.jsonPrimitive?.longOrNull ?: 0L
-        out[dlId.lowercase()] = seriesId to episodeId
+        val episode = obj["episode"]?.jsonObject
+        val season = episode?.get("seasonNumber")?.jsonPrimitive?.intOrNull
+            ?: obj["seasonNumber"]?.jsonPrimitive?.intOrNull
+        val epNum = episode?.get("episodeNumber")?.jsonPrimitive?.intOrNull
+        out[dlId.lowercase()] = SonarrQueueInfo(seriesId, episodeId, season, epNum)
     }
     return out
 }
@@ -53,7 +65,7 @@ suspend fun fetchSonarrQueueLookup(sonarr: SonarrClient): Map<String, Pair<Long,
 suspend fun reconcileQbit(
     qbit: QBitClient,
     db: Database,
-    sonarrQueueLookup: Map<String, Pair<Long, Long>>,
+    sonarrQueueLookup: Map<String, SonarrQueueInfo>,
     priorityService: PriorityService,
     dryRun: Boolean,
     bandwidth: org.yoshiz.app.prioritarr.backend.config.BandwidthSettings =
@@ -100,7 +112,7 @@ suspend fun reconcileQbit(
 suspend fun reconcileSab(
     sab: SABClient,
     db: Database,
-    sonarrQueueLookup: Map<String, Pair<Long, Long>>,
+    sonarrQueueLookup: Map<String, SonarrQueueInfo>,
     priorityService: PriorityService,
     dryRun: Boolean,
 ) {
@@ -128,7 +140,7 @@ private suspend fun reconcileImpl(
     idField: String,
     stateField: String?,
     db: Database,
-    sonarrQueueLookup: Map<String, Pair<Long, Long>>,
+    sonarrQueueLookup: Map<String, SonarrQueueInfo>,
     priorityService: PriorityService,
     applyEnforcement: suspend () -> Unit,
 ) {
@@ -147,7 +159,8 @@ private suspend fun reconcileImpl(
                 logger.debug("[{}] orphan {} not in Sonarr queue, skipping", clientName, clientId.take(12))
                 continue
             }
-            val (seriesId, episodeId) = sonarrInfo
+            val seriesId = sonarrInfo.seriesId
+            val episodeId = sonarrInfo.episodeId
             val result = priorityService.priorityForSeries(seriesId)
             logger.info(
                 "[{}] adopted orphan {} -> series {}, assigned P{}",
