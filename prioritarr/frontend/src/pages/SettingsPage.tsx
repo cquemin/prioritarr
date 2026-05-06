@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
-  Settings as SettingsIcon, Plug, Gauge, Layers, ListOrdered, RefreshCw, Link2, Webhook, Box,
+  Settings as SettingsIcon, Plug, Gauge, ListOrdered, RefreshCw, Link2, Webhook, Box,
 } from 'lucide-react'
 
 import { TableSkeleton } from '../components/Skeleton'
@@ -99,7 +99,6 @@ const SETTINGS_NAV: ReadonlyArray<{
   { id: 'connections', label: 'Connections', icon: <Plug size={16} /> },
   { id: 'bandwidth', label: 'Bandwidth', icon: <Gauge size={16} /> },
   { id: 'priority-rules', label: 'Priority rules', icon: <ListOrdered size={16} /> },
-  { id: 'p5-ratchet', label: 'P5 ratchet', icon: <Layers size={16} /> },
   { id: 'jobs', label: 'Background jobs', icon: <RefreshCw size={16} /> },
   { id: 'orphans', label: 'Orphans', icon: <Box size={16} /> },
   { id: 'mappings', label: 'Mappings', icon: <Link2 size={16} /> },
@@ -147,7 +146,6 @@ export function SettingsPage() {
         {section === 'connections' && <ConnectionsSection s={s} />}
         {section === 'bandwidth' && <BandwidthSection />}
         {section === 'priority-rules' && <PriorityRulesSection />}
-        {section === 'p5-ratchet' && <P5RatchetSection />}
         {section === 'jobs' && <JobsSection />}
         {section === 'orphans' && <OrphansSection />}
         {section === 'mappings' && <MappingsSection />}
@@ -561,18 +559,6 @@ function BandwidthSection() {
         subtitle="Caps and decision knobs for the bandwidth-aware enforcement."
       />
       <BandwidthPanel />
-    </>
-  )
-}
-
-function P5RatchetSection() {
-  return (
-    <>
-      <SectionHeader
-        title="P5 backfill ratchet"
-        subtitle="Sequences P5 backfill by earlier seasons first when bandwidth is contended."
-      />
-      <P5RatchetPanel />
     </>
   )
 }
@@ -1508,6 +1494,12 @@ function ThresholdsPanel() {
                   )
                 })}
               </div>
+              {p === 5 && (
+                <>
+                  <div className="border-t border-surface-3 -mx-3 my-1"></div>
+                  <P5RatchetInline />
+                </>
+              )}
             </div>
           )
         })}
@@ -2286,13 +2278,18 @@ function BandwidthPanel() {
 }
 
 /**
- * P5 backfill season ratchet panel. When the bandwidth-policy says the
- * pipe is contended, the ratchet sequences P5 backfill by season — S1
- * before S2 before S3 — within each series. Disabled by default; flip
- * `enabled` to opt in. The live preview shows whether the ratchet
- * would currently activate based on observed bandwidth utilisation.
+ * P5 backfill season ratchet — rendered inline at the bottom of the
+ * P5 card in the priority thresholds panel. When the bandwidth-policy
+ * says the pipe is contended, the ratchet sequences P5 backfill by
+ * season — S1 before S2 before S3 — within each series. Disabled by
+ * default; flip `enabled` to opt in.
+ *
+ * Nested inside the P5 card, so it doesn't render its own card chrome.
+ * Save lifecycle is independent of the priority thresholds save: this
+ * block has its own draft + dirty + Save/Reset buttons because the
+ * backend endpoints are separate (settings/p5-ratchet vs settings/thresholds).
  */
-function P5RatchetPanel() {
+function P5RatchetInline() {
   const live = useP5Ratchet()
   const save = useSaveP5Ratchet()
   const reset = useResetP5Ratchet()
@@ -2306,12 +2303,7 @@ function P5RatchetPanel() {
   }, [live.data])
 
   if (live.isLoading || !draft || !live.data) {
-    return (
-      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4">
-        <h2 className="font-semibold">P5 backfill ratchet</h2>
-        <p className="text-xs opacity-70 mt-1">Loading…</p>
-      </div>
-    )
+    return <div className="text-xs opacity-70">Loading P5 ratchet…</div>
   }
 
   const dirty = JSON.stringify(draft) !== JSON.stringify({
@@ -2325,20 +2317,17 @@ function P5RatchetPanel() {
   const utilPct = (live.data.currentUtilisationPct * 100).toFixed(1)
 
   return (
-    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
+    <div className="space-y-3">
+      <div className="flex items-start justify-between gap-2 flex-wrap">
         <div className="flex-1 min-w-0">
-          <h2 className="font-semibold">P5 backfill ratchet</h2>
-          <p className="text-xs opacity-70 mt-0.5">
-            For full-backfill (P5) series, prefer earlier seasons first
-            when bandwidth is contended. S1 finishes before S2 starts;
-            cooldowns and an escalation ladder (SeasonSearch → retry →
-            EpisodeSearch → long cooldown) keep indexer usage polite.
-            Enable the bandwidth-aware feature first; this only fires
-            when the pipe is saturated.
+          <div className="text-sm font-medium opacity-90">P5 backfill ratchet</div>
+          <p className="text-xs opacity-60 mt-0.5">
+            Earlier seasons first when bandwidth is contended.
+            SeasonSearch → retry → EpisodeSearch → long cooldown ladder.
+            Pairs with the bandwidth-aware feature.
           </p>
         </div>
-        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+        <div className="flex gap-2 shrink-0">
           <button
             type="button"
             onClick={async () => {
@@ -2346,7 +2335,7 @@ function P5RatchetPanel() {
               await reset.mutateAsync()
             }}
             disabled={reset.isPending}
-            className="px-3 py-1 rounded text-sm bg-surface-3 disabled:opacity-50"
+            className="px-2 py-0.5 rounded text-xs bg-surface-3 disabled:opacity-50"
           >
             {reset.isPending ? 'Resetting…' : 'Reset'}
           </button>
@@ -2354,36 +2343,36 @@ function P5RatchetPanel() {
             type="button"
             disabled={!dirty || save.isPending}
             onClick={() => save.mutate(draft)}
-            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-40"
+            className="px-2 py-0.5 rounded text-xs bg-accent disabled:opacity-40"
           >
-            {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+            {save.isPending ? 'Saving…' : dirty ? 'Save ratchet' : 'Saved'}
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs bg-surface-0 border border-surface-3 rounded p-3">
-        <div>
+      <div className="grid grid-cols-3 gap-2 text-xs">
+        <div className="bg-surface-1 border border-surface-3 rounded p-2">
           <div className="opacity-60">Status</div>
           <div className="font-mono text-sm">
             {!draft.enabled ? 'disabled'
               : live.data.ratchetWouldBeActive ? 'ACTIVE' : 'idle (headroom)'}
           </div>
         </div>
-        <div>
+        <div className="bg-surface-1 border border-surface-3 rounded p-2">
           <div className="opacity-60">Utilisation</div>
           <div className="font-mono text-sm">{utilPct}%</div>
         </div>
-        <div>
+        <div className="bg-surface-1 border border-surface-3 rounded p-2">
           <div className="opacity-60">Threshold</div>
           <div className="font-mono text-sm">
             {draft.bandwidthThresholdPct != null
               ? `${(draft.bandwidthThresholdPct * 100).toFixed(0)}%`
-              : 'inherits bandwidth'}
+              : 'inherits bw'}
           </div>
         </div>
       </div>
 
-      <label className="flex items-center gap-2 text-sm">
+      <label className="flex items-center gap-2 text-xs">
         <input
           type="checkbox"
           checked={draft.enabled}
@@ -2392,7 +2381,7 @@ function P5RatchetPanel() {
         <span>Enable P5 ratchet</span>
       </label>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <NumberField label="Search cooldown (hours)"
           hint="Minimum time between attempts on the same (series, season)."
           value={draft.searchCooldownHours} min={1} step={1}
@@ -2409,7 +2398,7 @@ function P5RatchetPanel() {
           hint="0 = inherit from bandwidth settings. Otherwise utilisation fraction (e.g. 0.85)."
           value={draft.bandwidthThresholdPct ?? 0} min={0} max={1} step={0.05}
           onChange={(v) => setDraft({ ...draft, bandwidthThresholdPct: v > 0 ? v : null })} />
-        <label className="flex items-center gap-2 text-sm sm:col-span-2 lg:col-span-1">
+        <label className="flex items-center gap-2 text-xs sm:col-span-2">
           <input
             type="checkbox"
             checked={draft.includeSpecials}
