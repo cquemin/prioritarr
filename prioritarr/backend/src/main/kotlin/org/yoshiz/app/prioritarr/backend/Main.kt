@@ -389,13 +389,17 @@ fun main() {
                 weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
                 run = {
                     val s = liveSettings(db, settings)
-                    val lookup = org.yoshiz.app.prioritarr.backend.reconcile.fetchSonarrQueueLookup(sonarr)
-                    org.yoshiz.app.prioritarr.backend.reconcile.reconcileQbit(
-                        qbit, db, lookup, priorityService, s.dryRun,
+                    org.yoshiz.app.prioritarr.backend.reconcile.reconcileAll(
+                        qbit = qbit,
+                        sab = sab,
+                        sonarr = sonarr,
+                        db = db,
+                        priorityService = priorityService,
                         bandwidth = state.bandwidthSource.current(),
+                        p5Ratchet = s.p5Ratchet,
                         telemetry = state.downloadTelemetry,
+                        dryRun = s.dryRun,
                     )
-                    org.yoshiz.app.prioritarr.backend.reconcile.reconcileSab(sab, db, lookup, priorityService, s.dryRun)
                     org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
                 },
             ))
