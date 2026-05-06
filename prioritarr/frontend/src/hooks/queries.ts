@@ -436,6 +436,34 @@ export function useResetP5Ratchet() {
   })
 }
 
+// Per-series P5 ratchet state — drives the drawer tile for P5 series.
+export interface P5RatchetSeasonInfo {
+  seasonNumber: number
+  missingCount: number
+  lastAttemptedAt: string | null
+  consecutiveEmptyAttempts: number
+  status: 'eligible' | 'cooling' | 'long_cooldown'
+  nextStrategy: 'season' | 'episode' | null
+  retryAt: string | null
+}
+export interface P5RatchetSeriesStatus {
+  seriesId: number
+  isP5: boolean
+  ratchetEnabled: boolean
+  ratchetActive: boolean
+  currentSeason: P5RatchetSeasonInfo | null
+  seasons: P5RatchetSeasonInfo[]
+}
+
+export function useSeriesP5Ratchet(seriesId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: ['series-p5-ratchet', seriesId],
+    queryFn: () => rawFetch<P5RatchetSeriesStatus>(`/api/v2/series/${seriesId}/p5-ratchet`),
+    enabled: enabled && seriesId != null,
+    refetchInterval: 30_000,
+  })
+}
+
 export function useResetSettings() {
   const qc = useQueryClient()
   return useMutation({

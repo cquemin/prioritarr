@@ -30,6 +30,8 @@ import {
   useSeriesSync,
   useUntrackDownload,
   useWatchStatus,
+  useSeriesP5Ratchet,
+  type P5RatchetSeasonInfo,
   type ProviderWatchStatus,
   type SearchHit,
 } from '../hooks/queries'
@@ -525,6 +527,12 @@ function SeriesDetailDrawer({
         <WatchStatusTable data={watchStatus.data ?? null} loading={watchStatus.isLoading} />
       </DetailField>
 
+      {row.priority === 5 && (
+        <DetailField label="P5 ratchet">
+          <P5RatchetTile seriesId={row.id} />
+        </DetailField>
+      )}
+
       <DetailField label="Cache expires">
         <span className="opacity-80 text-xs">{d?.cacheExpiresAt?.slice(0, 19) ?? '—'}</span>
       </DetailField>
@@ -965,6 +973,78 @@ function DrawerLoadingSkeleton() {
           <div className={`h-16 rounded bg-surface-2 animate-pulse`} style={{ width: `${w}%` }} />
         </div>
       ))}
+    </div>
+  )
+}
+
+/**
+ * Drawer tile showing the P5 backfill season ratchet state for a single
+ * series. Rendered only when row.priority === 5. Queries the per-series
+ * endpoint so the data is always fresh (30 s poll).
+ */
+function P5RatchetTile({ seriesId }: { seriesId: number }) {
+  const status = useSeriesP5Ratchet(seriesId)
+  if (status.isLoading) return <span className="text-xs opacity-60">Loading…</span>
+  const d = status.data
+  if (!d) return <span className="text-xs opacity-60">No data</span>
+  if (!d.ratchetEnabled) {
+    return <span className="text-xs opacity-60">Ratchet disabled — no per-season ordering</span>
+  }
+  if (d.seasons.length === 0) {
+    return <span className="text-xs opacity-60">No missing episodes</span>
+  }
+  const cooling = d.seasons.filter((s) => s.status !== 'eligible')
+  const seasonsRange = (xs: P5RatchetSeasonInfo[]) => {
+    if (xs.length === 0) return ''
+    const sorted = [...xs].sort((a, b) => a.seasonNumber - b.seasonNumber)
+    const nums = sorted.map((x) => x.seasonNumber)
+    return nums.length === 1 ? `Season ${nums[0]}` : `Seasons ${nums[0]}–${nums[nums.length - 1]}`
+  }
+  const ago = (iso: string | null) => {
+    if (!iso) return 'never'
+    const ms = Date.now() - new Date(iso).getTime()
+    const h = Math.round(ms / 3_600_000)
+    if (h < 1) return 'just now'
+    if (h < 24) return `${h}h ago`
+    return `${Math.round(h / 24)}d ago`
+  }
+  const strategy = (s: P5RatchetSeasonInfo) =>
+    s.nextStrategy === 'episode'
+      ? `EpisodeSearch (attempt ${s.consecutiveEmptyAttempts + 1})`
+      : `SeasonSearch (attempt ${s.consecutiveEmptyAttempts + 1})`
+  const liveBadge = !d.ratchetActive
+    ? <span className="text-xs px-1.5 py-0.5 rounded bg-surface-3 opacity-70">idle (headroom)</span>
+    : <span className="text-xs px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300">ACTIVE</span>
+  return (
+    <div className="text-xs space-y-1.5">
+      <div className="flex items-center gap-2">
+        {liveBadge}
+        <span className="opacity-60">— ratchet would currently {d.ratchetActive ? 'sequence by season' : 'do nothing extra'}.</span>
+      </div>
+      {d.currentSeason && (
+        <div>
+          <span className="opacity-60">Currently backfilling:</span>{' '}
+          <span className="font-mono">Season {d.currentSeason.seasonNumber}</span>{' '}
+          <span className="opacity-60">
+            ({d.currentSeason.missingCount} missing, last attempt {ago(d.currentSeason.lastAttemptedAt)})
+          </span>
+        </div>
+      )}
+      {cooling.length > 0 && (
+        <div>
+          <span className="opacity-60">Cooldowns:</span>{' '}
+          <span className="font-mono">{seasonsRange(cooling)}</span>{' '}
+          <span className="opacity-60">
+            ({cooling.some((s) => s.status === 'long_cooldown') ? 'after long cooldown' : 'short cooldown'})
+          </span>
+        </div>
+      )}
+      {d.currentSeason && (
+        <div>
+          <span className="opacity-60">Strategy:</span>{' '}
+          <span className="font-mono">{strategy(d.currentSeason)}</span>
+        </div>
+      )}
     </div>
   )
 }
