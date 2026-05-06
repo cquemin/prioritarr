@@ -26,6 +26,24 @@ class Database(dbPath: String) {
     init {
         Db.Schema.create(driver)
         db = Db(driver)
+        ensureLegacyColumns()
+    }
+
+    /**
+     * For databases created before season_number existed on
+     * managed_downloads. SQLDelight's CREATE TABLE IF NOT EXISTS won't
+     * add new columns to existing tables; we issue an idempotent ALTER
+     * here and swallow the "duplicate column" error so this is safe to
+     * run on every startup.
+     */
+    private fun ensureLegacyColumns() {
+        try {
+            driver.execute(null, "ALTER TABLE managed_downloads ADD COLUMN season_number INTEGER", 0)
+        } catch (e: Exception) {
+            // SQLite emits "duplicate column name" for the second run.
+            // Any other error is surfaced via SQLDelight's normal path on first read.
+            if (e.message?.contains("duplicate column", ignoreCase = true) != true) throw e
+        }
     }
 
     /** The underlying generated queries — exposed for advanced callers (mapping cache warm-up, tests). */
@@ -101,6 +119,83 @@ class Database(dbPath: String) {
 
     fun deleteManagedDownload(client: String, clientId: String) {
         q.deleteManagedDownload(client, clientId)
+    }
+
+    fun setManagedSeasonNumber(client: String, clientId: String, seasonNumber: Int?) {
+        q.setManagedSeasonNumber(seasonNumber?.toLong(), client, clientId)
+    }
+
+    // ------------------------------------------------------------------
+    // p5_sweep_attempts
+    // ------------------------------------------------------------------
+
+    /**
+     * In-memory shape returned by [listP5Attempts] / [getP5Attempt] —
+     * a thin alias over the generated row class so callers don't have
+     * to depend on SQLDelight types. Times are epoch seconds (matching
+     * the column type).
+     */
+    data class P5SweepAttempt(
+        val seriesId: Long,
+        val seasonNumber: Int,
+        val lastAttemptedAt: Long,
+        val lastMissingCount: Int?,
+        val consecutiveEmptyAttempts: Int,
+    )
+
+    fun upsertP5Attempt(
+        seriesId: Long,
+        seasonNumber: Int,
+        lastAttemptedAt: Long,
+        lastMissingCount: Int?,
+        consecutiveEmptyAttempts: Int,
+    ) {
+        q.upsertP5Attempt(
+            series_id = seriesId,
+            season_number = seasonNumber.toLong(),
+            last_attempted_at = lastAttemptedAt,
+            last_missing_count = lastMissingCount?.toLong(),
+            consecutive_empty_attempts = consecutiveEmptyAttempts.toLong(),
+        )
+    }
+
+    fun getP5Attempt(seriesId: Long, seasonNumber: Int): P5SweepAttempt? =
+        q.selectP5Attempt(seriesId, seasonNumber.toLong())
+            .executeAsOneOrNull()
+            ?.let { row ->
+                P5SweepAttempt(
+                    seriesId = row.series_id,
+                    seasonNumber = row.season_number.toInt(),
+                    lastAttemptedAt = row.last_attempted_at,
+                    lastMissingCount = row.last_missing_count?.toInt(),
+                    consecutiveEmptyAttempts = row.consecutive_empty_attempts.toInt(),
+                )
+            }
+
+    fun listP5Attempts(): List<P5SweepAttempt> =
+        q.listP5Attempts().executeAsList().map { row ->
+            P5SweepAttempt(
+                seriesId = row.series_id,
+                seasonNumber = row.season_number.toInt(),
+                lastAttemptedAt = row.last_attempted_at,
+                lastMissingCount = row.last_missing_count?.toInt(),
+                consecutiveEmptyAttempts = row.consecutive_empty_attempts.toInt(),
+            )
+        }
+
+    fun listP5AttemptsForSeries(seriesId: Long): List<P5SweepAttempt> =
+        q.listP5AttemptsForSeries(seriesId).executeAsList().map { row ->
+            P5SweepAttempt(
+                seriesId = row.series_id,
+                seasonNumber = row.season_number.toInt(),
+                lastAttemptedAt = row.last_attempted_at,
+                lastMissingCount = row.last_missing_count?.toInt(),
+                consecutiveEmptyAttempts = row.consecutive_empty_attempts.toInt(),
+            )
+        }
+
+    fun deleteP5AttemptsForSeries(seriesId: Long) {
+        q.deleteP5AttemptsForSeries(seriesId)
     }
 
     // ------------------------------------------------------------------
