@@ -49,9 +49,11 @@ fun computeEnforcement(
     for (d in downloads) {
         // Layer 1 first
         val deferByCrossBand = d.priority in crossBandDeferLevels &&
-            !ctx.p1IsPeerLimited &&
-            !ctx.isNearDone(d) &&
-            d.state == ManagedState.RUNNING
+            d.state == ManagedState.RUNNING &&
+            (
+                !ctx.bandwidthAwareEnabled ||
+                    (ctx.bandwidthSaturated && !ctx.p1IsPeerLimited && !ctx.isNearDone(d))
+            )
 
         // Layer 2 only kicks in when ratchet is active AND Layer 1
         // didn't already defer the item AND the item is RUNNING
@@ -60,6 +62,7 @@ fun computeEnforcement(
             ctx.p5SeasonRatchetActive &&
             d.priority == 5 &&
             d.state == ManagedState.RUNNING &&
+            !ctx.isNearDone(d) &&
             d.seriesId != null &&
             d.seasonNumber != null &&
             p5MinSeasonBySeries[d.seriesId]?.let { min -> d.seasonNumber > min } == true

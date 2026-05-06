@@ -66,7 +66,7 @@ class ComputeEnforcementTest {
         // P1 is peer-limited → freeing bandwidth on P5 won't help → don't defer P5
         val decisions = computeEnforcement(
             listOf(dl("p1", 1), dl("p5", 5)),
-            ComputeEnforcementContext(p1IsPeerLimited = true),
+            ComputeEnforcementContext(bandwidthAwareEnabled = true, bandwidthSaturated = true, p1IsPeerLimited = true),
         )
         assertEquals(TargetState.ACTIVE, decisions["p5"]!!.targetState)
     }
@@ -75,7 +75,7 @@ class ComputeEnforcementTest {
         val nearDone = dl("p5", 5)
         val decisions = computeEnforcement(
             listOf(dl("p1", 1), nearDone),
-            ComputeEnforcementContext(isNearDone = { it.clientId == "p5" }),
+            ComputeEnforcementContext(bandwidthAwareEnabled = true, bandwidthSaturated = true, isNearDone = { it.clientId == "p5" }),
         )
         assertEquals(TargetState.ACTIVE, decisions["p5"]!!.targetState)
     }
@@ -212,5 +212,41 @@ class ComputeEnforcementTest {
         val decisions = computeEnforcement(listOf(s1e2, s1e1, s2e1), ComputeEnforcementContext())
         val sorted = listOf("s1e2", "s1e1", "s2e1").sortedBy { decisions[it]!!.orderHint }
         kotlin.test.assertEquals(listOf("s1e1", "s1e2", "s2e1"), sorted)
+    }
+
+    // ---------- bandwidth-aware gating ----------
+
+    @Test fun layer1_bandwidth_aware_enabled_but_not_saturated_does_not_defer() {
+        val decisions = computeEnforcement(
+            listOf(dl("p1", 1), dl("p5", 5)),
+            ComputeEnforcementContext(bandwidthAwareEnabled = true, bandwidthSaturated = false),
+        )
+        // Plenty of headroom → P5 keeps running even though P1 is active.
+        assertEquals(TargetState.ACTIVE, decisions["p5"]!!.targetState)
+    }
+
+    @Test fun layer1_bandwidth_aware_enabled_and_saturated_defers() {
+        val decisions = computeEnforcement(
+            listOf(dl("p1", 1), dl("p5", 5)),
+            ComputeEnforcementContext(bandwidthAwareEnabled = true, bandwidthSaturated = true),
+        )
+        assertEquals(TargetState.DEFERRED, decisions["p5"]!!.targetState)
+    }
+
+    @Test fun layer2_near_done_higher_season_skips_defer() {
+        // P5 S3 is 95% done; ratchet would normally defer it, but
+        // close-to-finish wins.
+        val decisions = computeEnforcement(
+            listOf(
+                dl("s1", 5, seriesId = 1L, seasonNumber = 1),
+                dl("s3-near", 5, seriesId = 1L, seasonNumber = 3),
+            ),
+            ComputeEnforcementContext(
+                p5SeasonRatchetActive = true,
+                isNearDone = { it.clientId == "s3-near" },
+            ),
+        )
+        assertEquals(TargetState.ACTIVE, decisions["s1"]!!.targetState)
+        assertEquals(TargetState.ACTIVE, decisions["s3-near"]!!.targetState)
     }
 }

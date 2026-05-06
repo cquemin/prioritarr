@@ -56,11 +56,23 @@ enum class TargetState { ACTIVE, DEFERRED }
  * preserve today's behaviour.
  */
 data class ComputeEnforcementContext(
-    /** True when the bandwidth-policy signal says "pipe is contended". */
+    /**
+     * Master switch for the bandwidth-aware cross-band logic. When
+     * `false` (operator hasn't configured the bandwidth feature),
+     * Layer 1 always defers per the priority band rule. When `true`,
+     * Layer 1 only defers when [bandwidthSaturated] is also true and
+     * neither [p1IsPeerLimited] nor [isNearDone] short-circuits the
+     * defer.
+     *
+     * This boolean replaces the legacy "if (bandwidth.maxMbps <= 0)"
+     * branch in the Python/old-Kotlin reconciler.
+     */
+    val bandwidthAwareEnabled: Boolean = false,
+    /** True when the bandwidth-policy signal says "pipe is at or above the utilisation threshold". Only consulted when [bandwidthAwareEnabled] is true. */
     val bandwidthSaturated: Boolean = false,
     /** True when [P5RatchetConfig.enabled] is true AND bandwidthSaturated. */
     val p5SeasonRatchetActive: Boolean = false,
-    /** P1 average speed signal — if [bandwidthSaturated] but P1 is peer-limited, don't pause others. */
+    /** P1 average speed signal — if [bandwidthAwareEnabled] but P1 is peer-limited, don't pause others. */
     val p1IsPeerLimited: Boolean = false,
     /** Per-candidate near-done predicate. Default: no item is near-done. */
     val isNearDone: (ManagedDownloadView) -> Boolean = { false },
