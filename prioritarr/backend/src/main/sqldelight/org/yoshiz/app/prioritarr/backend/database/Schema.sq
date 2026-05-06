@@ -55,9 +55,10 @@ CREATE TABLE IF NOT EXISTS managed_downloads (
 CREATE TABLE IF NOT EXISTS p5_sweep_attempts (
     series_id INTEGER NOT NULL,
     season_number INTEGER NOT NULL,
-    last_attempted_at INTEGER NOT NULL,    -- epoch seconds
-    last_missing_count INTEGER,            -- null on the very first attempt
-    consecutive_empty_attempts INTEGER NOT NULL DEFAULT 0,
+    last_attempted_at INTEGER NOT NULL CHECK (last_attempted_at > 0),
+    last_missing_count INTEGER CHECK (last_missing_count IS NULL OR last_missing_count >= 0),
+    consecutive_empty_attempts INTEGER NOT NULL DEFAULT 0
+        CHECK (consecutive_empty_attempts >= 0),
     PRIMARY KEY (series_id, season_number)
 );
 
@@ -518,6 +519,9 @@ ORDER BY provider;
 
 deleteAllProviderHealth:
 DELETE FROM provider_health;
+
+deleteAllP5SweepAttempts:
+DELETE FROM p5_sweep_attempts;
 
 -- ------------------------------------------------------------------
 -- p5_sweep_attempts
