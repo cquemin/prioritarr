@@ -7,13 +7,11 @@ import kotlinx.serialization.json.JsonArray
  * verbs the UI and bulk endpoints fire: pause, resume, boost, demote,
  * delete, and a per-client translation of the prioritarr P1–P5 label.
  *
- * **Not** unified at the enforcement-strategy level — qBit uses
- * pause-band semantics (needs global knowledge of the active queue),
- * SAB uses priority buckets (per-item). Each client owns its own
- * reconciler (`reconcileQbit`, `reconcileSab`) and the enforcement
- * logic stays there. The interface lets route handlers and the bulk
- * endpoint dispatch by client name without switching on hardcoded
- * strings.
+ * Enforcement strategy IS unified at the calculation level
+ * ([org.yoshiz.app.prioritarr.backend.enforcement.computeEnforcement]).
+ * Each client's [applyEnforcement] translates the calculated
+ * decisions to its native API; qBit emits pause/resume + setTopPriority,
+ * SAB walks its priority bucket via queue/switch.
  *
  * ### Adding a third downloader (e.g. Transmission, NZBGet)
  *
@@ -67,4 +65,28 @@ interface DownloadClient {
      * somewhere and just want the client to stop tracking it."
      */
     suspend fun deleteOne(clientId: String, deleteFiles: Boolean = true)
+
+    /**
+     * Snapshot the client's queue, normalised to [RawDownload]. The
+     * caller (reconciler) joins these against [Database.listManagedDownloads]
+     * and Sonarr's queue to produce [ManagedDownloadView]s for
+     * [computeEnforcement]. Returning an empty list on transient
+     * errors is preferred over throwing — the reconciler is supervised
+     * but a hot-loop stack trace is noise.
+     */
+    suspend fun snapshotDownloads(): List<org.yoshiz.app.prioritarr.backend.enforcement.RawDownload>
+
+    /**
+     * Apply the calculated decisions for items belonging to this
+     * client. The implementation is free to translate ACTIVE/DEFERRED
+     * + orderHint to whatever native API achieves the same observable
+     * effect with minimum churn.
+     *
+     * Decisions for items not belonging to this client (different
+     * `client` field) MUST be ignored — the reconciler filters before
+     * dispatching, but defence in depth is cheap.
+     */
+    suspend fun applyEnforcement(
+        decisions: Map<String, org.yoshiz.app.prioritarr.backend.enforcement.EnforcementDecision>,
+    )
 }
