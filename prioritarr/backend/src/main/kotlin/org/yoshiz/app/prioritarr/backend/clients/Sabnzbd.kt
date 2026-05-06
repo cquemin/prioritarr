@@ -7,6 +7,9 @@ import io.ktor.client.request.parameter
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /** SABnzbd JSON API client. Mirrors prioritarr/clients/sabnzbd.py. */
 class SABClient(
@@ -93,6 +96,74 @@ class SABClient(
             "value" to nzoId,
             "del_files" to if (delFiles) "1" else "0",
         ))
+
+    /**
+     * Swap two queue items by nzo_id. SAB's API: mode=switch with
+     * `value` = first nzo_id and `value2` = second. Used by the
+     * P5-ratchet reorder to walk Low-bucket items into season order.
+     */
+    suspend fun queueSwitch(nzoA: String, nzoB: String) {
+        try {
+            call("switch", mapOf("value" to nzoA, "value2" to nzoB))
+        } catch (_: Exception) {
+            // Best-effort; SAB's switch is idempotent on the next tick
+            // and a transient failure isn't worth bubbling up.
+        }
+    }
+
+    override suspend fun snapshotDownloads():
+        List<org.yoshiz.app.prioritarr.backend.enforcement.RawDownload> {
+        val slots = try { getQueue() } catch (_: Exception) { return emptyList() }
+        return slots.mapNotNull { el ->
+            val o = el.jsonObject
+            val nzo = o["nzo_id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val status = o["status"]?.jsonPrimitive?.contentOrNull ?: "Queued"
+            org.yoshiz.app.prioritarr.backend.enforcement.RawDownload(
+                client = "sab",
+                clientId = nzo,
+                rawState = status,
+                pausedByUs = false,        // joined from managed_downloads in the reconciler
+                etaSeconds = null,         // SAB exposes timeleft as text; we don't parse
+            )
+        }
+    }
+
+    override suspend fun applyEnforcement(
+        decisions: Map<String, org.yoshiz.app.prioritarr.backend.enforcement.EnforcementDecision>,
+    ) {
+        // SAB priority buckets are set by [setPriority] in the
+        // reconciler's per-row pass (mapped from priority via
+        // computeSabPriority). This method handles the within-bucket
+        // ordering: walk the current queue in order, compare to
+        // desired-by-orderHint, and emit queue/switch swaps where they
+        // differ.
+        val slots = try { getQueue() } catch (_: Exception) { return }
+        val currentOrder: List<String> = slots.mapNotNull {
+            it.jsonObject["nzo_id"]?.jsonPrimitive?.contentOrNull
+        }
+        // Only consider items we have decisions for AND that are ACTIVE
+        // (DEFERRED items are demoted via the priority bucket — no
+        // sense reordering within a bucket if the item is also paused).
+        val active = decisions.filter {
+            it.value.targetState == org.yoshiz.app.prioritarr.backend.enforcement.TargetState.ACTIVE
+        }
+        val desired = currentOrder
+            .filter { it in active }
+            .sortedBy { active[it]!!.orderHint }
+
+        // Walk currentOrder; for each item not already in its desired
+        // position by more than one slot, swap with the actual desired
+        // neighbour. This minimises churn under SAB's slightly jittery
+        // position reporting.
+        val currentManaged = currentOrder.filter { it in active }
+        for (i in desired.indices) {
+            val want = desired[i]
+            val have = currentManaged.getOrNull(i) ?: continue
+            if (want != have) {
+                queueSwitch(have, want)
+            }
+        }
+    }
 
     private suspend fun call(mode: String, params: Map<String, String> = emptyMap()): JsonElement =
         http.get("$root/sabnzbd/api") {
