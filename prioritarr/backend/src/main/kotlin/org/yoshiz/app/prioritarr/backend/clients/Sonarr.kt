@@ -60,6 +60,13 @@ class SonarrClient(
             put("seriesId", seriesId)
         }) as JsonObject
 
+    suspend fun triggerSeasonSearch(seriesId: Long, seasonNumber: Int): JsonObject =
+        post("/api/v3/command", buildJsonObject {
+            put("name", "SeasonSearch")
+            put("seriesId", seriesId)
+            put("seasonNumber", seasonNumber)
+        }) as JsonObject
+
     suspend fun triggerCutoffSearch(seriesId: Long): JsonObject =
         post("/api/v3/command", buildJsonObject {
             put("name", "CutoffUnmetEpisodeSearch")
