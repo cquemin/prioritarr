@@ -1,5 +1,8 @@
 package org.yoshiz.app.prioritarr.backend.sweep
 
+import kotlinx.coroutines.delay
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.yoshiz.app.prioritarr.backend.config.P5RatchetConfig
 import org.yoshiz.app.prioritarr.backend.database.Database
 
@@ -146,4 +149,87 @@ fun buildP5RatchetPlan(inputs: P5RatchetInputs): P5RatchetPlan {
     }
 
     return P5RatchetPlan(actions = actions, cooldownWrites = writes)
+}
+
+/**
+ * Execute a [P5RatchetPlan] against Sonarr + persist the cooldown
+ * writes. Returns the number of search commands actually fired —
+ * caller subtracts from the shared sweep budget.
+ *
+ * Plan execution is best-effort: a Sonarr error on action N stops the
+ * loop and leaves cooldownWrites for unpicked seasons un-applied.
+ * That's intentional — failing fast lets the next sweep retry without
+ * polluting the cooldown table with attempts that may not have
+ * actually hit indexers.
+ */
+suspend fun runP5SeasonRatchet(
+    plan: P5RatchetPlan,
+    sonarr: org.yoshiz.app.prioritarr.backend.clients.SonarrClient,
+    db: Database,
+    delaySeconds: Int,
+    dryRun: Boolean,
+): Int {
+    if (plan.actions.isEmpty()) return 0
+    var fired = 0
+    val logger = org.slf4j.LoggerFactory.getLogger("p5-ratchet")
+    var seasonSearches = 0
+    var episodeSearches = 0
+    var seriesSearches = 0
+    val firstWritesByAction = plan.actions.zip(plan.cooldownWrites).toMap()
+
+    for (action in plan.actions) {
+        val attemptStrategy = when (action) {
+            is RatchetAction.SeasonSearch -> "season"
+            is RatchetAction.EpisodeSearch -> "episode"
+            is RatchetAction.SeriesSearch -> "series"
+        }
+        if (dryRun) {
+            logger.info("[p5-ratchet] DRY RUN: would {} for series {} action={}",
+                attemptStrategy, action.seriesId, action::class.simpleName)
+        } else {
+            try {
+                when (action) {
+                    is RatchetAction.SeasonSearch ->
+                        sonarr.triggerSeasonSearch(action.seriesId, action.seasonNumber).also { seasonSearches++ }
+                    is RatchetAction.EpisodeSearch ->
+                        sonarr.triggerEpisodeSearch(action.episodeIds).also { episodeSearches++ }
+                    is RatchetAction.SeriesSearch ->
+                        sonarr.triggerSeriesSearch(action.seriesId).also { seriesSearches++ }
+                }
+            } catch (e: Exception) {
+                logger.warn("[p5-ratchet] {} for series {} failed: {}", attemptStrategy, action.seriesId, e.message)
+                break
+            }
+            firstWritesByAction[action]?.let { write ->
+                db.upsertP5Attempt(
+                    seriesId = write.seriesId,
+                    seasonNumber = write.seasonNumber,
+                    lastAttemptedAt = write.lastAttemptedAt,
+                    lastMissingCount = write.lastMissingCount,
+                    consecutiveEmptyAttempts = write.consecutiveEmptyAttempts,
+                )
+            }
+            db.appendAudit(
+                action = "p5_ratchet_search",
+                seriesId = action.seriesId,
+                details = buildJsonObject {
+                    put("strategy", attemptStrategy)
+                    when (action) {
+                        is RatchetAction.SeasonSearch ->
+                            put("season_number", action.seasonNumber)
+                        is RatchetAction.EpisodeSearch -> {
+                            put("season_number", action.seasonNumber)
+                            put("episode_count", action.episodeIds.size)
+                        }
+                        is RatchetAction.SeriesSearch -> { /* nothing extra */ }
+                    }
+                },
+            )
+            if (delaySeconds > 0) delay(delaySeconds * 1_000L)
+        }
+        fired++
+    }
+    logger.info("[p5-ratchet] sweep: {} actions ({} season + {} episode + {} series)",
+        fired, seasonSearches, episodeSearches, seriesSearches)
+    return fired
 }
