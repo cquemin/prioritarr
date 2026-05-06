@@ -395,6 +395,47 @@ export function useResetBandwidth() {
   })
 }
 
+// P5 backfill season ratchet — per-(series, season) cooldowns +
+// escalation ladder for P5-priority backfill. Live-editable; takes
+// effect on the next reconcile / sweep tick (no restart).
+export interface P5RatchetSettings {
+  enabled: boolean
+  searchCooldownHours: number
+  longCooldownHours: number
+  escalationThreshold: number
+  includeSpecials: boolean
+  bandwidthThresholdPct: number | null
+}
+export interface P5RatchetStatus extends P5RatchetSettings {
+  ratchetWouldBeActive: boolean
+  currentUtilisationPct: number
+}
+
+export function useP5Ratchet() {
+  return useQuery({
+    queryKey: ['p5-ratchet'],
+    queryFn: () => rawFetch<P5RatchetStatus>('/api/v2/settings/p5-ratchet'),
+    refetchInterval: 10_000,
+  })
+}
+export function useSaveP5Ratchet() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (next: P5RatchetSettings) =>
+      rawFetch<void>('/api/v2/settings/p5-ratchet', {
+        method: 'PUT', body: JSON.stringify(next),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['p5-ratchet'] }),
+  })
+}
+export function useResetP5Ratchet() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => rawFetch<void>('/api/v2/settings/p5-ratchet', { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['p5-ratchet'] }),
+  })
+}
+
 export function useResetSettings() {
   const qc = useQueryClient()
   return useMutation({

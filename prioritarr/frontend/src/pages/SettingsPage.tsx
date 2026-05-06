@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
-  Settings as SettingsIcon, Plug, Gauge, ListOrdered, RefreshCw, Link2, Webhook, Box,
+  Settings as SettingsIcon, Plug, Gauge, Layers, ListOrdered, RefreshCw, Link2, Webhook, Box,
 } from 'lucide-react'
 
 import { TableSkeleton } from '../components/Skeleton'
@@ -25,9 +25,12 @@ import {
   useMappings,
   useOrphanSweep,
   useOrphans,
+  useP5Ratchet,
   usePriorityPreview,
   useResetBandwidth,
+  useResetP5Ratchet,
   useSaveBandwidth,
+  useSaveP5Ratchet,
   useProbeOrphan,
   useRefreshMappings,
   useRenameOrphan,
@@ -40,6 +43,7 @@ import {
   type BandwidthSettings,
   type OrphanAuditRow,
   type OrphanProbeResult,
+  type P5RatchetSettings,
   type PriorityPreviewEntry,
   type PriorityThresholds,
 } from '../hooks/queries'
@@ -95,6 +99,7 @@ const SETTINGS_NAV: ReadonlyArray<{
   { id: 'connections', label: 'Connections', icon: <Plug size={16} /> },
   { id: 'bandwidth', label: 'Bandwidth', icon: <Gauge size={16} /> },
   { id: 'priority-rules', label: 'Priority rules', icon: <ListOrdered size={16} /> },
+  { id: 'p5-ratchet', label: 'P5 ratchet', icon: <Layers size={16} /> },
   { id: 'jobs', label: 'Background jobs', icon: <RefreshCw size={16} /> },
   { id: 'orphans', label: 'Orphans', icon: <Box size={16} /> },
   { id: 'mappings', label: 'Mappings', icon: <Link2 size={16} /> },
@@ -142,6 +147,7 @@ export function SettingsPage() {
         {section === 'connections' && <ConnectionsSection s={s} />}
         {section === 'bandwidth' && <BandwidthSection />}
         {section === 'priority-rules' && <PriorityRulesSection />}
+        {section === 'p5-ratchet' && <P5RatchetSection />}
         {section === 'jobs' && <JobsSection />}
         {section === 'orphans' && <OrphansSection />}
         {section === 'mappings' && <MappingsSection />}
@@ -555,6 +561,18 @@ function BandwidthSection() {
         subtitle="Caps and decision knobs for the bandwidth-aware enforcement."
       />
       <BandwidthPanel />
+    </>
+  )
+}
+
+function P5RatchetSection() {
+  return (
+    <>
+      <SectionHeader
+        title="P5 backfill ratchet"
+        subtitle="Sequences P5 backfill by earlier seasons first when bandwidth is contended."
+      />
+      <P5RatchetPanel />
     </>
   )
 }
@@ -2262,6 +2280,143 @@ function BandwidthPanel() {
           hint="Cap that applies inside the window. Blank / 0 → fall back to line capacity."
           value={draft.peakHoursMaxMbps ?? 0} min={0} step={5}
           onChange={(v) => setDraft({ ...draft, peakHoursMaxMbps: v || null })} />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * P5 backfill season ratchet panel. When the bandwidth-policy says the
+ * pipe is contended, the ratchet sequences P5 backfill by season — S1
+ * before S2 before S3 — within each series. Disabled by default; flip
+ * `enabled` to opt in. The live preview shows whether the ratchet
+ * would currently activate based on observed bandwidth utilisation.
+ */
+function P5RatchetPanel() {
+  const live = useP5Ratchet()
+  const save = useSaveP5Ratchet()
+  const reset = useResetP5Ratchet()
+  const [draft, setDraft] = useState<P5RatchetSettings | null>(null)
+
+  useEffect(() => {
+    if (live.data) {
+      const { ratchetWouldBeActive: _rwa, currentUtilisationPct: _cup, ...settings } = live.data
+      setDraft(settings)
+    }
+  }, [live.data])
+
+  if (live.isLoading || !draft || !live.data) {
+    return (
+      <div className="bg-surface-1 rounded-lg border border-surface-3 p-4">
+        <h2 className="font-semibold">P5 backfill ratchet</h2>
+        <p className="text-xs opacity-70 mt-1">Loading…</p>
+      </div>
+    )
+  }
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify({
+    enabled: live.data.enabled,
+    searchCooldownHours: live.data.searchCooldownHours,
+    longCooldownHours: live.data.longCooldownHours,
+    escalationThreshold: live.data.escalationThreshold,
+    includeSpecials: live.data.includeSpecials,
+    bandwidthThresholdPct: live.data.bandwidthThresholdPct,
+  })
+  const utilPct = (live.data.currentUtilisationPct * 100).toFixed(1)
+
+  return (
+    <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-3">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex-1 min-w-0">
+          <h2 className="font-semibold">P5 backfill ratchet</h2>
+          <p className="text-xs opacity-70 mt-0.5">
+            For full-backfill (P5) series, prefer earlier seasons first
+            when bandwidth is contended. S1 finishes before S2 starts;
+            cooldowns and an escalation ladder (SeasonSearch → retry →
+            EpisodeSearch → long cooldown) keep indexer usage polite.
+            Enable the bandwidth-aware feature first; this only fires
+            when the pipe is saturated.
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+          <button
+            type="button"
+            onClick={async () => {
+              if (!confirm('Reset P5 ratchet settings to env/YAML baseline?')) return
+              await reset.mutateAsync()
+            }}
+            disabled={reset.isPending}
+            className="px-3 py-1 rounded text-sm bg-surface-3 disabled:opacity-50"
+          >
+            {reset.isPending ? 'Resetting…' : 'Reset'}
+          </button>
+          <button
+            type="button"
+            disabled={!dirty || save.isPending}
+            onClick={() => save.mutate(draft)}
+            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-40"
+          >
+            {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs bg-surface-0 border border-surface-3 rounded p-3">
+        <div>
+          <div className="opacity-60">Status</div>
+          <div className="font-mono text-sm">
+            {!draft.enabled ? 'disabled'
+              : live.data.ratchetWouldBeActive ? 'ACTIVE' : 'idle (headroom)'}
+          </div>
+        </div>
+        <div>
+          <div className="opacity-60">Utilisation</div>
+          <div className="font-mono text-sm">{utilPct}%</div>
+        </div>
+        <div>
+          <div className="opacity-60">Threshold</div>
+          <div className="font-mono text-sm">
+            {draft.bandwidthThresholdPct != null
+              ? `${(draft.bandwidthThresholdPct * 100).toFixed(0)}%`
+              : 'inherits bandwidth'}
+          </div>
+        </div>
+      </div>
+
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={draft.enabled}
+          onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
+        />
+        <span>Enable P5 ratchet</span>
+      </label>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        <NumberField label="Search cooldown (hours)"
+          hint="Minimum time between attempts on the same (series, season)."
+          value={draft.searchCooldownHours} min={1} step={1}
+          onChange={(v) => setDraft({ ...draft, searchCooldownHours: v })} />
+        <NumberField label="Long cooldown (hours)"
+          hint="Sleep window after escalation_threshold consecutive empty attempts."
+          value={draft.longCooldownHours} min={1} step={1}
+          onChange={(v) => setDraft({ ...draft, longCooldownHours: v })} />
+        <NumberField label="Escalation threshold"
+          hint="Consecutive empty attempts before triggering long cooldown."
+          value={draft.escalationThreshold} min={1} step={1}
+          onChange={(v) => setDraft({ ...draft, escalationThreshold: v })} />
+        <NumberField label="Bandwidth threshold (override)"
+          hint="0 = inherit from bandwidth settings. Otherwise utilisation fraction (e.g. 0.85)."
+          value={draft.bandwidthThresholdPct ?? 0} min={0} max={1} step={0.05}
+          onChange={(v) => setDraft({ ...draft, bandwidthThresholdPct: v > 0 ? v : null })} />
+        <label className="flex items-center gap-2 text-sm sm:col-span-2 lg:col-span-1">
+          <input
+            type="checkbox"
+            checked={draft.includeSpecials}
+            onChange={(e) => setDraft({ ...draft, includeSpecials: e.target.checked })}
+          />
+          <span>Include specials (S0)</span>
+        </label>
       </div>
     </div>
   )
