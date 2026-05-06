@@ -513,7 +513,12 @@ fun main() {
                 run = {
                     val s = liveSettings(db, settings)
                     org.yoshiz.app.prioritarr.backend.sweep.runBackfillSweep(
-                        sonarr, priorityService,
+                        sonarr = sonarr,
+                        priorityService = priorityService,
+                        db = db,
+                        p5Ratchet = s.p5Ratchet,
+                        bandwidth = state.bandwidthSource.current(),
+                        telemetry = state.downloadTelemetry,
                         maxSearches = s.intervals.backfillMaxSearchesPerSweep,
                         delaySeconds = s.intervals.backfillDelayBetweenSearchesSeconds,
                         dryRun = s.dryRun,
