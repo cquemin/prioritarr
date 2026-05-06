@@ -1606,20 +1606,29 @@ fun Route.v2Routes(state: AppState) {
                 val dsr = snap.episodeReleaseDate?.let { java.time.Duration.between(it, now).toDays().toInt() }
 
                 // Overlay preview priority on each managed download so
-                // we can re-run the pause-band calc and report "would
-                // still be paused" per download.
+                // we can re-run the defer-band calc and report "would
+                // still be deferred" per download.
                 val overlayedView = managed.map { row ->
                     val overlay = if (row.series_id == sid) preview.result.priority else row.current_priority.toInt()
-                    org.yoshiz.app.prioritarr.backend.enforcement.QBitDownloadView(
-                        hash = row.client_id,
+                    org.yoshiz.app.prioritarr.backend.enforcement.ManagedDownloadView(
+                        client = row.client,
+                        clientId = row.client_id,
                         priority = overlay,
-                        state = if (row.paused_by_us == 1L) "pausedDL" else "downloading",
-                        pausedByUs = row.paused_by_us == 1L,
+                        seriesId = row.series_id,
+                        seasonNumber = null,
+                        episodeNumber = null,
+                        state = if (row.paused_by_us == 1L)
+                            org.yoshiz.app.prioritarr.backend.enforcement.ManagedState.PAUSED_BY_US
+                        else
+                            org.yoshiz.app.prioritarr.backend.enforcement.ManagedState.RUNNING,
+                        etaSeconds = null,
                     )
                 }
-                val actions = org.yoshiz.app.prioritarr.backend.enforcement
-                    .computeQBitPauseActions(overlayedView)
-                val pausedHashes = actions.filter { it.action == "pause" }.map { it.hash }.toSet()
+                val decisions = org.yoshiz.app.prioritarr.backend.enforcement
+                    .computeEnforcement(overlayedView, org.yoshiz.app.prioritarr.backend.enforcement.ComputeEnforcementContext())
+                val pausedHashes = decisions
+                    .filterValues { it.targetState == org.yoshiz.app.prioritarr.backend.enforcement.TargetState.DEFERRED }
+                    .keys
 
                 PriorityPreviewEntry(
                     seriesId = sid,

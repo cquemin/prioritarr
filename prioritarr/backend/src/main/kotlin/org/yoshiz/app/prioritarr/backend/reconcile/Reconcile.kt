@@ -14,10 +14,7 @@ import org.yoshiz.app.prioritarr.backend.clients.SABClient
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
 import org.yoshiz.app.prioritarr.backend.config.P5RatchetConfig
 import org.yoshiz.app.prioritarr.backend.database.Database
-import org.yoshiz.app.prioritarr.backend.enforcement.QBitDownloadView
-import org.yoshiz.app.prioritarr.backend.enforcement.computeQBitPauseActions
 import org.yoshiz.app.prioritarr.backend.enforcement.computeSabPriority
-import org.yoshiz.app.prioritarr.backend.priority.PriorityResult
 import org.yoshiz.app.prioritarr.backend.priority.PriorityService
 
 private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.reconcile")
@@ -50,89 +47,6 @@ suspend fun fetchSonarrQueueLookup(sonarr: SonarrClient): Map<String, SonarrQueu
         out[dlId.lowercase()] = SonarrQueueInfo(seriesId, episodeId, season, epNum)
     }
     return out
-}
-
-/**
- * Reconcile a single download client's queue against managed_downloads.
- *
- * 1. Adopt orphans (in the client queue but not yet tracked) — look up via
- *    sonarr's /queue to resolve which series they belong to.
- * 2. Recompute priorities for tracked downloads; log and persist changes.
- * 3. Apply enforcement (qBit pause/resume, SAB priority) unless dry_run.
- * 4. Remove managed_download rows whose download is no longer in the queue.
- *
- * Mirrors reconcile.py::reconcile_client.
- */
-suspend fun reconcileQbit(
-    qbit: QBitClient,
-    db: Database,
-    sonarrQueueLookup: Map<String, SonarrQueueInfo>,
-    priorityService: PriorityService,
-    dryRun: Boolean,
-    bandwidth: org.yoshiz.app.prioritarr.backend.config.BandwidthSettings =
-        org.yoshiz.app.prioritarr.backend.config.BandwidthSettings(),
-    telemetry: org.yoshiz.app.prioritarr.backend.enforcement.DownloadTelemetry? = null,
-) {
-    val torrents = try {
-        qbit.getTorrents()
-    } catch (e: Exception) {
-        logger.warn("[qbit] reconcile: get torrents failed: ${e.message}")
-        return
-    }
-    // Feed observed speeds into the telemetry cache so the bandwidth
-    // policy's rolling averages stay fresh. Separate from enforcement
-    // so the data path is observable even when the feature is off.
-    if (telemetry != null) {
-        var total = 0L
-        val seen = HashSet<String>()
-        for (t in torrents) {
-            val obj = t.jsonObject
-            val hash = obj["hash"]?.jsonPrimitive?.contentOrNull ?: continue
-            val speed = obj["dlspeed"]?.jsonPrimitive?.longOrNull ?: 0L
-            telemetry.recordSample(hash, speed)
-            total += speed
-            seen += hash
-        }
-        telemetry.recordPeakTotal(total)
-        telemetry.prune(seen)
-    }
-    reconcileImpl(
-        clientName = "qbit",
-        queue = torrents,
-        idField = "hash",
-        stateField = "state",
-        db = db,
-        sonarrQueueLookup = sonarrQueueLookup,
-        priorityService = priorityService,
-        applyEnforcement = {
-            if (!dryRun) applyQbitEnforcement(qbit, db, torrents, bandwidth, telemetry)
-        },
-    )
-}
-
-suspend fun reconcileSab(
-    sab: SABClient,
-    db: Database,
-    sonarrQueueLookup: Map<String, SonarrQueueInfo>,
-    priorityService: PriorityService,
-    dryRun: Boolean,
-) {
-    val slots = try {
-        sab.getQueue()
-    } catch (e: Exception) {
-        logger.warn("[sab] reconcile: get queue failed: ${e.message}")
-        return
-    }
-    reconcileImpl(
-        clientName = "sab",
-        queue = slots,
-        idField = "nzo_id",
-        stateField = null,
-        db = db,
-        sonarrQueueLookup = sonarrQueueLookup,
-        priorityService = priorityService,
-        applyEnforcement = { if (!dryRun) applySabEnforcement(sab, db) },
-    )
 }
 
 private suspend fun reconcileImpl(
@@ -231,120 +145,11 @@ private suspend fun reconcileImpl(
     if (cleaned > 0) logger.info("[{}] reconcile complete: cleaned {} finished downloads", clientName, cleaned)
 }
 
-private suspend fun applyQbitEnforcement(
-    qbit: QBitClient,
-    db: Database,
-    queueItems: JsonArray,
-    bandwidth: org.yoshiz.app.prioritarr.backend.config.BandwidthSettings =
-        org.yoshiz.app.prioritarr.backend.config.BandwidthSettings(),
-    telemetry: org.yoshiz.app.prioritarr.backend.enforcement.DownloadTelemetry? = null,
-) {
-    val managed = db.listManagedDownloads("qbit")
-    val views = managed.map { row ->
-        val qItem = queueItems
-            .map { it.jsonObject }
-            .firstOrNull { it["hash"]?.jsonPrimitive?.contentOrNull == row.client_id }
-        val state = qItem?.get("state")?.jsonPrimitive?.contentOrNull ?: "downloading"
-        val eta = qItem?.get("eta")?.jsonPrimitive?.longOrNull
-        QBitDownloadView(
-            hash = row.client_id,
-            priority = row.current_priority.toInt(),
-            state = state,
-            pausedByUs = row.paused_by_us == 1L,
-            etaSeconds = eta,
-        )
-    }
-
-    // Build the bandwidth-aware predicate. Skip the pause when:
-    //   - A P1 download is currently peer-limited (pausing others
-    //     wouldn't help it go faster), OR
-    //   - The candidate-for-pause is within the ETA buffer of
-    //     finishing (wastes more than it frees).
-    // When the feature is disabled (maxMbps <= 0), the predicate is a
-    // no-op and every eligible torrent gets paused as before.
-    val ctx = if (bandwidth.maxMbps <= 0) {
-        org.yoshiz.app.prioritarr.backend.enforcement.EnforcementContext()
-    } else {
-        val policy = org.yoshiz.app.prioritarr.backend.enforcement.BandwidthPolicy
-        val totalBps = queueItems.sumOf { it.jsonObject["dlspeed"]?.jsonPrimitive?.longOrNull ?: 0L }
-        val p1Hashes = views.filter { it.priority == 1 }.map { it.hash }
-        val p1AvgBps = p1Hashes
-            .mapNotNull { telemetry?.averageBps(it) }
-            .maxOrNull()
-        val p1PeerLimited = policy.p1IsPeerLimited(bandwidth, p1AvgBps)
-        val overUtilised = policy.utilisationExceedsThreshold(bandwidth, totalBps)
-        org.yoshiz.app.prioritarr.backend.enforcement.EnforcementContext(
-            shouldPauseLowBand = { candidate ->
-                when {
-                    p1PeerLimited -> false
-                    !overUtilised -> false   // plenty of headroom; no need to pause
-                    policy.closeToFinish(bandwidth, candidate.etaSeconds) -> false
-                    else -> true
-                }
-            },
-        )
-    }
-    val actions = computeQBitPauseActions(views, ctx)
-    if (actions.isNotEmpty()) logger.info("[qbit] enforcement: {} actions to apply", actions.size)
-    for (action in actions) {
-        val priority = views.first { it.hash == action.hash }.priority
-        when (action.action) {
-            "pause" -> {
-                logger.info("[qbit] PAUSE {} (P{} torrent, higher priority active)", action.hash.take(12), priority)
-                try { qbit.pause(listOf(action.hash)) } catch (_: Exception) {}
-                db.q.setManagedPaused(1L, "qbit", action.hash)
-            }
-            "resume" -> {
-                logger.info("[qbit] RESUME {} (no longer needs to be paused)", action.hash.take(12))
-                try { qbit.resume(listOf(action.hash)) } catch (_: Exception) {}
-                db.q.setManagedPaused(0L, "qbit", action.hash)
-            }
-            "top_priority" -> {
-                logger.info("[qbit] TOP_PRIORITY {} (P1 item)", action.hash.take(12))
-                try { qbit.topPriority(listOf(action.hash)) } catch (_: Exception) {}
-            }
-        }
-        db.appendAudit(
-            action = action.action, client = "qbit", clientId = action.hash,
-            details = buildJsonObject { put("source", "reconcile") },
-        )
-    }
-}
-
-private suspend fun applySabEnforcement(sab: SABClient, db: Database) {
-    val managed = db.listManagedDownloads("sab")
-    for (row in managed) {
-        val sabPriority = computeSabPriority(row.current_priority.toInt())
-        val names = mapOf(2 to "Force", 1 to "High", 0 to "Normal", -1 to "Low")
-        logger.info(
-            "[sab] SET_PRIORITY {} -> {} (P{})",
-            row.client_id.take(12), names[sabPriority] ?: sabPriority.toString(), row.current_priority,
-        )
-        try { sab.setPriority(row.client_id, sabPriority) } catch (_: Exception) {}
-        db.appendAudit(
-            action = org.yoshiz.app.prioritarr.backend.AuditAction.PRIORITY_SET,
-            client = org.yoshiz.app.prioritarr.backend.DownloadClientName.SAB.wire,
-            clientId = row.client_id,
-            seriesId = row.series_id,
-            details = buildJsonObject {
-                put("sab_priority", sabPriority)
-                put("source", "reconcile")
-            },
-        )
-    }
-}
-
 /**
- * Unified reconcile pass over all configured download clients. Replaces
- * the per-client `reconcileQbit` + `reconcileSab` pair: snapshots each
- * client, joins with managed_downloads + Sonarr queue, runs the unified
- * computeEnforcement, then dispatches each client's slice of decisions
- * to its applyEnforcement.
- *
- * Per-client `reconcileQbit` / `reconcileSab` are kept for now (the
- * scheduler call sites in Main.kt switch over in the next step) but are
- * scheduled for removal once the parity tests + a few production
- * cycles confirm the new path produces the same observable behaviour.
+ * Unified reconcile pass over all configured download clients.
+ * Snapshots each client, joins with managed_downloads + Sonarr queue,
+ * runs the unified computeEnforcement, then dispatches each client's
+ * slice of decisions to its applyEnforcement.
  */
 suspend fun reconcileAll(
     qbit: QBitClient,
@@ -483,7 +288,7 @@ private suspend fun runReconcileImplOnly(
     )
 }
 
-/** Per-row SAB priority bucket pass, lifted out of applySabEnforcement. */
+/** Per-row SAB priority bucket pass: set each SAB slot to its Prioritarr-mapped priority. */
 private suspend fun runSabPriorityBucketPass(
     sab: SABClient,
     db: Database,

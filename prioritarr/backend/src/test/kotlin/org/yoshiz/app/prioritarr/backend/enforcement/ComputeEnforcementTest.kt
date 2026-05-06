@@ -214,6 +214,54 @@ class ComputeEnforcementTest {
         kotlin.test.assertEquals(listOf("s1e1", "s1e2", "s2e1"), sorted)
     }
 
+    // ---------- pausedByUs clearance (ported from legacy EnforcementTest) ----------
+
+    @Test fun paused_by_us_p1_gets_active_to_clear_stale_flag() {
+        // P1 torrent was paused long ago (PAUSED_BY_US) but is no longer
+        // in the defer band (P1 is never in {4,5}). Must get ACTIVE so the
+        // client adapter emits resume and clears the DB flag.
+        val decisions = computeEnforcement(
+            listOf(dl("p1", 1, state = ManagedState.PAUSED_BY_US)),
+            ComputeEnforcementContext(),
+        )
+        assertEquals(TargetState.ACTIVE, decisions["p1"]!!.targetState)
+    }
+
+    @Test fun paused_by_us_p5_with_active_p1_gets_active_target() {
+        // PAUSED_BY_US items are excluded from the defer check (requires RUNNING).
+        // The client adapter will resume them; the next tick will re-defer if
+        // P1 is still active and the item is RUNNING. Documents the new behaviour.
+        val decisions = computeEnforcement(
+            listOf(
+                dl("p1", 1),
+                dl("p5", 5, state = ManagedState.PAUSED_BY_US),
+            ),
+            ComputeEnforcementContext(),
+        )
+        assertEquals(TargetState.ACTIVE, decisions["p5"]!!.targetState)
+    }
+
+    @Test fun paused_by_us_p5_no_active_p1_or_p2_gets_active() {
+        // No P1 or P2 in the queue → crossBandDeferLevels = ∅ → ACTIVE for everything,
+        // including items still carrying a stale PAUSED_BY_US flag.
+        val decisions = computeEnforcement(
+            listOf(dl("p5", 5, state = ManagedState.PAUSED_BY_US)),
+            ComputeEnforcementContext(),
+        )
+        assertEquals(TargetState.ACTIVE, decisions["p5"]!!.targetState)
+    }
+
+    @Test fun running_items_without_defer_pressure_are_not_spuriously_deferred() {
+        // No P1 or P2 active; P1+P3 are RUNNING with no pausedByUs flags.
+        // Neither should receive a DEFERRED target.
+        val decisions = computeEnforcement(
+            listOf(dl("p1", 1), dl("p3", 3)),
+            ComputeEnforcementContext(),
+        )
+        assertEquals(TargetState.ACTIVE, decisions["p1"]!!.targetState)
+        assertEquals(TargetState.ACTIVE, decisions["p3"]!!.targetState)
+    }
+
     // ---------- bandwidth-aware gating ----------
 
     @Test fun layer1_bandwidth_aware_enabled_but_not_saturated_does_not_defer() {

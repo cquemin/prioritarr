@@ -40,7 +40,7 @@ class QBitClient(
      * decision: P1 boosted + unpaused, P4/P5 paused (when higher
      * bands are actively downloading the caller is expected to fire
      * this per-download; the global pause-band calculation lives in
-     * [org.yoshiz.app.prioritarr.backend.enforcement.computeQBitPauseActions]).
+     * [org.yoshiz.app.prioritarr.backend.enforcement.computeEnforcement]).
      */
     override suspend fun applyPriority(clientId: String, prioritarrPriority: Int) {
         when (prioritarrPriority) {
