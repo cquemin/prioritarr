@@ -10,6 +10,10 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
 import io.ktor.http.parameters
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 /**
  * qBittorrent Web API v2 client. Mirrors prioritarr/clients/qbittorrent.py.
@@ -51,6 +55,55 @@ class QBitClient(
                 bottomPriority(listOf(clientId))
             }
         }
+    }
+
+    override suspend fun snapshotDownloads():
+        List<org.yoshiz.app.prioritarr.backend.enforcement.RawDownload> {
+        val torrents = try { getTorrents() } catch (_: Exception) { return emptyList() }
+        return torrents.mapNotNull { el ->
+            val o = el.jsonObject
+            val hash = o["hash"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val state = o["state"]?.jsonPrimitive?.contentOrNull ?: "downloading"
+            val eta = o["eta"]?.jsonPrimitive?.longOrNull
+            org.yoshiz.app.prioritarr.backend.enforcement.RawDownload(
+                client = "qbit",
+                clientId = hash,
+                rawState = state,
+                pausedByUs = false, // joined from managed_downloads in the reconciler
+                etaSeconds = eta,
+            )
+        }
+    }
+
+    override suspend fun applyEnforcement(
+        decisions: Map<String, org.yoshiz.app.prioritarr.backend.enforcement.EnforcementDecision>,
+    ) {
+        // Filter to this client. The reconciler usually pre-filters,
+        // but defence in depth is cheap.
+        val mine = decisions  // caller's responsibility to scope to qBit hashes
+
+        // Pause/resume verbs.
+        val toPause = mutableListOf<String>()
+        val toResume = mutableListOf<String>()
+        for ((hash, decision) in mine) {
+            when (decision.targetState) {
+                org.yoshiz.app.prioritarr.backend.enforcement.TargetState.DEFERRED -> toPause += hash
+                org.yoshiz.app.prioritarr.backend.enforcement.TargetState.ACTIVE -> toResume += hash
+            }
+        }
+        if (toPause.isNotEmpty()) try { pause(toPause) } catch (_: Exception) {}
+        if (toResume.isNotEmpty()) try { resume(toResume) } catch (_: Exception) {}
+
+        // Order: among ACTIVE items, set the lowest orderHint at the
+        // top of qBit's queue. qBit's setTopPriority places at top,
+        // so call from highest hint to lowest — the lowest ends up at
+        // the very top.
+        val orderedActives = mine
+            .filterValues { it.targetState == org.yoshiz.app.prioritarr.backend.enforcement.TargetState.ACTIVE }
+            .entries
+            .sortedByDescending { it.value.orderHint }
+            .map { it.key }
+        if (orderedActives.isNotEmpty()) try { topPriority(orderedActives) } catch (_: Exception) {}
     }
 
     private val root: String = baseUrl.trimEnd('/')
