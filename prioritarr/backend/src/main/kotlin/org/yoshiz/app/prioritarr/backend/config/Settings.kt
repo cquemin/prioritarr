@@ -119,6 +119,31 @@ data class AuditConfig(
 )
 
 /**
+ * P5 backfill ratchet — controls per-(series, season) cooldowns and
+ * the search-strategy escalation ladder. Spec:
+ * docs/specs/2026-05-05-p5-backfill-season-ratchet-design.md
+ *
+ * Setting [enabled] = false short-circuits both Pass B of the backfill
+ * sweep AND Layer 2 of computeEnforcement; the system reverts to its
+ * pre-feature behaviour on the next tick. This is the rollback path.
+ */
+@kotlinx.serialization.Serializable
+data class P5RatchetConfig(
+    val enabled: Boolean = false,
+    val searchCooldownHours: Int = 24,
+    val longCooldownHours: Int = 168,
+    val escalationThreshold: Int = 5,
+    val includeSpecials: Boolean = false,
+    /**
+     * Optional override for the bandwidth utilisation threshold below
+     * which the ratchet is skipped. When null, falls back to
+     * [BandwidthSettings.utilisationThresholdPct] so single-knob users
+     * don't have to think about it.
+     */
+    val bandwidthThresholdPct: Double? = null,
+)
+
+/**
  * Archive-watched-episodes feature. Periodically sweeps the library
  * and removes episodes that have been watched AND fall outside the
  * "keep" window (latest season, or last N episodes if that season
@@ -216,6 +241,7 @@ data class Settings(
     val bandwidth: BandwidthSettings = BandwidthSettings(),
     val archive: ArchiveSettings = ArchiveSettings(),
     val traktUnmonitor: TraktUnmonitorSettings = TraktUnmonitorSettings(),
+    val p5Ratchet: P5RatchetConfig = P5RatchetConfig(),
 
     /** Paths swept by the OrphanReaper. Empty list disables the reaper. */
     val orphanReaperPaths: List<String> = listOf(
@@ -377,6 +403,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
     var bandwidth = BandwidthSettings()
     var archive = ArchiveSettings()
     var traktUnmonitor = TraktUnmonitorSettings()
+    var p5Ratchet = P5RatchetConfig()
 
     if (configPath != null && File(configPath).exists()) {
         @Suppress("UNCHECKED_CAST")
@@ -434,6 +461,16 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 protectTag = (o["protect_tag"] as? String) ?: traktUnmonitor.protectTag,
             )
         }
+        (root["p5_ratchet"] as? Map<*, *>)?.let { o ->
+            p5Ratchet = p5Ratchet.copy(
+                enabled = (o["enabled"] as? Boolean) ?: p5Ratchet.enabled,
+                searchCooldownHours = o.num("search_cooldown_hours") { it.toInt() } ?: p5Ratchet.searchCooldownHours,
+                longCooldownHours = o.num("long_cooldown_hours") { it.toInt() } ?: p5Ratchet.longCooldownHours,
+                escalationThreshold = o.num("escalation_threshold") { it.toInt() } ?: p5Ratchet.escalationThreshold,
+                includeSpecials = (o["include_specials"] as? Boolean) ?: p5Ratchet.includeSpecials,
+                bandwidthThresholdPct = o.num("bandwidth_threshold_pct") { it.toDouble() } ?: p5Ratchet.bandwidthThresholdPct,
+            )
+        }
         (root["bandwidth"] as? Map<*, *>)?.let { o ->
             bandwidth = bandwidth.copy(
                 maxMbps = o.num("max_mbps") { it.toInt() } ?: bandwidth.maxMbps,
@@ -482,5 +519,6 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         bandwidth = bandwidth,
         archive = archive,
         traktUnmonitor = traktUnmonitor,
+        p5Ratchet = p5Ratchet,
     )
 }
