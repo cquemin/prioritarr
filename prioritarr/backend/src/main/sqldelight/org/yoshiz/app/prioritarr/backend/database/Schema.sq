@@ -34,7 +34,31 @@ CREATE TABLE IF NOT EXISTS managed_downloads (
     paused_by_us INTEGER NOT NULL DEFAULT 0,
     first_seen_at TEXT NOT NULL,
     last_reconciled_at TEXT NOT NULL,
+    season_number INTEGER,                  -- nullable: populated on cross-ref with Sonarr queue
     PRIMARY KEY (client, client_id)
+);
+-- Idempotent column addition for databases created before season_number existed.
+-- ALTER TABLE ADD COLUMN errors with "duplicate column" if the column already
+-- exists; SQLDelight surfaces that as a runtime error, so we wrap it in the
+-- generated query layer (see Database.kt::ensureLegacyColumns in Task 2).
+
+-- Per-(series, season) attempt log for the P5 backfill ratchet.
+-- Tracks when we last asked Sonarr to look for this season's missing
+-- episodes, what the missing-count was at the time, and how many
+-- consecutive empty attempts we've had. The picker uses this to:
+--   1. Cool down a (series, season) for `search_cooldown_hours`
+--      between attempts (default 24h).
+--   2. Escalate the search strategy from SeasonSearch to SeasonSearch
+--      retry to per-EpisodeSearch as `consecutive_empty_attempts` rises.
+--   3. Skip a (series, season) for `long_cooldown_hours` once the
+--      counter reaches `escalation_threshold` (default 5).
+CREATE TABLE IF NOT EXISTS p5_sweep_attempts (
+    series_id INTEGER NOT NULL,
+    season_number INTEGER NOT NULL,
+    last_attempted_at INTEGER NOT NULL,    -- epoch seconds
+    last_missing_count INTEGER,            -- null on the very first attempt
+    consecutive_empty_attempts INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (series_id, season_number)
 );
 
 CREATE TABLE IF NOT EXISTS webhook_dedupe (
@@ -249,6 +273,9 @@ DELETE FROM managed_downloads WHERE client = ? AND client_id = ?;
 
 setManagedPaused:
 UPDATE managed_downloads SET paused_by_us = ? WHERE client = ? AND client_id = ?;
+
+setManagedSeasonNumber:
+UPDATE managed_downloads SET season_number = ? WHERE client = ? AND client_id = ?;
 
 -- ------------------------------------------------------------------
 -- webhook_dedupe — INSERT OR IGNORE to mirror the python try/except
@@ -491,3 +518,30 @@ ORDER BY provider;
 
 deleteAllProviderHealth:
 DELETE FROM provider_health;
+
+-- ------------------------------------------------------------------
+-- p5_sweep_attempts
+-- ------------------------------------------------------------------
+
+upsertP5Attempt:
+INSERT INTO p5_sweep_attempts
+    (series_id, season_number, last_attempted_at,
+     last_missing_count, consecutive_empty_attempts)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(series_id, season_number) DO UPDATE SET
+    last_attempted_at         = excluded.last_attempted_at,
+    last_missing_count        = excluded.last_missing_count,
+    consecutive_empty_attempts = excluded.consecutive_empty_attempts;
+
+selectP5Attempt:
+SELECT * FROM p5_sweep_attempts
+WHERE series_id = ? AND season_number = ?;
+
+listP5Attempts:
+SELECT * FROM p5_sweep_attempts;
+
+listP5AttemptsForSeries:
+SELECT * FROM p5_sweep_attempts WHERE series_id = ?;
+
+deleteP5AttemptsForSeries:
+DELETE FROM p5_sweep_attempts WHERE series_id = ?;
