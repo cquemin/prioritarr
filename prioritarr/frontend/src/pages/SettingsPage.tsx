@@ -4,6 +4,7 @@ import {
 } from 'lucide-react'
 
 import { TableSkeleton } from '../components/Skeleton'
+import { ActionButton } from '../components/ActionButton'
 import { navigate, useRoute, type SettingsSection } from '../hooks/useHashRoute'
 import { DEFAULT_PROTECT_TAG, JOBS, JOBS_BY_ID, JOB_DISPLAY_ORDER, TRIGGER_CLASS, TRIGGER_LABEL, buildCadencePatch, readPath, type JobMeta, type JobSetting } from '../lib/jobs'
 import {
@@ -210,14 +211,15 @@ function GeneralSection() {
           </label>
         </div>
         <div className="flex justify-end">
-          <button
-            type="button"
-            disabled={!dirty || save.isPending}
+          <ActionButton
+            variant="primary"
+            loading={save.isPending}
+            disabled={!dirty}
+            loadingLabel="Saving…"
             onClick={async () => { await save.mutateAsync(draft as any); setDraft({}) }}
-            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-30"
           >
-            {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
-          </button>
+            {dirty ? 'Save' : 'Saved'}
+          </ActionButton>
         </div>
       </div>
 
@@ -464,15 +466,15 @@ function ConnectionCard({
         />
       }
       actions={<>
-        <button
-          type="button"
+        <ActionButton
+          variant="secondary"
+          loading={test.isPending}
+          loadingLabel="Testing…"
           onClick={onTest}
-          disabled={test.isPending}
-          className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
           title="GET the upstream's status endpoint with the values above and report back"
         >
-          {test.isPending ? 'Testing…' : 'Test connection'}
-        </button>
+          Test connection
+        </ActionButton>
         <button
           type="button"
           onClick={() => setRevealSecrets(!revealSecrets)}
@@ -480,9 +482,12 @@ function ConnectionCard({
         >
           {revealSecrets ? 'Hide' : 'Show'} secrets
         </button>
-        <button
-          type="button"
-          disabled={!dirty || save.isPending}
+        <ActionButton
+          variant="primary"
+          loading={save.isPending}
+          disabled={!dirty}
+          loadingLabel="Saving…"
+          className="ml-auto"
           onClick={async () => {
             const patch: Record<string, string | null> = {}
             for (const [k, v] of Object.entries(draft)) {
@@ -491,10 +496,9 @@ function ConnectionCard({
             await save.mutateAsync(patch as any)
             setDraft({})
           }}
-          className="ml-auto px-3 py-1 rounded text-sm bg-accent disabled:opacity-30"
         >
-          {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
-        </button>
+          {dirty ? 'Save' : 'Saved'}
+        </ActionButton>
       </>}
     />
   )
@@ -687,16 +691,17 @@ function OrphanPathsCard() {
             block in compose). Empty list disables the reaper.
           </p>
         </div>
-        <button
-          type="button"
-          disabled={!dirty || save.isPending}
+        <ActionButton
+          variant="primary"
+          loading={save.isPending}
+          disabled={!dirty}
+          loadingLabel="Saving…"
           onClick={async () => {
             await save.mutateAsync({ orphanReaperPaths: draft.map((s) => s.trim()).filter(Boolean) } as any)
           }}
-          className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-30"
         >
-          {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
-        </button>
+          {dirty ? 'Save' : 'Saved'}
+        </ActionButton>
       </div>
       <div className="space-y-1">
         {draft.length === 0 && (
@@ -747,13 +752,14 @@ function MappingsSection() {
       <div className="bg-surface-1 rounded-lg border border-surface-3 p-4 space-y-4">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h3 className="font-semibold">Mapped rating-keys</h3>
-          <button
+          <ActionButton
+            variant="secondary"
+            loading={refresh.isPending}
+            loadingLabel="Refreshing…"
             onClick={() => refresh.mutate()}
-            disabled={refresh.isPending}
-            className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50"
           >
-            {refresh.isPending ? 'Refreshing…' : 'Refresh mappings'}
-          </button>
+            Refresh mappings
+          </ActionButton>
         </div>
         {m && (
           <div className="space-y-4 text-sm">
@@ -869,15 +875,15 @@ function WebhookCard({ service, purpose }: { service: string; purpose: string })
         <div className="text-xs text-amber-300">{data.detail}</div>
       )}
       <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
+        <ActionButton
+          variant="secondary"
+          loading={configure.isPending}
+          loadingLabel="Configuring…"
           onClick={() => configure.mutate(service)}
-          disabled={configure.isPending}
-          className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-50"
           title={configured ? 'Re-register the notifier (replaces URL/headers if they drifted).' : 'Register the notifier on the upstream service.'}
         >
-          {configure.isPending ? 'Configuring…' : configured ? 'Reconfigure' : 'Configure now'}
-        </button>
+          {configured ? 'Reconfigure' : 'Configure now'}
+        </ActionButton>
       </div>
       {configure.error && (
         <div className="text-xs text-red-400 font-mono">
@@ -1161,16 +1167,18 @@ function JobDetail({ job }: { job: JobMeta }) {
               className="w-24 bg-surface-3 border border-surface-2 rounded px-2 py-1 font-mono text-sm"
             />
             <span className="text-sm opacity-80">{job.cadence.unit}</span>
-            <button
-              type="button"
-              disabled={!cadenceDirty || save.isPending}
+            <ActionButton
+              variant="primary"
+              loading={save.isPending}
+              disabled={!cadenceDirty}
+              loadingLabel="Saving…"
+              className="ml-2"
               onClick={() =>
                 save.mutate(buildCadencePatch(job.cadence!.key, cadenceDraft as number))
               }
-              className="ml-2 px-3 py-1 rounded text-sm bg-accent disabled:opacity-30"
             >
-              {save.isPending ? 'Saving…' : cadenceDirty ? 'Save' : 'Saved'}
-            </button>
+              {cadenceDirty ? 'Save' : 'Saved'}
+            </ActionButton>
           </div>
         </div>
       )}
@@ -1249,14 +1257,17 @@ function JobSettingInput({ setting, data }: { setting: JobSetting; data: any }) 
           onChange={(e) => setDraft(setting.type === 'number' ? e.target.valueAsNumber : e.target.value)}
           className="flex-1 bg-surface-3 border border-surface-2 rounded px-2 py-1 font-mono text-sm"
         />
-        <button
-          type="button"
-          disabled={!dirty || save.isPending}
+        <ActionButton
+          variant="primary"
+          size="sm"
+          loading={save.isPending}
+          disabled={!dirty}
+          loadingLabel="…"
           onClick={() => save.mutate({ [setting.key]: draft })}
-          className="px-2 py-1 rounded text-xs bg-accent disabled:opacity-30 whitespace-nowrap"
+          className="whitespace-nowrap"
         >
-          {save.isPending ? '…' : 'Save'}
-        </button>
+          Save
+        </ActionButton>
       </div>
       {setting.hint && <span className="opacity-50">{setting.hint}</span>}
     </label>
@@ -1322,14 +1333,14 @@ function ManualTriggerButton({ job }: { job: JobMeta }) {
   }
   return (
     <div className="flex items-center gap-3 flex-wrap pt-2 border-t border-surface-3">
-      <button
-        type="button"
+      <ActionButton
+        variant="primary"
+        loading={busy}
+        loadingLabel="Running…"
         onClick={onClick}
-        disabled={busy}
-        className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-50"
       >
-        {busy ? 'Running…' : job.manual.label}
-      </button>
+        {job.manual.label}
+      </ActionButton>
       {outcome && <span className={`text-xs font-mono ${outcome.startsWith('OK') ? 'text-green-400' : 'text-red-400'}`}>{outcome}</span>}
       <span className="text-xs opacity-50">
         {job.manual.method} {job.manual.path}{job.manual.query ? `?${new URLSearchParams(job.manual.query).toString()}` : ''}
@@ -1409,8 +1420,11 @@ function ThresholdsPanel() {
         </div>
         {/* Action buttons stack vertically full-width on mobile, row on sm+. */}
         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-          <button
-            type="button"
+          <ActionButton
+            variant="secondary"
+            loading={reset.isPending}
+            loadingLabel="Resetting…"
+            title="Drop the DB override and restore values from config.yaml + env"
             onClick={async () => {
               // Force draft to whatever Reset returns — the useQuery
               // refetch alone doesn't always re-fire the seeding effect
@@ -1419,20 +1433,18 @@ function ThresholdsPanel() {
               const next = await reset.mutateAsync()
               setDraft(next)
             }}
-            disabled={reset.isPending}
-            className="px-3 py-1 rounded text-sm bg-surface-3 disabled:opacity-50"
-            title="Drop the DB override and restore values from config.yaml + env"
           >
-            {reset.isPending ? 'Resetting…' : 'Reset to defaults'}
-          </button>
-          <button
-            type="button"
-            disabled={!dirty || save.isPending}
+            Reset to defaults
+          </ActionButton>
+          <ActionButton
+            variant="primary"
+            loading={save.isPending}
+            disabled={!dirty}
+            loadingLabel="Saving…"
             onClick={() => save.mutate(draft)}
-            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-40"
           >
-            {save.isPending ? 'Saving…' : dirty ? 'Save thresholds' : 'Saved'}
-          </button>
+            {dirty ? 'Save thresholds' : 'Saved'}
+          </ActionButton>
         </div>
       </div>
 
@@ -1696,24 +1708,30 @@ function LibrarySyncPanel() {
         {/* Action buttons stack vertically full-width on mobile, row on sm+. */}
         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
           <SyncDirectionSelect value={direction} onChange={setDirection} disabled={sync.isPending} />
-          <button
-            onClick={() => sync.mutate({ dryRun: true, limit: 20, direction })}
-            disabled={sync.isPending}
-            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50 whitespace-nowrap"
+          <ActionButton
+            variant="secondary"
+            loading={sync.isPending && sync.variables?.dryRun === true}
+            disabled={sync.isPending && sync.variables?.dryRun !== true}
+            loadingLabel="Previewing…"
+            className="whitespace-nowrap"
             title="Sample the first 20 series in dry-run mode — completes in seconds"
+            onClick={() => sync.mutate({ dryRun: true, limit: 20, direction })}
           >
-            {sync.isPending && sync.variables?.dryRun ? 'Previewing…' : 'Preview (sample 20)'}
-          </button>
-          <button
+            Preview (sample 20)
+          </ActionButton>
+          <ActionButton
+            variant="primary"
+            loading={sync.isPending && !sync.variables?.dryRun}
+            disabled={sync.isPending && sync.variables?.dryRun === true}
+            loadingLabel="Syncing library…"
+            className="whitespace-nowrap"
             onClick={() => {
               if (!confirm('Sync watch state for ALL series? This may take several minutes.')) return
               sync.mutate({ direction })
             }}
-            disabled={sync.isPending}
-            className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
           >
-            {sync.isPending && !sync.variables?.dryRun ? 'Syncing library…' : 'Sync entire library'}
-          </button>
+            Sync entire library
+          </ActionButton>
         </div>
       </div>
       {sync.error && (
@@ -1887,24 +1905,30 @@ function OrphanReaperPanel() {
         </div>
         {/* Action buttons stack vertically full-width on mobile, row on sm+. */}
         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-          <button
-            onClick={() => sweep.mutate({ dryRun: true })}
-            disabled={sweep.isPending}
-            className="px-3 py-1 rounded text-sm bg-surface-3 disabled:opacity-50 whitespace-nowrap"
+          <ActionButton
+            variant="secondary"
+            loading={sweep.isPending && sweep.variables?.dryRun === true}
+            disabled={sweep.isPending && sweep.variables?.dryRun !== true}
+            loadingLabel="Previewing…"
+            className="whitespace-nowrap"
             title="Run the reaper without writing — shows what would happen"
+            onClick={() => sweep.mutate({ dryRun: true })}
           >
-            {sweep.isPending && sweep.variables?.dryRun ? 'Previewing…' : 'Preview sweep'}
-          </button>
-          <button
+            Preview sweep
+          </ActionButton>
+          <ActionButton
+            variant="primary"
+            loading={sweep.isPending && sweep.variables?.dryRun !== true}
+            disabled={sweep.isPending && sweep.variables?.dryRun === true}
+            loadingLabel="Sweeping…"
+            className="whitespace-nowrap"
             onClick={() => {
               if (!confirm('Run the reaper? It will delete safe orphans + trigger Sonarr imports.')) return
               sweep.mutate({})
             }}
-            disabled={sweep.isPending}
-            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-50 whitespace-nowrap"
           >
-            {sweep.isPending && !sweep.variables?.dryRun ? 'Sweeping…' : 'Sweep now'}
-          </button>
+            Sweep now
+          </ActionButton>
         </div>
       </div>
 
@@ -1986,19 +2010,21 @@ function KeptOrphanTable({ rows }: { rows: OrphanAuditRow[] }) {
     <div>
       <div className="flex items-center gap-3 mb-2 text-xs">
         <span className="opacity-70">{selected.size} selected</span>
-        <button
-          type="button"
-          disabled={selected.size === 0 || bulkDelete.isPending}
+        <ActionButton
+          variant="destructive"
+          size="sm"
+          loading={bulkDelete.isPending}
+          disabled={selected.size === 0}
+          loadingLabel="Deleting…"
           onClick={() => {
             if (!confirm(`Delete ${selected.size} orphan file(s)? This cannot be undone.`)) return
             bulkDelete.mutate(Array.from(selected), {
               onSuccess: () => setSelected(new Set()),
             })
           }}
-          className="px-2 py-1 rounded bg-red-900/60 hover:bg-red-700 disabled:opacity-40"
         >
-          {bulkDelete.isPending ? 'Deleting…' : 'Delete selected'}
-        </button>
+          Delete selected ({selected.size})
+        </ActionButton>
         {bulkDelete.data && (
           <span className="opacity-70">
             last bulk: {bulkDelete.data.succeeded}/{bulkDelete.data.total} ok
@@ -2084,8 +2110,12 @@ function KeptOrphanRow({
         </td>
         <td className="px-2 py-1.5">
           <div className="flex flex-wrap gap-1">
-            <button
-              type="button"
+            <ActionButton
+              variant="secondary"
+              size="sm"
+              loading={rename.isPending}
+              loadingLabel="…"
+              title="Rename in place — will re-probe Sonarr after"
               onClick={async () => {
                 const next = window.prompt('New filename (same folder):', displayName)
                 if (!next || next === displayName) return
@@ -2099,37 +2129,46 @@ function KeptOrphanRow({
                   alert(`Rename failed: ${res.message ?? 'unknown error'}`)
                 }
               }}
-              disabled={rename.isPending}
-              className="px-1.5 py-0.5 rounded bg-surface-3 hover:bg-accent disabled:opacity-50"
-              title="Rename in place — will re-probe Sonarr after"
-            >Rename</button>
-            <button
-              type="button"
-              onClick={async () => setLatestProbe(await probe.mutateAsync(display))}
-              disabled={probe.isPending}
-              className="px-1.5 py-0.5 rounded bg-surface-3 hover:bg-accent disabled:opacity-50"
+            >
+              Rename
+            </ActionButton>
+            <ActionButton
+              variant="secondary"
+              size="sm"
+              loading={probe.isPending}
+              loadingLabel="…"
               title="Ask Sonarr again — useful if you fixed something upstream"
-            >Re-probe</button>
-            <button
-              type="button"
+              onClick={async () => setLatestProbe(await probe.mutateAsync(display))}
+            >
+              Re-probe
+            </ActionButton>
+            <ActionButton
+              variant="secondary"
+              size="sm"
+              loading={importIt.isPending}
+              disabled={!canImport}
+              loadingLabel="…"
+              title={canImport ? 'Queue Sonarr ManualImport' : 'Re-probe first; only enabled when Sonarr can match'}
               onClick={async () => {
                 const res = await importIt.mutateAsync(display)
                 if (res.ok) alert('Sonarr ManualImport queued')
                 else alert(`Import failed: ${res.message ?? 'unknown'}`)
               }}
-              disabled={!canImport || importIt.isPending}
-              className="px-1.5 py-0.5 rounded bg-surface-3 hover:bg-green-700 disabled:opacity-30"
-              title={canImport ? 'Queue Sonarr ManualImport' : 'Re-probe first; only enabled when Sonarr can match'}
-            >Import</button>
-            <button
-              type="button"
+            >
+              Import
+            </ActionButton>
+            <ActionButton
+              variant="destructive"
+              size="sm"
+              loading={deleteOne.isPending}
+              loadingLabel="…"
               onClick={async () => {
                 if (!confirm(`Delete ${displayName}?`)) return
                 await deleteOne.mutateAsync([display])
               }}
-              disabled={deleteOne.isPending}
-              className="px-1.5 py-0.5 rounded bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
-            >Delete</button>
+            >
+              Delete
+            </ActionButton>
           </div>
         </td>
       </tr>
@@ -2190,30 +2229,31 @@ function BandwidthPanel() {
             disabled={save.isPending}
             className={`px-3 py-1 rounded text-sm whitespace-nowrap ${
               draft.quietModeEnabled ? 'bg-amber-700 hover:bg-amber-600' : 'bg-surface-3 hover:bg-surface-2'
-            }`}
+            } disabled:opacity-50`}
             title="Toggle quiet mode — caps the queue while you're on a call or streaming"
           >
             {draft.quietModeEnabled ? '🤫 Quiet mode ON' : 'Quiet mode'}
           </button>
-          <button
-            type="button"
+          <ActionButton
+            variant="secondary"
+            loading={reset.isPending}
+            loadingLabel="Resetting…"
             onClick={async () => {
               if (!confirm('Reset bandwidth settings to env/YAML baseline?')) return
               await reset.mutateAsync()
             }}
-            disabled={reset.isPending}
-            className="px-3 py-1 rounded text-sm bg-surface-3 disabled:opacity-50"
           >
-            {reset.isPending ? 'Resetting…' : 'Reset'}
-          </button>
-          <button
-            type="button"
-            disabled={!dirty || save.isPending}
+            Reset
+          </ActionButton>
+          <ActionButton
+            variant="primary"
+            loading={save.isPending}
+            disabled={!dirty}
+            loadingLabel="Saving…"
             onClick={() => save.mutate(draft)}
-            className="px-3 py-1 rounded text-sm bg-accent disabled:opacity-40"
           >
-            {save.isPending ? 'Saving…' : dirty ? 'Save' : 'Saved'}
-          </button>
+            {dirty ? 'Save' : 'Saved'}
+          </ActionButton>
         </div>
       </div>
 
@@ -2328,25 +2368,28 @@ function P5RatchetInline() {
           </p>
         </div>
         <div className="flex gap-2 shrink-0">
-          <button
-            type="button"
+          <ActionButton
+            variant="secondary"
+            size="sm"
+            loading={reset.isPending}
+            loadingLabel="Resetting…"
             onClick={async () => {
               if (!confirm('Reset P5 ratchet settings to env/YAML baseline?')) return
               await reset.mutateAsync()
             }}
-            disabled={reset.isPending}
-            className="px-2 py-0.5 rounded text-xs bg-surface-3 disabled:opacity-50"
           >
-            {reset.isPending ? 'Resetting…' : 'Reset'}
-          </button>
-          <button
-            type="button"
-            disabled={!dirty || save.isPending}
+            Reset
+          </ActionButton>
+          <ActionButton
+            variant="primary"
+            size="sm"
+            loading={save.isPending}
+            disabled={!dirty}
+            loadingLabel="Saving…"
             onClick={() => save.mutate(draft)}
-            className="px-2 py-0.5 rounded text-xs bg-accent disabled:opacity-40"
           >
-            {save.isPending ? 'Saving…' : dirty ? 'Save ratchet' : 'Saved'}
-          </button>
+            {dirty ? 'Save ratchet' : 'Saved'}
+          </ActionButton>
         </div>
       </div>
 
@@ -2763,30 +2806,34 @@ function TraktAuthPanel() {
             because the device-code flow runs server-side against the
             persisted creds. */}
         {!activeFlow && !hasAccessToken && (
-          <button
-            type="button"
-            onClick={startFlow}
-            disabled={begin.isPending || !hasClientId || !hasClientSecret}
-            className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50"
+          <ActionButton
+            variant="primary"
+            loading={begin.isPending}
+            disabled={!hasClientId || !hasClientSecret}
+            loadingLabel="Starting…"
             title={!hasClientId || !hasClientSecret ? 'Save Client ID + Client secret first' : 'Begin Trakt device-code flow'}
+            onClick={startFlow}
           >
-            {begin.isPending ? 'Starting…' : 'Connect Trakt'}
-          </button>
+            Connect Trakt
+          </ActionButton>
         )}
         {!activeFlow && hasAccessToken && (
-          <button
-            type="button"
-            onClick={() => test.mutate({ service: 'trakt', body: {} })}
-            disabled={test.isPending}
-            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
+          <ActionButton
+            variant="secondary"
+            loading={test.isPending}
+            loadingLabel="Testing…"
             title="Real GET https://api.trakt.tv/users/me with the stored access_token to verify the connection."
+            onClick={() => test.mutate({ service: 'trakt', body: {} })}
           >
-            {test.isPending ? 'Testing…' : 'Test connection'}
-          </button>
+            Test connection
+          </ActionButton>
         )}
         {!activeFlow && hasAccessToken && hasRefreshToken && (
-          <button
-            type="button"
+          <ActionButton
+            variant="secondary"
+            loading={refresh.isPending}
+            loadingLabel="Refreshing…"
+            title="Mint a fresh access_token using the stored refresh_token. If Trakt rejects it (revoked / >90 days idle), tokens clear and you reconnect."
             onClick={() =>
               refresh.mutate(undefined, {
                 onSuccess: (r) => {
@@ -2800,12 +2847,9 @@ function TraktAuthPanel() {
                 },
               })
             }
-            disabled={refresh.isPending}
-            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50"
-            title="Mint a fresh access_token using the stored refresh_token. If Trakt rejects it (revoked / >90 days idle), tokens clear and you reconnect."
           >
-            {refresh.isPending ? 'Refreshing…' : 'Refresh tokens'}
-          </button>
+            Refresh tokens
+          </ActionButton>
         )}
         {/* Reconnect — always available when ANY token state is set
             (including zombie state where refresh is missing). Wipes
@@ -2814,8 +2858,12 @@ function TraktAuthPanel() {
             recover. Requires clientId+secret; without them the device-
             code endpoint will refuse and we surface the error inline. */}
         {!activeFlow && hasAccessToken && (
-          <button
-            type="button"
+          <ActionButton
+            variant={zombieAuth ? 'primary' : 'secondary'}
+            loading={disconnect.isPending || begin.isPending}
+            disabled={!hasClientId || !hasClientSecret}
+            loadingLabel="Reconnecting…"
+            title={!hasClientId || !hasClientSecret ? 'Save Client ID + Client secret first' : 'Wipe stored tokens and re-run the device-code flow'}
             onClick={async () => {
               if (!confirm('Reconnect Trakt? This wipes your stored tokens and starts a fresh device-code flow. Client ID + secret are kept.')) return
               setPollMessage(null)
@@ -2827,12 +2875,9 @@ function TraktAuthPanel() {
                 setPollMessage(`Reconnect failed: ${(e as Error).message ?? e}`)
               }
             }}
-            disabled={disconnect.isPending || begin.isPending || !hasClientId || !hasClientSecret}
-            className={`px-3 py-1 rounded text-sm disabled:opacity-50 ${zombieAuth ? 'bg-accent hover:opacity-90' : 'bg-surface-3 hover:bg-surface-2'}`}
-            title={!hasClientId || !hasClientSecret ? 'Save Client ID + Client secret first' : 'Wipe stored tokens and re-run the device-code flow'}
           >
-            {disconnect.isPending || begin.isPending ? 'Reconnecting…' : 'Reconnect'}
-          </button>
+            Reconnect
+          </ActionButton>
         )}
         <button
           type="button"
@@ -2841,9 +2886,12 @@ function TraktAuthPanel() {
         >
           {revealSecrets ? 'Hide' : 'Show'} secrets
         </button>
-        <button
-          type="button"
-          disabled={!credDirty || save.isPending}
+        <ActionButton
+          variant="primary"
+          loading={save.isPending}
+          disabled={!credDirty}
+          loadingLabel="Saving…"
+          className="ml-auto"
           onClick={async () => {
             const patch: Record<string, string | null> = {}
             for (const [k, v] of Object.entries(credDraft)) {
@@ -2852,22 +2900,21 @@ function TraktAuthPanel() {
             await save.mutateAsync(patch as any)
             setCredDraft({})
           }}
-          className="ml-auto px-3 py-1 rounded text-sm bg-accent disabled:opacity-30"
         >
-          {save.isPending ? 'Saving…' : credDirty ? 'Save' : 'Saved'}
-        </button>
+          {credDirty ? 'Save' : 'Saved'}
+        </ActionButton>
         {!activeFlow && hasAccessToken && (
-          <button
-            type="button"
+          <ActionButton
+            variant="destructive"
+            loading={disconnect.isPending}
+            loadingLabel="Disconnecting…"
             onClick={() => {
               if (!confirm('Disconnect Trakt? Sync + unmonitor reconciler will stop working until you reconnect.')) return
               disconnect.mutate()
             }}
-            disabled={disconnect.isPending}
-            className="px-3 py-1 rounded text-sm bg-red-900/60 hover:bg-red-700 disabled:opacity-50"
           >
-            {disconnect.isPending ? 'Disconnecting…' : 'Disconnect'}
-          </button>
+            Disconnect
+          </ActionButton>
         )}
       </>}
     />
@@ -2915,24 +2962,30 @@ function TraktUnmonitorPanel() {
           </p>
         </div>
         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-          <button
-            onClick={() => sweep.mutate({ dryRun: true, limit: 30 })}
-            disabled={sweep.isPending}
-            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50 whitespace-nowrap"
+          <ActionButton
+            variant="secondary"
+            loading={sweep.isPending && sweep.variables?.dryRun === true}
+            disabled={sweep.isPending && sweep.variables?.dryRun !== true}
+            loadingLabel="Previewing…"
+            className="whitespace-nowrap"
             title="Dry-run the first 30 series to preview what would be unmonitored"
+            onClick={() => sweep.mutate({ dryRun: true, limit: 30 })}
           >
-            {sweep.isPending && sweep.variables?.dryRun ? 'Previewing…' : 'Preview (sample 30)'}
-          </button>
-          <button
+            Preview (sample 30)
+          </ActionButton>
+          <ActionButton
+            variant="primary"
+            loading={sweep.isPending && !sweep.variables?.dryRun}
+            disabled={sweep.isPending && sweep.variables?.dryRun === true}
+            loadingLabel="Running…"
+            className="whitespace-nowrap"
             onClick={() => {
               if (!confirm('Unmonitor every watched-but-not-downloaded episode across the entire library? This is reversible via Sonarr but affects many episodes at once.')) return
               sweep.mutate({})
             }}
-            disabled={sweep.isPending}
-            className="px-3 py-1 rounded text-sm bg-accent hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
           >
-            {sweep.isPending && !sweep.variables?.dryRun ? 'Running…' : 'Run sweep now'}
-          </button>
+            Run sweep now
+          </ActionButton>
         </div>
       </div>
 
@@ -2967,14 +3020,17 @@ function TraktUnmonitorPanel() {
             onChange={(e) => setTagDraft(e.target.value)}
             className="px-2 py-1 rounded text-sm bg-surface-3 border border-surface-2 min-w-0 flex-1"
           />
-          <button
-            type="button"
-            disabled={!tagDirty || save.isPending}
+          <ActionButton
+            variant="primary"
+            size="sm"
+            loading={save.isPending}
+            disabled={!tagDirty}
+            loadingLabel="Saving…"
+            className="whitespace-nowrap"
             onClick={() => save.mutate({ traktUnmonitorProtectTag: tagDraft.trim() })}
-            className="px-2 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-30 whitespace-nowrap"
           >
-            {save.isPending ? 'Saving…' : 'Save tag'}
-          </button>
+            Save tag
+          </ActionButton>
         </div>
       </div>
 
@@ -3056,26 +3112,30 @@ function ArchivePanel() {
           </p>
         </div>
         <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
-          <button
-            type="button"
-            onClick={() => sweep.mutate({ dryRun: true })}
-            disabled={sweep.isPending}
-            className="px-3 py-1 rounded text-sm bg-surface-3 hover:bg-surface-2 disabled:opacity-50 whitespace-nowrap"
+          <ActionButton
+            variant="secondary"
+            loading={sweep.isPending && sweep.variables?.dryRun !== false}
+            disabled={sweep.isPending && sweep.variables?.dryRun === false}
+            loadingLabel="Previewing…"
+            className="whitespace-nowrap"
             title="Show what would be deleted without writing"
+            onClick={() => sweep.mutate({ dryRun: true })}
           >
-            {sweep.isPending && sweep.variables?.dryRun !== false ? 'Previewing…' : 'Preview'}
-          </button>
-          <button
-            type="button"
+            Preview
+          </ActionButton>
+          <ActionButton
+            variant="destructive"
+            loading={sweep.isPending && sweep.variables?.dryRun === false}
+            disabled={sweep.isPending && sweep.variables?.dryRun !== false}
+            loadingLabel="Running…"
+            className="whitespace-nowrap"
             onClick={() => {
               if (!confirm('Delete every watched episode outside the keep window? This cannot be undone.')) return
               sweep.mutate({ dryRun: false })
             }}
-            disabled={sweep.isPending}
-            className="px-3 py-1 rounded text-sm bg-red-900/60 hover:bg-red-700 disabled:opacity-50 whitespace-nowrap"
           >
-            {sweep.isPending && sweep.variables?.dryRun === false ? 'Running…' : 'Run sweep'}
-          </button>
+            Run sweep
+          </ActionButton>
         </div>
       </div>
 
