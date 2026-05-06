@@ -2335,25 +2335,41 @@ function P5RatchetInline() {
   const reset = useResetP5Ratchet()
   const [draft, setDraft] = useState<P5RatchetSettings | null>(null)
 
-  useEffect(() => {
-    if (live.data) {
-      const { ratchetWouldBeActive: _rwa, currentUtilisationPct: _cup, ...settings } = live.data
-      setDraft(settings)
+  // The /settings/p5-ratchet endpoint returns the saved settings AND a
+  // live preview (ratchetWouldBeActive + currentUtilisationPct) in the
+  // same flat shape. The query auto-refetches every 10s for the live
+  // preview, so live.data gets a new reference each tick. To stop that
+  // refresh from clobbering the user's in-progress edits, memoize the
+  // settings subset by value: liveSettings only changes when an actual
+  // saved field changes (after save / reset), not on every refetch.
+  const liveSettings = useMemo<P5RatchetSettings | null>(() => {
+    if (!live.data) return null
+    return {
+      enabled: live.data.enabled,
+      searchCooldownHours: live.data.searchCooldownHours,
+      longCooldownHours: live.data.longCooldownHours,
+      escalationThreshold: live.data.escalationThreshold,
+      includeSpecials: live.data.includeSpecials,
+      bandwidthThresholdPct: live.data.bandwidthThresholdPct,
     }
-  }, [live.data])
+  }, [
+    live.data?.enabled,
+    live.data?.searchCooldownHours,
+    live.data?.longCooldownHours,
+    live.data?.escalationThreshold,
+    live.data?.includeSpecials,
+    live.data?.bandwidthThresholdPct,
+  ])
 
-  if (live.isLoading || !draft || !live.data) {
+  useEffect(() => {
+    if (liveSettings) setDraft(liveSettings)
+  }, [liveSettings])
+
+  if (live.isLoading || !draft || !live.data || !liveSettings) {
     return <div className="text-xs opacity-70">Loading P5 ratchet…</div>
   }
 
-  const dirty = JSON.stringify(draft) !== JSON.stringify({
-    enabled: live.data.enabled,
-    searchCooldownHours: live.data.searchCooldownHours,
-    longCooldownHours: live.data.longCooldownHours,
-    escalationThreshold: live.data.escalationThreshold,
-    includeSpecials: live.data.includeSpecials,
-    bandwidthThresholdPct: live.data.bandwidthThresholdPct,
-  })
+  const dirty = JSON.stringify(draft) !== JSON.stringify(liveSettings)
   const utilPct = (live.data.currentUtilisationPct * 100).toFixed(1)
 
   return (
