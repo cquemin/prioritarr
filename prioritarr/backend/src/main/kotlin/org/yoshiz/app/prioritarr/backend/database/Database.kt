@@ -358,6 +358,21 @@ class Database(dbPath: String) {
     }
 
     // ------------------------------------------------------------------
+    // app_p5_ratchet_overrides
+    // ------------------------------------------------------------------
+
+    fun getP5RatchetOverride(): String? =
+        q.selectP5RatchetOverride().executeAsOneOrNull()
+
+    fun setP5RatchetOverride(payload: String) {
+        q.upsertP5RatchetOverride(payload, nowIsoOffset())
+    }
+
+    fun clearP5RatchetOverride() {
+        q.deleteP5RatchetOverride()
+    }
+
+    // ------------------------------------------------------------------
     // provider_health
     // ------------------------------------------------------------------
 

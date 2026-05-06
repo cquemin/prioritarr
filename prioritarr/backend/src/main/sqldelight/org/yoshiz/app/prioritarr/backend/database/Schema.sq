@@ -104,6 +104,15 @@ CREATE TABLE IF NOT EXISTS app_bandwidth_overrides (
     updated_at TEXT NOT NULL
 );
 
+-- Single-row JSON blob of P5RatchetConfig overrides. Mirrors the
+-- bandwidth-overrides pattern: edits via /api/v2/settings/p5-ratchet
+-- take effect on the next reconcile / sweep tick (no restart).
+CREATE TABLE IF NOT EXISTS app_p5_ratchet_overrides (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 -- Single-row JSON blob of operator-editable Settings overrides
 -- (upstream service URLs/creds, dryRun, logLevel, uiOrigin). Applied
 -- at startup on top of the env-loaded baseline. Edits persist but
@@ -384,6 +393,21 @@ SELECT payload, updated_at FROM app_bandwidth_overrides WHERE id = 1;
 
 deleteBandwidthOverride:
 DELETE FROM app_bandwidth_overrides;
+
+-- ------------------------------------------------------------------
+-- app_p5_ratchet_overrides
+-- ------------------------------------------------------------------
+
+upsertP5RatchetOverride:
+INSERT INTO app_p5_ratchet_overrides (id, payload, updated_at)
+VALUES (1, ?, ?)
+ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at;
+
+selectP5RatchetOverride:
+SELECT payload FROM app_p5_ratchet_overrides WHERE id = 1;
+
+deleteP5RatchetOverride:
+DELETE FROM app_p5_ratchet_overrides WHERE id = 1;
 
 -- ------------------------------------------------------------------
 -- app_settings_overrides
