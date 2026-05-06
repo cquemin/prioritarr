@@ -494,6 +494,35 @@ data class OrphanRenameRequest(val path: String, val newName: String)
 @Serializable
 data class OrphanRenameResult(val ok: Boolean, val newPath: String? = null, val message: String? = null)
 
+/**
+ * Per-season ratchet info for a single series. Returned as part of
+ * [P5RatchetSeriesStatus] from GET /api/v2/series/{id}/p5-ratchet.
+ */
+@Serializable
+data class P5RatchetSeasonInfo(
+    val seasonNumber: Int,
+    val missingCount: Int,
+    val lastAttemptedAt: String?,           // ISO-8601, null if never tried
+    val consecutiveEmptyAttempts: Int,
+    val status: String,                     // "eligible" | "cooling" | "long_cooldown"
+    val nextStrategy: String?,              // "season" | "episode" — null when status != "eligible"
+    val retryAt: String?,                   // ISO-8601 estimate of next eligibility, null when "eligible"
+)
+
+/**
+ * Response for GET /api/v2/series/{id}/p5-ratchet. Carries per-season ratchet
+ * state for the series detail drawer tile.
+ */
+@Serializable
+data class P5RatchetSeriesStatus(
+    val seriesId: Long,
+    val isP5: Boolean,                      // current priority == 5
+    val ratchetEnabled: Boolean,            // p5Ratchet.enabled
+    val ratchetActive: Boolean,             // = ratchetEnabled && bandwidthSaturated
+    val currentSeason: P5RatchetSeasonInfo?,// the season that would fire next, null if none eligible
+    val seasons: List<P5RatchetSeasonInfo>, // every season with missing episodes, ascending seasonNumber
+)
+
 /** Echoed-back probe result so the UI can decide what to do post-rename. */
 @Serializable
 data class OrphanProbeResult(

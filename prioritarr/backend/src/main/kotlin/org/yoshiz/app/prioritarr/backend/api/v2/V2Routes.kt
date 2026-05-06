@@ -18,6 +18,8 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -41,6 +43,8 @@ import org.yoshiz.app.prioritarr.backend.schemas.BulkDownloadActionRequest
 import org.yoshiz.app.prioritarr.backend.schemas.BandwidthStatus
 import org.yoshiz.app.prioritarr.backend.schemas.P5RatchetRequest
 import org.yoshiz.app.prioritarr.backend.schemas.P5RatchetResponse
+import org.yoshiz.app.prioritarr.backend.schemas.P5RatchetSeasonInfo
+import org.yoshiz.app.prioritarr.backend.schemas.P5RatchetSeriesStatus
 import org.yoshiz.app.prioritarr.backend.schemas.BulkItemResult
 import org.yoshiz.app.prioritarr.backend.schemas.DownloadLogEntry
 import org.yoshiz.app.prioritarr.backend.schemas.DownloadLogsResponse
@@ -435,6 +439,96 @@ fun Route.v2Routes(state: AppState) {
                 dryRun = state.settings.dryRun,
                 priority = result.toWire(),
                 message = if (state.settings.dryRun) "dry-run: cache not cleared" else null,
+            ))
+        }
+
+        // Per-series P5 ratchet tile — current backfill season, cooldowns,
+        // and strategy for the series detail drawer. Pure SELECT; no side
+        // effects. Returns P5RatchetSeriesStatus (all seasons with missing
+        // episodes, ascending seasonNumber; currentSeason = lowest eligible).
+        get("/{id}/p5-ratchet") {
+            val seriesId = call.parameters["id"]?.toLongOrNull()
+                ?: return@get call.respond(HttpStatusCode.BadRequest, "missing or invalid id")
+
+            val cfg = state.p5RatchetSource.current()
+            val priorityRow = state.db.getPriorityCache(seriesId)
+            val isP5 = priorityRow?.priority == 5L
+
+            // Ratchet active = enabled && bandwidth-saturated against the configured threshold.
+            // Mirrors the computation in GET /settings/p5-ratchet.
+            val bandwidth = state.bandwidthSource.current()
+            val totalBps = state.downloadTelemetry.observedPeakTotalBps()
+            val ratchetBw = cfg.bandwidthThresholdPct?.let { bandwidth.copy(utilisationThresholdPct = it) } ?: bandwidth
+            val ratchetActive = cfg.enabled &&
+                org.yoshiz.app.prioritarr.backend.enforcement.BandwidthPolicy
+                    .utilisationExceedsThreshold(ratchetBw, totalBps)
+
+            // Build per-season missing counts from Sonarr's per-series episode list.
+            val episodes = try { state.sonarr.getEpisodes(seriesId) } catch (_: Exception) {
+                kotlinx.serialization.json.JsonArray(emptyList())
+            }
+            val missingBySeason: Map<Int, Int> = episodes
+                .map { it.jsonObject }
+                .filter { ep ->
+                    (ep["monitored"]?.jsonPrimitive?.booleanOrNull ?: false) &&
+                        !(ep["hasFile"]?.jsonPrimitive?.booleanOrNull ?: true)
+                }
+                .filter { ep ->
+                    (ep["seasonNumber"]?.jsonPrimitive?.intOrNull ?: -1) >= (if (cfg.includeSpecials) 0 else 1)
+                }
+                .groupingBy { ep -> ep["seasonNumber"]!!.jsonPrimitive.int }
+                .eachCount()
+
+            val attemptsBySeason: Map<Int, org.yoshiz.app.prioritarr.backend.database.Database.P5SweepAttempt> =
+                state.db.listP5AttemptsForSeries(seriesId).associateBy { it.seasonNumber }
+
+            val nowSec = System.currentTimeMillis() / 1000L
+            val cooldownSec = cfg.searchCooldownHours * 3600L
+            val longCooldownSec = cfg.longCooldownHours * 3600L
+
+            val seasons: List<P5RatchetSeasonInfo> = missingBySeason.entries
+                .sortedBy { it.key }
+                .map { (seasonNumber, missingCount) ->
+                    val attempt = attemptsBySeason[seasonNumber]
+                    val lastAttemptedAtIso = attempt?.lastAttemptedAt?.let {
+                        java.time.Instant.ofEpochSecond(it).toString()
+                    }
+                    val counter = attempt?.consecutiveEmptyAttempts ?: 0
+                    val (status: String, retryAt: String?) = when {
+                        attempt == null -> "eligible" to null
+                        counter >= cfg.escalationThreshold &&
+                            attempt.lastAttemptedAt + longCooldownSec > nowSec ->
+                            "long_cooldown" to java.time.Instant.ofEpochSecond(
+                                attempt.lastAttemptedAt + longCooldownSec).toString()
+                        attempt.lastAttemptedAt + cooldownSec > nowSec ->
+                            "cooling" to java.time.Instant.ofEpochSecond(
+                                attempt.lastAttemptedAt + cooldownSec).toString()
+                        else -> "eligible" to null
+                    }
+                    val nextStrategy: String? = if (status == "eligible") {
+                        if (counter >= 2) "episode" else "season"
+                    } else null
+                    P5RatchetSeasonInfo(
+                        seasonNumber = seasonNumber,
+                        missingCount = missingCount,
+                        lastAttemptedAt = lastAttemptedAtIso,
+                        consecutiveEmptyAttempts = counter,
+                        status = status,
+                        nextStrategy = nextStrategy,
+                        retryAt = retryAt,
+                    )
+                }
+
+            // Current season = lowest-seasonNumber eligible season.
+            val currentSeason = seasons.firstOrNull { it.status == "eligible" }
+
+            call.respond(P5RatchetSeriesStatus(
+                seriesId = seriesId,
+                isP5 = isP5,
+                ratchetEnabled = cfg.enabled,
+                ratchetActive = ratchetActive,
+                currentSeason = currentSeason,
+                seasons = seasons,
             ))
         }
     }
