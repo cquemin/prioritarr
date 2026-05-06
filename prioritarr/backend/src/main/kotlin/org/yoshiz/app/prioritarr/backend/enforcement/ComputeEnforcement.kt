@@ -17,6 +17,7 @@ fun computeEnforcement(
 ): Map<String, EnforcementDecision> {
     val result = LinkedHashMap<String, EnforcementDecision>(downloads.size)
 
+    // ---------- Layer 1: cross-band ----------
     val crossBandActives = downloads
         .filter { it.state == ManagedState.RUNNING }
         .map { it.priority }
@@ -29,13 +30,41 @@ fun computeEnforcement(
         else -> emptySet()
     }
 
+    // ---------- Layer 2: P5 sub-band, per-series ----------
+    // For each P5 series, find the minimum seasonNumber among items
+    // that are RUNNING and have a known seasonNumber. Items with a
+    // greater seasonNumber and matching seriesId become DEFERRED.
+    // Items with seasonNumber == null or seriesId == null are not
+    // affected by Layer 2 (they fall through ACTIVE).
+    val p5MinSeasonBySeries: Map<Long, Int> =
+        if (!ctx.p5SeasonRatchetActive) emptyMap()
+        else downloads
+            .asSequence()
+            .filter { it.priority == 5 }
+            .filter { it.seriesId != null && it.seasonNumber != null }
+            .filter { it.state == ManagedState.RUNNING }
+            .groupBy { it.seriesId!! }
+            .mapValues { (_, items) -> items.minOf { it.seasonNumber!! } }
+
     for (d in downloads) {
+        // Layer 1 first
         val deferByCrossBand = d.priority in crossBandDeferLevels &&
             !ctx.p1IsPeerLimited &&
             !ctx.isNearDone(d) &&
             d.state == ManagedState.RUNNING
 
-        val target = if (deferByCrossBand) TargetState.DEFERRED else TargetState.ACTIVE
+        // Layer 2 only kicks in when ratchet is active AND Layer 1
+        // didn't already defer the item AND the item is RUNNING
+        // (PAUSED_BY_USER / ERRORED stay ACTIVE-target as a no-op signal)
+        val deferByP5SubBand = !deferByCrossBand &&
+            ctx.p5SeasonRatchetActive &&
+            d.priority == 5 &&
+            d.state == ManagedState.RUNNING &&
+            d.seriesId != null &&
+            d.seasonNumber != null &&
+            p5MinSeasonBySeries[d.seriesId]?.let { min -> d.seasonNumber > min } == true
+
+        val target = if (deferByCrossBand || deferByP5SubBand) TargetState.DEFERRED else TargetState.ACTIVE
         result[d.clientId] = EnforcementDecision(
             targetState = target,
             orderHint = orderHintOf(d),

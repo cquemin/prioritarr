@@ -79,4 +79,138 @@ class ComputeEnforcementTest {
         )
         assertEquals(TargetState.ACTIVE, decisions["p5"]!!.targetState)
     }
+
+    // ---------- Layer 2 — P5 sub-band ----------
+
+    @Test fun layer2_off_when_ratchet_inactive() {
+        // Same series, two seasons, P5 — ratchet inactive → both ACTIVE
+        val decisions = computeEnforcement(
+            listOf(
+                dl("s1", 5, seriesId = 1L, seasonNumber = 1),
+                dl("s2", 5, seriesId = 1L, seasonNumber = 2),
+            ),
+            ComputeEnforcementContext(p5SeasonRatchetActive = false),
+        )
+        assertEquals(TargetState.ACTIVE, decisions["s1"]!!.targetState)
+        assertEquals(TargetState.ACTIVE, decisions["s2"]!!.targetState)
+    }
+
+    @Test fun layer2_per_series_lowest_season_active_higher_deferred() {
+        val decisions = computeEnforcement(
+            listOf(
+                dl("s1e1", 5, seriesId = 1L, seasonNumber = 1, episodeNumber = 1),
+                dl("s1e2", 5, seriesId = 1L, seasonNumber = 1, episodeNumber = 2),
+                dl("s2e1", 5, seriesId = 1L, seasonNumber = 2, episodeNumber = 1),
+                dl("s3e1", 5, seriesId = 1L, seasonNumber = 3, episodeNumber = 1),
+            ),
+            ComputeEnforcementContext(p5SeasonRatchetActive = true),
+        )
+        assertEquals(TargetState.ACTIVE, decisions["s1e1"]!!.targetState)
+        assertEquals(TargetState.ACTIVE, decisions["s1e2"]!!.targetState)
+        assertEquals(TargetState.DEFERRED, decisions["s2e1"]!!.targetState)
+        assertEquals(TargetState.DEFERRED, decisions["s3e1"]!!.targetState)
+    }
+
+    @Test fun layer2_two_series_independent_min_seasons() {
+        val decisions = computeEnforcement(
+            listOf(
+                dl("a-s2", 5, seriesId = 1L, seasonNumber = 2),
+                dl("a-s3", 5, seriesId = 1L, seasonNumber = 3),
+                dl("b-s5", 5, seriesId = 2L, seasonNumber = 5),
+                dl("b-s6", 5, seriesId = 2L, seasonNumber = 6),
+            ),
+            ComputeEnforcementContext(p5SeasonRatchetActive = true),
+        )
+        // A's min=2 active, A's S3 deferred. B's min=5 active, B's S6 deferred.
+        assertEquals(TargetState.ACTIVE, decisions["a-s2"]!!.targetState)
+        assertEquals(TargetState.DEFERRED, decisions["a-s3"]!!.targetState)
+        assertEquals(TargetState.ACTIVE, decisions["b-s5"]!!.targetState)
+        assertEquals(TargetState.DEFERRED, decisions["b-s6"]!!.targetState)
+    }
+
+    @Test fun layer2_null_seasonNumber_stays_active() {
+        val decisions = computeEnforcement(
+            listOf(
+                dl("known", 5, seriesId = 1L, seasonNumber = 1),
+                dl("unknown", 5, seriesId = 1L, seasonNumber = null),
+            ),
+            ComputeEnforcementContext(p5SeasonRatchetActive = true),
+        )
+        assertEquals(TargetState.ACTIVE, decisions["known"]!!.targetState)
+        assertEquals(TargetState.ACTIVE, decisions["unknown"]!!.targetState)
+    }
+
+    @Test fun layer2_null_seriesId_skips_rule() {
+        val decisions = computeEnforcement(
+            listOf(
+                dl("orphan-s2", 5, seriesId = null, seasonNumber = 2),
+                dl("orphan-s5", 5, seriesId = null, seasonNumber = 5),
+            ),
+            ComputeEnforcementContext(p5SeasonRatchetActive = true),
+        )
+        // No seriesId → no grouping → both ACTIVE
+        assertEquals(TargetState.ACTIVE, decisions["orphan-s2"]!!.targetState)
+        assertEquals(TargetState.ACTIVE, decisions["orphan-s5"]!!.targetState)
+    }
+
+    @Test fun layer2_does_not_touch_non_p5() {
+        val decisions = computeEnforcement(
+            listOf(
+                dl("p3-s1", 3, seriesId = 1L, seasonNumber = 1),
+                dl("p3-s5", 3, seriesId = 1L, seasonNumber = 5),
+            ),
+            ComputeEnforcementContext(p5SeasonRatchetActive = true),
+        )
+        assertEquals(TargetState.ACTIVE, decisions["p3-s1"]!!.targetState)
+        assertEquals(TargetState.ACTIVE, decisions["p3-s5"]!!.targetState)
+    }
+
+    @Test fun layer2_excludes_paused_user_from_min_calc() {
+        // S1 is paused-by-user; the "effective" min should be S2.
+        // Only S3+ get deferred; S1 stays untouched (PAUSED_BY_USER).
+        val decisions = computeEnforcement(
+            listOf(
+                dl("s1", 5, seriesId = 1L, seasonNumber = 1, state = ManagedState.PAUSED_BY_USER),
+                dl("s2", 5, seriesId = 1L, seasonNumber = 2),
+                dl("s3", 5, seriesId = 1L, seasonNumber = 3),
+            ),
+            ComputeEnforcementContext(p5SeasonRatchetActive = true),
+        )
+        assertEquals(TargetState.ACTIVE, decisions["s1"]!!.targetState)  // user-paused = ACTIVE target, never touch
+        assertEquals(TargetState.ACTIVE, decisions["s2"]!!.targetState)
+        assertEquals(TargetState.DEFERRED, decisions["s3"]!!.targetState)
+    }
+
+    @Test fun layer2_layer1_wins_when_both_apply() {
+        // P1 is active in some other series → Layer 1 defers all P5 anyway
+        val decisions = computeEnforcement(
+            listOf(
+                dl("p1", 1, seriesId = 9L),
+                dl("s1", 5, seriesId = 1L, seasonNumber = 1),
+                dl("s2", 5, seriesId = 1L, seasonNumber = 2),
+            ),
+            ComputeEnforcementContext(p5SeasonRatchetActive = true),
+        )
+        assertEquals(TargetState.DEFERRED, decisions["s1"]!!.targetState)
+        assertEquals(TargetState.DEFERRED, decisions["s2"]!!.targetState)
+    }
+
+    // ---------- orderHint ----------
+
+    @Test fun orderHint_priority_dominates_season() {
+        val p1 = dl("p1", 1, seasonNumber = 9, episodeNumber = 99)
+        val p5 = dl("p5", 5, seasonNumber = 1, episodeNumber = 1)
+        val decisions = computeEnforcement(listOf(p1, p5), ComputeEnforcementContext())
+        // Lower hint = earlier; P1 must outrank P5 regardless of season
+        kotlin.test.assertTrue(decisions["p1"]!!.orderHint < decisions["p5"]!!.orderHint)
+    }
+
+    @Test fun orderHint_within_priority_uses_season_then_episode() {
+        val s1e2 = dl("s1e2", 5, seasonNumber = 1, episodeNumber = 2)
+        val s1e1 = dl("s1e1", 5, seasonNumber = 1, episodeNumber = 1)
+        val s2e1 = dl("s2e1", 5, seasonNumber = 2, episodeNumber = 1)
+        val decisions = computeEnforcement(listOf(s1e2, s1e1, s2e1), ComputeEnforcementContext())
+        val sorted = listOf("s1e2", "s1e1", "s2e1").sortedBy { decisions[it]!!.orderHint }
+        kotlin.test.assertEquals(listOf("s1e1", "s1e2", "s2e1"), sorted)
+    }
 }
