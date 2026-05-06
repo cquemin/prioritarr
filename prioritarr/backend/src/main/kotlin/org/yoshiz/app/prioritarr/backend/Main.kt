@@ -303,6 +303,9 @@ fun main() {
         bandwidthSource = org.yoshiz.app.prioritarr.backend.enforcement.DbBandwidthSource(
             db = db, baseline = settings.bandwidth,
         ),
+        p5RatchetSource = org.yoshiz.app.prioritarr.backend.enforcement.DbP5RatchetSource(
+            db = db, baseline = settings.p5Ratchet,
+        ),
         mappings = mappings,
         priorityService = priorityService,
         thresholdsSource = thresholdsSource,
@@ -396,7 +399,7 @@ fun main() {
                         db = db,
                         priorityService = priorityService,
                         bandwidth = state.bandwidthSource.current(),
-                        p5Ratchet = s.p5Ratchet,
+                        p5Ratchet = state.p5RatchetSource.current(),
                         telemetry = state.downloadTelemetry,
                         dryRun = s.dryRun,
                     )
@@ -516,7 +519,7 @@ fun main() {
                         sonarr = sonarr,
                         priorityService = priorityService,
                         db = db,
-                        p5Ratchet = s.p5Ratchet,
+                        p5Ratchet = state.p5RatchetSource.current(),
                         bandwidth = state.bandwidthSource.current(),
                         telemetry = state.downloadTelemetry,
                         maxSearches = s.intervals.backfillMaxSearchesPerSweep,

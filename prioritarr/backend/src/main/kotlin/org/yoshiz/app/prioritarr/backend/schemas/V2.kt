@@ -234,6 +234,39 @@ data class BandwidthStatus(
 )
 
 /**
+ * Request body for PUT /api/v2/settings/p5-ratchet.
+ * Mirrors [org.yoshiz.app.prioritarr.backend.config.P5RatchetConfig] exactly so the
+ * UI submits the full object (no partial-patch semantics at the HTTP layer).
+ */
+@Serializable
+data class P5RatchetRequest(
+    val enabled: Boolean,
+    val searchCooldownHours: Int,
+    val longCooldownHours: Int,
+    val escalationThreshold: Int,
+    val includeSpecials: Boolean,
+    val bandwidthThresholdPct: Double?,
+)
+
+/**
+ * Response for GET /api/v2/settings/p5-ratchet. Carries the live config
+ * plus a real-time "would the ratchet suppress a search right now?" signal
+ * so the UI can render a live-preview badge without a separate endpoint.
+ */
+@Serializable
+data class P5RatchetResponse(
+    val enabled: Boolean,
+    val searchCooldownHours: Int,
+    val longCooldownHours: Int,
+    val escalationThreshold: Int,
+    val includeSpecials: Boolean,
+    val bandwidthThresholdPct: Double?,
+    /** Real-time signal: would the ratchet be active right now? */
+    val ratchetWouldBeActive: Boolean,
+    val currentUtilisationPct: Double,
+)
+
+/**
  * One log entry surfaced for a specific download. `source` points
  * back to the system that emitted it (sonarr / qbit / sab) so the
  * UI can label rows, e.g. "Sonarr · Grabbed release …".

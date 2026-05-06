@@ -39,6 +39,8 @@ import org.yoshiz.app.prioritarr.backend.schemas.AuditEntry
 import org.yoshiz.app.prioritarr.backend.schemas.BulkActionResult
 import org.yoshiz.app.prioritarr.backend.schemas.BulkDownloadActionRequest
 import org.yoshiz.app.prioritarr.backend.schemas.BandwidthStatus
+import org.yoshiz.app.prioritarr.backend.schemas.P5RatchetRequest
+import org.yoshiz.app.prioritarr.backend.schemas.P5RatchetResponse
 import org.yoshiz.app.prioritarr.backend.schemas.BulkItemResult
 import org.yoshiz.app.prioritarr.backend.schemas.DownloadLogEntry
 import org.yoshiz.app.prioritarr.backend.schemas.DownloadLogsResponse
@@ -1492,6 +1494,65 @@ fun Route.v2Routes(state: AppState) {
         state.bandwidthSource.reset()
         state.eventBus.publish("bandwidth-reset", kotlinx.serialization.json.JsonNull)
         call.respond(state.bandwidthSource.current())
+    }
+
+    // ---- P5 ratchet settings (live-editable) ----
+    //
+    // GET returns the current P5RatchetConfig plus a live-computed signal
+    // (ratchetWouldBeActive + currentUtilisationPct) so the UI can render a
+    // "ratchet is hot right now" indicator. PUT persists a full new object;
+    // DELETE drops the override and falls back to the env/YAML baseline.
+    // Changes take effect on the next reconcile / backfill tick — no restart.
+    get("/settings/p5-ratchet") {
+        val s = state.p5RatchetSource.current()
+        val bandwidth = state.bandwidthSource.current()
+        val totalBps = state.downloadTelemetry.observedPeakTotalBps()
+        val capBps = org.yoshiz.app.prioritarr.backend.enforcement.BandwidthPolicy
+            .effectiveCapBps(bandwidth)
+        val util = if (capBps > 0) totalBps.toDouble() / capBps else 0.0
+        val ratchetBandwidth = s.bandwidthThresholdPct
+            ?.let { bandwidth.copy(utilisationThresholdPct = it) }
+            ?: bandwidth
+        val active = s.enabled &&
+            org.yoshiz.app.prioritarr.backend.enforcement.BandwidthPolicy
+                .utilisationExceedsThreshold(ratchetBandwidth, totalBps)
+        call.respond(P5RatchetResponse(
+            enabled = s.enabled,
+            searchCooldownHours = s.searchCooldownHours,
+            longCooldownHours = s.longCooldownHours,
+            escalationThreshold = s.escalationThreshold,
+            includeSpecials = s.includeSpecials,
+            bandwidthThresholdPct = s.bandwidthThresholdPct,
+            ratchetWouldBeActive = active,
+            currentUtilisationPct = util,
+        ))
+    }
+
+    put("/settings/p5-ratchet") {
+        val req = call.receive<P5RatchetRequest>()
+        val cfg = org.yoshiz.app.prioritarr.backend.config.P5RatchetConfig(
+            enabled = req.enabled,
+            searchCooldownHours = req.searchCooldownHours,
+            longCooldownHours = req.longCooldownHours,
+            escalationThreshold = req.escalationThreshold,
+            includeSpecials = req.includeSpecials,
+            bandwidthThresholdPct = req.bandwidthThresholdPct,
+        )
+        state.p5RatchetSource.save(cfg)
+        state.eventBus.publish(
+            "p5-ratchet-updated",
+            Json.encodeToJsonElement(
+                org.yoshiz.app.prioritarr.backend.config.P5RatchetConfig.serializer(),
+                cfg,
+            ),
+        )
+        call.respond(HttpStatusCode.NoContent)
+    }
+
+    delete("/settings/p5-ratchet") {
+        state.p5RatchetSource.reset()
+        state.eventBus.publish("p5-ratchet-reset", kotlinx.serialization.json.JsonNull)
+        call.respond(HttpStatusCode.NoContent)
     }
 
     // ---- What-if preview ----

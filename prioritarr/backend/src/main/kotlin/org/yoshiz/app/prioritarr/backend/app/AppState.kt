@@ -4,6 +4,7 @@ import io.ktor.client.HttpClient
 import org.yoshiz.app.prioritarr.backend.clients.DownloadClient
 import org.yoshiz.app.prioritarr.backend.enforcement.BandwidthSource
 import org.yoshiz.app.prioritarr.backend.enforcement.DownloadTelemetry
+import org.yoshiz.app.prioritarr.backend.enforcement.P5RatchetSource
 import org.yoshiz.app.prioritarr.backend.clients.QBitClient
 import org.yoshiz.app.prioritarr.backend.clients.SABClient
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
@@ -46,6 +47,8 @@ data class AppState(
     val downloadTelemetry: DownloadTelemetry,
     /** Live-editable bandwidth settings. Reconciler reads this each tick. */
     val bandwidthSource: BandwidthSource,
+    /** Live-editable P5 ratchet config. Reconciler and backfill sweep read this each tick. */
+    val p5RatchetSource: P5RatchetSource,
     val mappings: MappingState,
     val priorityService: PriorityService,
     val thresholdsSource: ThresholdsSource,
