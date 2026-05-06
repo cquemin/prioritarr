@@ -394,6 +394,7 @@ class Database(dbPath: String) {
     fun resetAllState() {
         db.transaction {
             q.deleteAllManagedDownloads()
+            q.deleteAllP5SweepAttempts()
             q.deleteAllWebhookDedupe()
             q.deleteAllAuditLog()
             q.deleteAllSeriesPriorityCache()
