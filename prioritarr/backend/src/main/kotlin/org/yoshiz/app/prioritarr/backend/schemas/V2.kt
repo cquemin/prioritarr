@@ -186,6 +186,7 @@ data class IntervalsWire(
     val backfillMaxSearchesPerSweep: Int = 10,
     val backfillDelayBetweenSearchesSeconds: Int = 30,
     val cutoffMaxSearchesPerSweep: Int = 5,
+    // P1/P2 fast-grab pass (see docs/specs/2026-05-15-p1p2-fast-grab-design.md)
     val backfillP1P2MaxPerSweep: Int = 20,
     val backfillP1P2CooldownMinutes: Int = 30,
     val backfillP1P2FollowupEpisodes: Int = 2,
