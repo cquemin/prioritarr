@@ -43,9 +43,23 @@ class SettingsParserTest {
 
     @Test
     fun intervals_p1p2_fields_have_documented_defaults() {
-        val intervals = Intervals()
-        assertEquals(20, intervals.backfillP1P2MaxPerSweep)
-        assertEquals(30, intervals.backfillP1P2CooldownMinutes)
-        assertEquals(2, intervals.backfillP1P2FollowupEpisodes)
+        val s = loadSettingsFrom(requiredEnvForParser)
+        assertEquals(20, s.intervals.backfillP1P2MaxPerSweep)
+        assertEquals(30, s.intervals.backfillP1P2CooldownMinutes)
+        assertEquals(2, s.intervals.backfillP1P2FollowupEpisodes)
+    }
+
+    @Test
+    fun applySettingsOverride_threads_p1p2_fields() {
+        val base = loadSettingsFrom(requiredEnvForParser)
+        val override = EditableSettings(
+            backfillP1P2MaxPerSweep = 99,
+            backfillP1P2CooldownMinutes = 60,
+            backfillP1P2FollowupEpisodes = 5,
+        )
+        val result = applySettingsOverride(base, override)
+        assertEquals(99, result.intervals.backfillP1P2MaxPerSweep)
+        assertEquals(60, result.intervals.backfillP1P2CooldownMinutes)
+        assertEquals(5, result.intervals.backfillP1P2FollowupEpisodes)
     }
 }
