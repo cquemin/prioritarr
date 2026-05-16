@@ -62,6 +62,16 @@ CREATE TABLE IF NOT EXISTS p5_sweep_attempts (
     PRIMARY KEY (series_id, season_number)
 );
 
+-- Per-episode attempt log for the P1/P2 fast-grab pass (see
+-- docs/specs/2026-05-15-p1p2-fast-grab-design.md). Mirrors
+-- p5_sweep_attempts in spirit but keyed per episode (not per season)
+-- because Pass A1 fires Sonarr's EpisodeSearch with a list of IDs.
+CREATE TABLE IF NOT EXISTS p1p2_search_attempts (
+    episode_id INTEGER PRIMARY KEY,
+    last_attempted_at INTEGER NOT NULL CHECK (last_attempted_at > 0),
+    attempts_count INTEGER NOT NULL DEFAULT 1 CHECK (attempts_count >= 1)
+);
+
 CREATE TABLE IF NOT EXISTS webhook_dedupe (
     event_key TEXT PRIMARY KEY,
     received_at TEXT NOT NULL
@@ -573,3 +583,22 @@ SELECT * FROM p5_sweep_attempts WHERE series_id = ?;
 
 deleteP5AttemptsForSeries:
 DELETE FROM p5_sweep_attempts WHERE series_id = ?;
+
+-- ------------------------------------------------------------------
+-- p1p2_search_attempts
+-- ------------------------------------------------------------------
+
+upsertP1P2Attempt:
+INSERT INTO p1p2_search_attempts (episode_id, last_attempted_at, attempts_count)
+VALUES (?, ?, 1)
+ON CONFLICT(episode_id) DO UPDATE SET
+    last_attempted_at = excluded.last_attempted_at,
+    attempts_count = attempts_count + 1;
+
+listP1P2AttemptedSince:
+SELECT episode_id FROM p1p2_search_attempts
+WHERE last_attempted_at >= ?
+ORDER BY episode_id;
+
+clearP1P2Attempt:
+DELETE FROM p1p2_search_attempts WHERE episode_id = ?;

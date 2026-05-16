@@ -199,6 +199,24 @@ class Database(dbPath: String) {
     }
 
     // ------------------------------------------------------------------
+    // p1p2_search_attempts
+    // ------------------------------------------------------------------
+
+    fun upsertP1P2Attempt(episodeId: Long, lastAttemptedAt: Long) {
+        q.upsertP1P2Attempt(
+            episode_id = episodeId,
+            last_attempted_at = lastAttemptedAt,
+        )
+    }
+
+    fun listP1P2AttemptedSince(thresholdEpochSeconds: Long): List<Long> =
+        q.listP1P2AttemptedSince(thresholdEpochSeconds).executeAsList()
+
+    fun clearP1P2Attempt(episodeId: Long) {
+        q.clearP1P2Attempt(episodeId)
+    }
+
+    // ------------------------------------------------------------------
     // webhook_dedupe
     // ------------------------------------------------------------------
 
