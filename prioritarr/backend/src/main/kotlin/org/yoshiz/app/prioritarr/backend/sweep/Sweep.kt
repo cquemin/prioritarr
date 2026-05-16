@@ -15,6 +15,13 @@ import org.yoshiz.app.prioritarr.backend.priority.PriorityService
 
 private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.sweep")
 
+/**
+ * Maximum number of oldest missing episodes to fire EpisodeSearch for
+ * per P1/P2 series per sweep. Hardcoded — see the spec for rationale
+ * (operator value in surfacing as a setting is low).
+ */
+private const val P1P2_PER_SERIES_CAP = 5
+
 internal data class SweepEntry(
     val seriesId: Long,
     val oldestAirDate: String,
@@ -57,7 +64,7 @@ internal suspend fun buildSweepOrder(
     priorityService: PriorityService,
 ): List<SweepEntry> = buildSweepOrder(records, priorityService::priorityForSeries)
 
-suspend fun runBackfillSweep(
+internal suspend fun runBackfillSweep(
     sonarr: SonarrClient,
     db: Database,
     p5Ratchet: org.yoshiz.app.prioritarr.backend.config.P5RatchetConfig,
@@ -100,7 +107,7 @@ suspend fun runBackfillSweep(
         priorityBySeriesId = priorityBySeriesId,
         queuedEpisodeIds = queuedIds,
         cooldownEpisodeIds = cooldownIds,
-        perSeriesCap = 5,
+        perSeriesCap = P1P2_PER_SERIES_CAP,
     )
     val p1p2Fired = if (p1p2MaxPerSweep > 0) {
         runP1P2EpisodePass(
@@ -184,7 +191,15 @@ suspend fun runBackfillSweep(
     return p1p2Fired + fired
 }
 
-/** Pull episode IDs out of Sonarr's /queue payload (covers both shapes). */
+/**
+ * Pull episode IDs out of Sonarr's /queue payload. Handles both response
+ * shapes: rows with an `episode` object containing `id`, or flat rows with
+ * a top-level `episodeId`. Used by Pass A1 (filter out queued episodes
+ * from P1/P2 candidates) and the on-grab follow-up in
+ * `webhooks/OnGrabFollowup.kt`. Lives here for now since `sweep` was the
+ * first caller; if a third caller appears in another package, consider
+ * moving to a shared util.
+ */
 internal fun JsonArray.toEpisodeIdSet(): Set<Long> = mapNotNull {
     val o = it.jsonObject
     o["episode"]?.jsonObject?.get("id")?.jsonPrimitive?.longOrNull

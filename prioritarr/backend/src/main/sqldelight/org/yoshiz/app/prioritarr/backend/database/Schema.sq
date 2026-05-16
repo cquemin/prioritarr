@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS p5_sweep_attempts (
 -- docs/specs/2026-05-15-p1p2-fast-grab-design.md). Mirrors
 -- p5_sweep_attempts in spirit but keyed per episode (not per season)
 -- because Pass A1 fires Sonarr's EpisodeSearch with a list of IDs.
+-- `attempts_count` is reserved for future adaptive-escalation logic
+-- (analogous to p5_sweep_attempts.consecutive_empty_attempts); it is
+-- incremented on every upsert but not yet read by any production code
+-- path. Exposed via Database.getP1P2AttemptCount for round-trip tests.
 CREATE TABLE IF NOT EXISTS p1p2_search_attempts (
     episode_id INTEGER PRIMARY KEY,
     last_attempted_at INTEGER NOT NULL CHECK (last_attempted_at > 0),
