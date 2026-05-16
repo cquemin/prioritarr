@@ -10,6 +10,7 @@ import kotlinx.serialization.json.longOrNull
 import org.slf4j.LoggerFactory
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
 import org.yoshiz.app.prioritarr.backend.database.Database
+import org.yoshiz.app.prioritarr.backend.priority.PriorityResult
 import org.yoshiz.app.prioritarr.backend.priority.PriorityService
 
 private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.sweep")
@@ -28,7 +29,7 @@ internal data class SweepEntry(
  */
 internal suspend fun buildSweepOrder(
     records: JsonArray,
-    priorityService: PriorityService,
+    priorityFn: suspend (Long) -> PriorityResult,
 ): List<SweepEntry> {
     val map = mutableMapOf<Long, SweepEntry>()
     for (r in records) {
@@ -43,16 +44,21 @@ internal suspend fun buildSweepOrder(
         }
     }
     for (entry in map.values) {
-        val result = priorityService.priorityForSeries(entry.seriesId)
+        val result = priorityFn(entry.seriesId)
         entry.priority = result.priority
         entry.label = result.label
     }
     return map.values.sortedWith(compareBy({ it.priority }, { it.oldestAirDate }))
 }
 
+/** Overload retained for callers that pass a [PriorityService] directly. */
+internal suspend fun buildSweepOrder(
+    records: JsonArray,
+    priorityService: PriorityService,
+): List<SweepEntry> = buildSweepOrder(records, priorityService::priorityForSeries)
+
 suspend fun runBackfillSweep(
     sonarr: SonarrClient,
-    priorityService: PriorityService,
     db: Database,
     p5Ratchet: org.yoshiz.app.prioritarr.backend.config.P5RatchetConfig,
     bandwidth: org.yoshiz.app.prioritarr.backend.config.BandwidthSettings,
@@ -60,8 +66,16 @@ suspend fun runBackfillSweep(
     maxSearches: Int,
     delaySeconds: Int,
     dryRun: Boolean,
+    p1p2MaxPerSweep: Int,
+    p1p2CooldownMinutes: Int,
+    // Test seam: allows unit tests to supply a simple lambda without
+    // constructing a full PriorityService (which needs SonarrClient,
+    // watch providers, DB, etc.). Production callers use the overload
+    // below that accepts a PriorityService directly.
+    priorityForSeriesFn: suspend (Long) -> PriorityResult,
 ): Int {
-    // ---- Pass A: P1-P4 today's behaviour ----
+    val priorityFn: suspend (Long) -> PriorityResult = priorityForSeriesFn
+
     val records = try { sonarr.getWantedMissing() } catch (e: Exception) {
         logger.warn("[backfill] fetch failed: {}", e.message); return 0
     }
@@ -69,17 +83,48 @@ suspend fun runBackfillSweep(
         logger.info("[backfill] nothing to search")
         return 0
     }
-    val order = buildSweepOrder(records, priorityService)
-    logger.info("[backfill] {} records across {} series (max {})", records.size, order.size, maxSearches)
+
+    val order = buildSweepOrder(records, priorityFn)
+    val priorityBySeriesId = order.associate { it.seriesId to it.priority }
+    val queueArr = try { sonarr.getQueue() } catch (_: Exception) { JsonArray(emptyList()) }
+    val queuedIds = queueArr.toEpisodeIdSet()
+    val nowSec = System.currentTimeMillis() / 1000L
+    val cooldownIds = db.listP1P2AttemptedSince(nowSec - p1p2CooldownMinutes * 60L).toSet()
+
+    logger.info(
+        "[backfill] {} records / {} series; queue={}, cooldown={}, p1p2_budget={}, p3p4_budget={}",
+        records.size, order.size, queuedIds.size, cooldownIds.size, p1p2MaxPerSweep, maxSearches,
+    )
+
+    // ---- Pass A1: P1/P2 episode-level ----
+    val p1p2 = buildP1P2Candidates(
+        records = records,
+        priorityBySeriesId = priorityBySeriesId,
+        queuedEpisodeIds = queuedIds,
+        cooldownEpisodeIds = cooldownIds,
+        perSeriesCap = 5,
+    )
+    val p1p2Fired = if (p1p2MaxPerSweep > 0) {
+        runP1P2EpisodePass(
+            candidates = p1p2,
+            sonarr = sonarr, db = db,
+            budget = p1p2MaxPerSweep,
+            delaySeconds = delaySeconds,
+            dryRun = dryRun,
+            nowEpochSeconds = nowSec,
+        )
+    } else 0
+
+    // ---- Pass A2: P3/P4 series-level ----
     var fired = 0
-    val passARemaining = order.filter { it.priority < 5 }
-    for (entry in passARemaining) {
+    val passA2 = order.filter { it.priority in 3..4 }
+    for (entry in passA2) {
         if (fired >= maxSearches) {
             logger.info("[backfill] hit max searches ({}), deferring rest", maxSearches)
-            return fired
+            break
         }
         if (dryRun) {
-            logger.info("[backfill] DRY RUN: would search series {} ({})", entry.seriesId, entry.label)
+            logger.info("[backfill] DRY RUN: would series-search {} ({})", entry.seriesId, entry.label)
         } else {
             try { sonarr.triggerSeriesSearch(entry.seriesId) }
             catch (e: Exception) {
@@ -91,10 +136,10 @@ suspend fun runBackfillSweep(
         fired++
     }
 
-    // ---- Pass B: P5 ratchet ----
-    if (fired >= maxSearches) return fired
+    // ---- Pass B: P5 ratchet (unchanged) ----
+    if (fired >= maxSearches) return p1p2Fired + fired
     val p5Entries = order.filter { it.priority == 5 }
-    if (p5Entries.isEmpty()) return fired
+    if (p5Entries.isEmpty()) return p1p2Fired + fired
 
     val ratchetActive = p5Ratchet.enabled && run {
         if (bandwidth.maxMbps <= 0) return@run false
@@ -121,34 +166,62 @@ suspend fun runBackfillSweep(
         MissingRecord(sid, season, episodeId, air, priority = 5)
     }.distinctBy { it.episodeId }
 
-    val queueHits: Set<QueueSeasonHit> = run {
-        val q = try { sonarr.getQueue() } catch (_: Exception) { JsonArray(emptyList()) }
-        q.mapNotNull {
-            val o = it.jsonObject
-            val sid = o["seriesId"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
-            val season = o["episode"]?.jsonObject?.get("seasonNumber")?.jsonPrimitive?.intOrNull
-                ?: o["seasonNumber"]?.jsonPrimitive?.intOrNull
-                ?: return@mapNotNull null
-            QueueSeasonHit(sid, season)
-        }.toSet()
-    }
+    val queueHits: Set<QueueSeasonHit> = queueArr.mapNotNull {
+        val o = it.jsonObject
+        val sid = o["seriesId"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+        val season = o["episode"]?.jsonObject?.get("seasonNumber")?.jsonPrimitive?.intOrNull
+            ?: o["seasonNumber"]?.jsonPrimitive?.intOrNull
+            ?: return@mapNotNull null
+        QueueSeasonHit(sid, season)
+    }.toSet()
 
     val planInputs = P5RatchetInputs(
-        p5Records = p5Records,
-        queueHits = queueHits,
+        p5Records = p5Records, queueHits = queueHits,
         cooldownRows = db.listP5Attempts(),
-        nowEpochSeconds = System.currentTimeMillis() / 1000L,
-        cfg = p5Ratchet,
-        budgetRemaining = maxSearches - fired,
-        ratchetActive = ratchetActive,
+        nowEpochSeconds = nowSec, cfg = p5Ratchet,
+        budgetRemaining = maxSearches - fired, ratchetActive = ratchetActive,
     )
     val plan = buildP5RatchetPlan(planInputs)
-    fired += runP5SeasonRatchet(
-        plan = plan, sonarr = sonarr, db = db,
-        delaySeconds = delaySeconds, dryRun = dryRun,
-    )
-    return fired
+    fired += runP5SeasonRatchet(plan = plan, sonarr = sonarr, db = db, delaySeconds = delaySeconds, dryRun = dryRun)
+    return p1p2Fired + fired
 }
+
+/** Pull episode IDs out of Sonarr's /queue payload (covers both shapes). */
+internal fun JsonArray.toEpisodeIdSet(): Set<Long> = mapNotNull {
+    val o = it.jsonObject
+    o["episode"]?.jsonObject?.get("id")?.jsonPrimitive?.longOrNull
+        ?: o["episodeId"]?.jsonPrimitive?.longOrNull
+}.toSet()
+
+/**
+ * Convenience overload for production callers that hold a [PriorityService].
+ * Delegates to the lambda-based overload using [PriorityService.priorityForSeries].
+ */
+suspend fun runBackfillSweep(
+    sonarr: SonarrClient,
+    priorityService: PriorityService,
+    db: Database,
+    p5Ratchet: org.yoshiz.app.prioritarr.backend.config.P5RatchetConfig,
+    bandwidth: org.yoshiz.app.prioritarr.backend.config.BandwidthSettings,
+    telemetry: org.yoshiz.app.prioritarr.backend.enforcement.DownloadTelemetry?,
+    maxSearches: Int,
+    delaySeconds: Int,
+    dryRun: Boolean,
+    p1p2MaxPerSweep: Int,
+    p1p2CooldownMinutes: Int,
+): Int = runBackfillSweep(
+    sonarr = sonarr,
+    db = db,
+    p5Ratchet = p5Ratchet,
+    bandwidth = bandwidth,
+    telemetry = telemetry,
+    maxSearches = maxSearches,
+    delaySeconds = delaySeconds,
+    dryRun = dryRun,
+    p1p2MaxPerSweep = p1p2MaxPerSweep,
+    p1p2CooldownMinutes = p1p2CooldownMinutes,
+    priorityForSeriesFn = priorityService::priorityForSeries,
+)
 
 suspend fun runCutoffSweep(
     sonarr: SonarrClient,

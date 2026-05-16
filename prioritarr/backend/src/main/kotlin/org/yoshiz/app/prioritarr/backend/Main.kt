@@ -530,6 +530,8 @@ fun main() {
                         maxSearches = s.intervals.backfillMaxSearchesPerSweep,
                         delaySeconds = s.intervals.backfillDelayBetweenSearchesSeconds,
                         dryRun = s.dryRun,
+                        p1p2MaxPerSweep = s.intervals.backfillP1P2MaxPerSweep,
+                        p1p2CooldownMinutes = s.intervals.backfillP1P2CooldownMinutes,
                     )
                     org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
                 },

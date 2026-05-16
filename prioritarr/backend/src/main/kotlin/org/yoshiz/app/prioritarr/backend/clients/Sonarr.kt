@@ -42,7 +42,7 @@ open class SonarrClient(
     suspend fun getEpisodes(seriesId: Long): JsonArray =
         get("/api/v3/episode", mapOf("seriesId" to seriesId.toString())).jsonArray
 
-    suspend fun getWantedMissing(pageSize: Int = 1000): JsonArray =
+    open suspend fun getWantedMissing(pageSize: Int = 1000): JsonArray =
         ((get("/api/v3/wanted/missing", mapOf("pageSize" to pageSize.toString())) as JsonObject)
             ["records"] as JsonArray)
 
@@ -50,11 +50,11 @@ open class SonarrClient(
         ((get("/api/v3/wanted/cutoff", mapOf("pageSize" to pageSize.toString())) as JsonObject)
             ["records"] as JsonArray)
 
-    suspend fun getQueue(pageSize: Int = 1000): JsonArray =
+    open suspend fun getQueue(pageSize: Int = 1000): JsonArray =
         ((get("/api/v3/queue", mapOf("pageSize" to pageSize.toString())) as JsonObject)
             ["records"] as JsonArray)
 
-    suspend fun triggerSeriesSearch(seriesId: Long): JsonObject =
+    open suspend fun triggerSeriesSearch(seriesId: Long): JsonObject =
         post("/api/v3/command", buildJsonObject {
             put("name", "SeriesSearch")
             put("seriesId", seriesId)
