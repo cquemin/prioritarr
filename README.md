@@ -260,6 +260,9 @@ intervals:
   backfill_max_searches_per_sweep: 10
   cutoff_max_searches_per_sweep: 5
   backfill_delay_between_searches_seconds: 30
+  backfill_p1_p2_max_per_sweep: 20          # P1/P2 episode-search budget per sweep
+  backfill_p1_p2_cooldown_minutes: 30       # min gap between P1/P2 episode searches
+  backfill_p1_p2_followup_episodes: 2       # on-grab follow-up search size
 ```
 
 ---
