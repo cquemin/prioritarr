@@ -51,6 +51,7 @@ import org.yoshiz.app.prioritarr.backend.webhooks.handleWatched
 import org.yoshiz.app.prioritarr.backend.webhooks.parseOnGrabPayload
 import org.yoshiz.app.prioritarr.backend.webhooks.parseTautulliWatched
 import org.yoshiz.app.prioritarr.backend.webhooks.runOnGrabFollowup
+import org.yoshiz.app.prioritarr.backend.liveSettings
 import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.time.Instant
@@ -180,8 +181,8 @@ fun Application.prioritarrModule(state: AppState) {
                         event, state.db, priorityResult.priority, dryRun = state.settings.dryRun
                     )
                     if (processed) {
-                        val s = org.yoshiz.app.prioritarr.backend.liveSettings(state.db, state.settings)
                         application.launch {
+                            val s = liveSettings(state.db, state.settings)
                             runOnGrabFollowup(
                                 event = event,
                                 priority = priorityResult.priority,

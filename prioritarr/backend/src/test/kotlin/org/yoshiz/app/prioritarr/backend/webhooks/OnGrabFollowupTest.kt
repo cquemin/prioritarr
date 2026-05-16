@@ -125,6 +125,32 @@ class OnGrabFollowupTest {
         assertEquals(listOf(listOf(709L, 710L)), sonarr.episodeSearches)
     }
 
+    @Test fun follow_up_no_op_when_all_candidates_excluded() = runTest {
+        val missing = buildJsonArray {
+            add(rec(7L, 707L, "2024-04-07"))     // queued
+            add(rec(7L, 708L, "2024-04-08"))     // cooldown
+        }
+        val queue = buildJsonArray {
+            add(buildJsonObject {
+                put("episodeId", JsonPrimitive(707L))
+                put("seriesId", JsonPrimitive(7L))
+            })
+        }
+        val sonarr = FakeSonarr(missing, queue)
+        val db = freshDb()
+        val now = 1_700_000_000L
+        db.upsertP1P2Attempt(708L, now - 60)
+
+        runOnGrabFollowup(
+            event = OnGrabEvent(7L, "x", 0L, listOf(706L), "sab", "x", null),
+            priority = 1, sonarr = sonarr, db = db,
+            followupCap = 2, cooldownSeconds = 1800L, nowEpochSeconds = now,
+        )
+        assertTrue(sonarr.episodeSearches.isEmpty(), "no Sonarr call when all candidates excluded")
+        // Cooldown is unchanged (708L still there from setup; no NEW rows for 706L/707L)
+        assertEquals(setOf(708L), db.listP1P2AttemptedSince(0L).toSet())
+    }
+
     @Test fun follow_up_no_op_when_cap_is_zero() = runTest {
         val sonarr = FakeSonarr(buildJsonArray { add(rec(7L, 707L, "2024-04-07")) })
         val db = freshDb()
