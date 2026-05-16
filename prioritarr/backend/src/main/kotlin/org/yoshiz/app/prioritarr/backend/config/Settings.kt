@@ -66,6 +66,10 @@ data class Intervals(
     val backfillMaxSearchesPerSweep: Int = 10,
     val backfillDelayBetweenSearchesSeconds: Int = 30,
     val cutoffMaxSearchesPerSweep: Int = 5,
+    // P1/P2 fast-grab pass (see docs/specs/2026-05-15-p1p2-fast-grab-design.md)
+    val backfillP1P2MaxPerSweep: Int = 20,
+    val backfillP1P2CooldownMinutes: Int = 30,
+    val backfillP1P2FollowupEpisodes: Int = 2,
     // Previously hard-coded in Main.kt; lifted here so the UI can edit
     // them and the scheduler reads the live values.
     val refreshMappingsMinutes: Int = 60,
@@ -311,6 +315,9 @@ data class EditableSettings(
     val backfillMaxSearchesPerSweep: Int? = null,
     val backfillDelayBetweenSearchesSeconds: Int? = null,
     val cutoffMaxSearchesPerSweep: Int? = null,
+    val backfillP1P2MaxPerSweep: Int? = null,
+    val backfillP1P2CooldownMinutes: Int? = null,
+    val backfillP1P2FollowupEpisodes: Int? = null,
     val refreshMappingsMinutes: Int? = null,
     val refreshSeriesCacheMinutes: Int? = null,
     val refreshEpisodeCacheMinutes: Int? = null,
@@ -363,6 +370,9 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
         backfillMaxSearchesPerSweep = override.backfillMaxSearchesPerSweep ?: base.intervals.backfillMaxSearchesPerSweep,
         backfillDelayBetweenSearchesSeconds = override.backfillDelayBetweenSearchesSeconds ?: base.intervals.backfillDelayBetweenSearchesSeconds,
         cutoffMaxSearchesPerSweep = override.cutoffMaxSearchesPerSweep ?: base.intervals.cutoffMaxSearchesPerSweep,
+        backfillP1P2MaxPerSweep = override.backfillP1P2MaxPerSweep ?: base.intervals.backfillP1P2MaxPerSweep,
+        backfillP1P2CooldownMinutes = override.backfillP1P2CooldownMinutes ?: base.intervals.backfillP1P2CooldownMinutes,
+        backfillP1P2FollowupEpisodes = override.backfillP1P2FollowupEpisodes ?: base.intervals.backfillP1P2FollowupEpisodes,
         refreshMappingsMinutes = override.refreshMappingsMinutes ?: base.intervals.refreshMappingsMinutes,
         refreshSeriesCacheMinutes = override.refreshSeriesCacheMinutes ?: base.intervals.refreshSeriesCacheMinutes,
         refreshEpisodeCacheMinutes = override.refreshEpisodeCacheMinutes ?: base.intervals.refreshEpisodeCacheMinutes,
@@ -435,6 +445,9 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 backfillMaxSearchesPerSweep = o.num("backfill_max_searches_per_sweep") { it.toInt() } ?: intervals.backfillMaxSearchesPerSweep,
                 backfillDelayBetweenSearchesSeconds = o.num("backfill_delay_between_searches_seconds") { it.toInt() } ?: intervals.backfillDelayBetweenSearchesSeconds,
                 cutoffMaxSearchesPerSweep = o.num("cutoff_max_searches_per_sweep") { it.toInt() } ?: intervals.cutoffMaxSearchesPerSweep,
+                backfillP1P2MaxPerSweep = o.num("backfill_p1_p2_max_per_sweep") { it.toInt() } ?: intervals.backfillP1P2MaxPerSweep,
+                backfillP1P2CooldownMinutes = o.num("backfill_p1_p2_cooldown_minutes") { it.toInt() } ?: intervals.backfillP1P2CooldownMinutes,
+                backfillP1P2FollowupEpisodes = o.num("backfill_p1_p2_followup_episodes") { it.toInt() } ?: intervals.backfillP1P2FollowupEpisodes,
             )
         }
         (root["cache"] as? Map<*, *>)?.let { o ->
