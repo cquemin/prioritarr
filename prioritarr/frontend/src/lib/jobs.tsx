@@ -230,8 +230,11 @@ export const JOBS: ReadonlyArray<JobMeta> = [
       'Picks the top N missing-monitored-aired episodes (sorted by priority then air date) and asks Sonarr to search each. Throttled by the per-search delay so we never run a Sonarr indexer test against a hundred releases at once.',
     cadence: { key: 'intervals.backfillSweepHours', unit: 'hours', min: 1 },
     settings: [
-      { key: 'backfillMaxSearchesPerSweep', label: 'Max searches per sweep', type: 'number', min: 1, step: 1 },
+      { key: 'backfillMaxSearchesPerSweep', label: 'Max searches per sweep (P3/P4)', type: 'number', min: 1, step: 1 },
       { key: 'backfillDelayBetweenSearchesSeconds', label: 'Delay between searches (sec)', type: 'number', min: 0, step: 1 },
+      { key: 'backfillP1P2MaxPerSweep', label: 'P1/P2 max per sweep', type: 'number', min: 0, step: 1 },
+      { key: 'backfillP1P2CooldownMinutes', label: 'P1/P2 cooldown (min)', type: 'number', min: 1, step: 1 },
+      { key: 'backfillP1P2FollowupEpisodes', label: 'P1/P2 on-grab follow-up (eps)', type: 'number', min: 0, step: 1 },
     ],
   },
   {
