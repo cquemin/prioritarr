@@ -26,7 +26,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
 /** Thin wrapper around the Sonarr v3 REST API. Mirrors prioritarr/clients/sonarr.py. */
-class SonarrClient(
+open class SonarrClient(
     private val baseUrl: String,
     private val apiKey: String,
     private val http: HttpClient,
@@ -78,7 +78,7 @@ class SonarrClient(
      * after deleting a stuck release: blacklist the bad release, then
      * tell Sonarr to find a new one for the same episode(s).
      */
-    suspend fun triggerEpisodeSearch(episodeIds: List<Long>): JsonObject =
+    open suspend fun triggerEpisodeSearch(episodeIds: List<Long>): JsonObject =
         post("/api/v3/command", buildJsonObject {
             put("name", "EpisodeSearch")
             putJsonArray("episodeIds") { episodeIds.forEach { add(it) } }

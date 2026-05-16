@@ -1,5 +1,6 @@
 package org.yoshiz.app.prioritarr.backend.sweep
 
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -7,6 +8,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import org.slf4j.LoggerFactory
+import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
+import org.yoshiz.app.prioritarr.backend.database.Database
 
 private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.sweep.p1p2")
 
@@ -65,4 +68,44 @@ internal fun buildP1P2Candidates(
             episodes = sorted,
         )
     }.sortedWith(compareBy({ it.priority }, { it.oldestAirDate }))
+}
+
+/**
+ * Execute [candidates] in order, calling Sonarr's EpisodeSearch and
+ * recording per-episode cooldown rows. Each candidate counts as 1
+ * against [budget] regardless of how many episode IDs are in its list
+ * (one Sonarr command per series). On failure, break and DO NOT
+ * record cooldown for the failed call so we retry next sweep.
+ *
+ * [nowEpochSeconds] is injected so tests can use a frozen clock.
+ */
+internal suspend fun runP1P2EpisodePass(
+    candidates: List<P1P2Candidate>,
+    sonarr: SonarrClient,
+    db: Database,
+    budget: Int,
+    delaySeconds: Int,
+    dryRun: Boolean,
+    nowEpochSeconds: Long = System.currentTimeMillis() / 1000L,
+): Int {
+    var fired = 0
+    for (c in candidates) {
+        if (fired >= budget) break
+        val ids = c.episodes.map { it.episodeId }
+        if (dryRun) {
+            logger.info("[backfill-p1p2] DRY RUN: would EpisodeSearch series {} eps {}", c.seriesId, ids)
+        } else {
+            try {
+                sonarr.triggerEpisodeSearch(ids)
+            } catch (e: Exception) {
+                logger.warn("[backfill-p1p2] EpisodeSearch failed for series {}: {}", c.seriesId, e.message)
+                break
+            }
+            ids.forEach { db.upsertP1P2Attempt(it, nowEpochSeconds) }
+            logger.info("[backfill-p1p2] triggered: series {} eps {} (P{})", c.seriesId, ids, c.priority)
+            if (delaySeconds > 0) delay(delaySeconds * 1_000L)
+        }
+        fired++
+    }
+    return fired
 }
