@@ -94,6 +94,9 @@ typealias OutcomeWriter = (
  */
 private const val HEAVY_PER_TICK = 1
 
+/** Cap on how far we push a prereq-failed job before re-evaluating. */
+private const val PREREQ_RETRY_MINUTES = 1L
+
 /** Tick cadence — small enough to feel responsive, large enough that the loop is cheap. */
 private const val TICK_INTERVAL_MS = 60_000L
 
@@ -155,10 +158,12 @@ class Scheduler(
                 false
             }
             if (!ready) {
-                // Push due forward by one cadence so we don't tight-
-                // loop on this prereq every minute. The job will
-                // re-evaluate on the next interval.
-                rescheduleAfter(job, now)
+                // Retry within ~1 minute rather than waiting a full
+                // cadence — many prereqs (toggle flips, sibling-job
+                // completion) become true within seconds.
+                val cadence = job.cadenceMinutes().coerceAtLeast(1L)
+                val retry = minOf(cadence, PREREQ_RETRY_MINUTES)
+                nextDue[job.id] = now.plus(java.time.Duration.ofMinutes(retry))
                 continue
             }
             // Heavy-hitter cap — defer extras to next tick.
