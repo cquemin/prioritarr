@@ -43,11 +43,14 @@ import org.yoshiz.app.prioritarr.backend.schemas.OnGrabProcessed
 import org.yoshiz.app.prioritarr.backend.schemas.OnGrabDuplicate
 import org.yoshiz.app.prioritarr.backend.schemas.PlexEventOk
 import org.yoshiz.app.prioritarr.backend.schemas.PlexEventUnmatched
+import io.ktor.server.application.application
+import kotlinx.coroutines.launch
 import org.yoshiz.app.prioritarr.backend.webhooks.eventKey
 import org.yoshiz.app.prioritarr.backend.webhooks.handleOnGrab
 import org.yoshiz.app.prioritarr.backend.webhooks.handleWatched
 import org.yoshiz.app.prioritarr.backend.webhooks.parseOnGrabPayload
 import org.yoshiz.app.prioritarr.backend.webhooks.parseTautulliWatched
+import org.yoshiz.app.prioritarr.backend.webhooks.runOnGrabFollowup
 import org.slf4j.LoggerFactory
 import java.time.Duration
 import java.time.Instant
@@ -177,6 +180,17 @@ fun Application.prioritarrModule(state: AppState) {
                         event, state.db, priorityResult.priority, dryRun = state.settings.dryRun
                     )
                     if (processed) {
+                        val s = org.yoshiz.app.prioritarr.backend.liveSettings(state.db, state.settings)
+                        application.launch {
+                            runOnGrabFollowup(
+                                event = event,
+                                priority = priorityResult.priority,
+                                sonarr = state.sonarr,
+                                db = state.db,
+                                followupCap = s.intervals.backfillP1P2FollowupEpisodes,
+                                cooldownSeconds = s.intervals.backfillP1P2CooldownMinutes * 60L,
+                            )
+                        }
                         call.respond(OnGrabProcessed(priority = priorityResult.priority, label = priorityResult.label))
                     } else {
                         call.respond(OnGrabDuplicate(priority = priorityResult.priority, label = priorityResult.label))
