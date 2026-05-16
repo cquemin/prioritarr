@@ -159,11 +159,15 @@ class Scheduler(
             }
             if (!ready) {
                 // Retry within ~1 minute rather than waiting a full
-                // cadence — many prereqs (toggle flips, sibling-job
-                // completion) become true within seconds.
+                // cadence. Boot-time prereqs (e.g. prioritiesPrimed
+                // gating backfill-sweep on priorities-refresh) flip
+                // true in <90s; toggle flips and sibling-job
+                // completion are also sub-minute. A full-cadence
+                // wait would delay the first post-boot sweep by up
+                // to 2h.
                 val cadence = job.cadenceMinutes().coerceAtLeast(1L)
-                val retry = minOf(cadence, PREREQ_RETRY_MINUTES)
-                nextDue[job.id] = now.plus(java.time.Duration.ofMinutes(retry))
+                val holdMinutes = minOf(cadence, PREREQ_RETRY_MINUTES)
+                nextDue[job.id] = now.plus(Duration.ofMinutes(holdMinutes))
                 continue
             }
             // Heavy-hitter cap — defer extras to next tick.
