@@ -600,5 +600,8 @@ SELECT episode_id FROM p1p2_search_attempts
 WHERE last_attempted_at >= ?
 ORDER BY episode_id;
 
+getP1P2AttemptCount:
+SELECT attempts_count FROM p1p2_search_attempts WHERE episode_id = ?;
+
 clearP1P2Attempt:
 DELETE FROM p1p2_search_attempts WHERE episode_id = ?;

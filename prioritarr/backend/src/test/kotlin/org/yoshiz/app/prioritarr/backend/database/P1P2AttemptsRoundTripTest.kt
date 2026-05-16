@@ -2,8 +2,6 @@ package org.yoshiz.app.prioritarr.backend.database
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import java.nio.file.Files
 
 class P1P2AttemptsRoundTripTest {
@@ -24,9 +22,13 @@ class P1P2AttemptsRoundTripTest {
     @Test fun upsert_overwrites_timestamp_and_bumps_count() {
         val db = freshDb()
         db.upsertP1P2Attempt(episodeId = 1L, lastAttemptedAt = 1_000L)
+        assertEquals(1, db.getP1P2AttemptCount(1L))
         db.upsertP1P2Attempt(episodeId = 1L, lastAttemptedAt = 2_000L)
+        assertEquals(2, db.getP1P2AttemptCount(1L))
+        db.upsertP1P2Attempt(episodeId = 1L, lastAttemptedAt = 3_000L)
+        assertEquals(3, db.getP1P2AttemptCount(1L))
         // Both rows must collapse to a single episode with the later timestamp.
-        assertEquals(listOf(1L), db.listP1P2AttemptedSince(1_500L))
+        assertEquals(listOf(1L), db.listP1P2AttemptedSince(2_500L))
         assertEquals(listOf(1L), db.listP1P2AttemptedSince(0L))
     }
 

@@ -212,6 +212,9 @@ class Database(dbPath: String) {
     fun listP1P2AttemptedSince(thresholdEpochSeconds: Long): List<Long> =
         q.listP1P2AttemptedSince(thresholdEpochSeconds).executeAsList()
 
+    fun getP1P2AttemptCount(episodeId: Long): Int? =
+        q.getP1P2AttemptCount(episodeId).executeAsOneOrNull()?.toInt()
+
     fun clearP1P2Attempt(episodeId: Long) {
         q.clearP1P2Attempt(episodeId)
     }
