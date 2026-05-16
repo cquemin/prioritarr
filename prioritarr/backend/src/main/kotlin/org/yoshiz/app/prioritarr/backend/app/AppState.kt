@@ -1,6 +1,7 @@
 package org.yoshiz.app.prioritarr.backend.app
 
 import io.ktor.client.HttpClient
+import java.util.concurrent.atomic.AtomicBoolean
 import org.yoshiz.app.prioritarr.backend.clients.DownloadClient
 import org.yoshiz.app.prioritarr.backend.enforcement.BandwidthSource
 import org.yoshiz.app.prioritarr.backend.enforcement.DownloadTelemetry
@@ -62,4 +63,11 @@ data class AppState(
     val traktOAuth: TraktOAuth?,
     val eventBus: EventBus,
     val httpClients: List<HttpClient>,
+    /**
+     * Boot-ordering flag — set true the first time [refreshAllPriorities]
+     * runs (success OR failure, via a finally block in the priorities-
+     * refresh job in Main.kt). Backfill sweep gates on this so cold-boot
+     * sweeps don't run against an empty priority cache.
+     */
+    val prioritiesPrimed: AtomicBoolean = AtomicBoolean(false),
 )

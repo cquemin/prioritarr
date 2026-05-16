@@ -411,8 +411,12 @@ fun main() {
                 cadenceMinutes = { liveSettings(db, settings).intervals.refreshPrioritiesMinutes.toLong() },
                 weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.HEAVY,
                 run = {
-                    org.yoshiz.app.prioritarr.backend.priority.refreshAllPriorities(sonarr, priorityService)
-                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                    try {
+                        org.yoshiz.app.prioritarr.backend.priority.refreshAllPriorities(sonarr, priorityService)
+                        org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                    } finally {
+                        state.prioritiesPrimed.set(true)
+                    }
                 },
             ))
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
@@ -512,6 +516,7 @@ fun main() {
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
                 id = JobId.BACKFILL_SWEEP,
                 cadenceMinutes = { liveSettings(db, settings).intervals.backfillSweepHours.toLong() * 60L },
+                prerequisites = { state.prioritiesPrimed.get() },
                 weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
                 run = {
                     val s = liveSettings(db, settings)
