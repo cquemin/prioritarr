@@ -74,8 +74,6 @@ suspend fun runBackfillSweep(
     // below that accepts a PriorityService directly.
     priorityForSeriesFn: suspend (Long) -> PriorityResult,
 ): Int {
-    val priorityFn: suspend (Long) -> PriorityResult = priorityForSeriesFn
-
     val records = try { sonarr.getWantedMissing() } catch (e: Exception) {
         logger.warn("[backfill] fetch failed: {}", e.message); return 0
     }
@@ -84,7 +82,7 @@ suspend fun runBackfillSweep(
         return 0
     }
 
-    val order = buildSweepOrder(records, priorityFn)
+    val order = buildSweepOrder(records, priorityForSeriesFn)
     val priorityBySeriesId = order.associate { it.seriesId to it.priority }
     val queueArr = try { sonarr.getQueue() } catch (_: Exception) { JsonArray(emptyList()) }
     val queuedIds = queueArr.toEpisodeIdSet()

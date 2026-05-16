@@ -118,9 +118,10 @@ class SweepIntegrationTest {
         assertEquals(listOf(11L, 12L), sonarr.episodeSearches[0])    // P1 series 1
         assertEquals(listOf(21L), sonarr.episodeSearches[1])         // P2 series 2
 
-        // Pass A2: SeriesSearch for P3 + P4 only (series 5 is handled by Pass B)
-        // The list includes P3 and P4 series; P5 series goes through ratchet path
-        assertTrue(sonarr.seriesSearches.containsAll(listOf(3L, 4L)))
+        // Pass A2: SeriesSearch for P3 + P4. Pass B: ratchet inactive → falls
+        // back to SeriesSearch for the P5 series 5 (in oldest-air-date order
+        // after the A2 entries).
+        assertEquals(listOf(3L, 4L, 5L), sonarr.seriesSearches)
         assertTrue(3L !in sonarr.episodeSearches.flatten())
         assertTrue(4L !in sonarr.episodeSearches.flatten())
 
