@@ -230,6 +230,19 @@ class P1P2EpisodeSearchRunnerTest {
         assertEquals(2, fake.calls.size)
     }
 
+    @Test fun zero_budget_processes_nothing() = runTest {
+        val db = freshDb()
+        val fake = FakeSonarr()
+        val fired = runP1P2EpisodePass(
+            candidates = listOf(candidate(1L, 11L), candidate(2L, 21L)),
+            sonarr = fake, db = db,
+            budget = 0, delaySeconds = 0, dryRun = false, nowEpochSeconds = 1L,
+        )
+        assertEquals(0, fired)
+        assertTrue(fake.calls.isEmpty())
+        assertTrue(db.listP1P2AttemptedSince(0L).isEmpty())
+    }
+
     @Test fun dry_run_does_not_call_sonarr_or_record_cooldown() = runTest {
         val db = freshDb()
         val fake = FakeSonarr()

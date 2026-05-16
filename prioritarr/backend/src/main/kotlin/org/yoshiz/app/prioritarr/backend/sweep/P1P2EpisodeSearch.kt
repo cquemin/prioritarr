@@ -78,6 +78,19 @@ internal fun buildP1P2Candidates(
  * record cooldown for the failed call so we retry next sweep.
  *
  * [nowEpochSeconds] is injected so tests can use a frozen clock.
+ *
+ * [delaySeconds] is the per-Sonarr-command throttle. Expected operator
+ * range is 0..300 (i.e. zero to five minutes); callers should clamp
+ * input before invoking — there is no internal upper-bound guard here.
+ *
+ * @return the count of candidates *processed* — not strictly the count
+ *         actually grabbed. In dry-run mode every candidate within
+ *         budget is counted as processed even though no Sonarr command
+ *         fires; on a mid-loop failure the failed candidate is NOT
+ *         counted (the loop breaks before `fired++`). Callers that
+ *         need a true "actually fired Sonarr commands" count should
+ *         compute it from log lines or a separate counter, not this
+ *         return value.
  */
 internal suspend fun runP1P2EpisodePass(
     candidates: List<P1P2Candidate>,
