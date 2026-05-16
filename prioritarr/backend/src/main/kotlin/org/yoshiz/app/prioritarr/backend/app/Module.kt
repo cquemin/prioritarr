@@ -208,6 +208,7 @@ fun Application.prioritarrModule(state: AppState) {
                         .mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull?.toLongOrNull() }
                     if (seriesId != null) {
                         state.db.invalidatePriorityCache(seriesId)
+                        episodes.forEach { state.db.clearP1P2Attempt(it) }
                         state.eventBus.publish(
                             "episode-imported",
                             kotlinx.serialization.json.Json.parseToJsonElement(
