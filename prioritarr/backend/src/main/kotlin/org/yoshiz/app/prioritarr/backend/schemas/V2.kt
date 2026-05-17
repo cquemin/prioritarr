@@ -154,6 +154,7 @@ data class SettingsRedacted(
     val traktAccessToken: String?,
     val traktRefreshToken: String?,
     val traktTokenExpiresAt: String?,
+    val traktTokenIssuedAt: String? = null,
     val apiKey: String?,
     val uiOrigin: String?,
     val dryRun: Boolean,

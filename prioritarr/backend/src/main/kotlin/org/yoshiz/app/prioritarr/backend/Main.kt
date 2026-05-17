@@ -95,6 +95,7 @@ private fun wipeTraktTokens(db: org.yoshiz.app.prioritarr.backend.database.Datab
         traktAccessToken = "",
         traktRefreshToken = "",
         traktTokenExpiresAt = "",
+        traktTokenIssuedAt = "",
     )
     db.setSettingsOverride(
         kotlinx.serialization.json.Json.encodeToString(
@@ -139,13 +140,13 @@ internal suspend fun refreshTraktTokensFromDb(
     val newRefresh = (tokens["refresh_token"] as? kotlinx.serialization.json.JsonPrimitive)?.content ?: refreshToken
     val expiresIn = (tokens["expires_in"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull() ?: 0L
     val createdAt = (tokens["created_at"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toLongOrNull()
-    val expiresAt = (createdAt?.let { Instant.ofEpochSecond(it) } ?: Instant.now())
-        .plusSeconds(expiresIn)
-        .toString()
+    val issuedAt = (createdAt?.let { Instant.ofEpochSecond(it) } ?: Instant.now())
+    val expiresAt = issuedAt.plusSeconds(expiresIn).toString()
     val merged = current.copy(
         traktAccessToken = newAccess,
         traktRefreshToken = newRefresh,
         traktTokenExpiresAt = expiresAt,
+        traktTokenIssuedAt = issuedAt.toString(),
     )
     db.setSettingsOverride(
         kotlinx.serialization.json.Json.encodeToString(

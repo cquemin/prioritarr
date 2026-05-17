@@ -94,6 +94,13 @@ private fun computeExpiresAt(tokens: JsonObject): String {
     return base.plusSeconds(expiresIn).toString()
 }
 
+/** Pull `created_at` (epoch seconds) from a Trakt token payload, or now() as fallback. */
+private fun computeIssuedAt(tokens: JsonObject): String {
+    val createdAt = tokens["created_at"]?.jsonPrimitive?.longOrNull
+    return (if (createdAt != null) java.time.Instant.ofEpochSecond(createdAt) else java.time.Instant.now())
+        .toString()
+}
+
 /**
  * Merge Trakt token payload into the persisted settings override so the
  * next container start picks up the fresh creds. Echoes the full
@@ -111,6 +118,7 @@ private fun persistTraktTokens(
         traktAccessToken = tokens["access_token"]?.jsonPrimitive?.contentOrNull ?: existing.traktAccessToken,
         traktRefreshToken = tokens["refresh_token"]?.jsonPrimitive?.contentOrNull ?: existing.traktRefreshToken,
         traktTokenExpiresAt = computeExpiresAt(tokens),
+        traktTokenIssuedAt = computeIssuedAt(tokens),
     )
     state.db.setSettingsOverride(Json.encodeToString(
         org.yoshiz.app.prioritarr.backend.config.EditableSettings.serializer(),
@@ -152,6 +160,7 @@ private fun mergeEditable(
     traktAccessToken = patch.traktAccessToken ?: existing.traktAccessToken,
     traktRefreshToken = patch.traktRefreshToken ?: existing.traktRefreshToken,
     traktTokenExpiresAt = patch.traktTokenExpiresAt ?: existing.traktTokenExpiresAt,
+    traktTokenIssuedAt = patch.traktTokenIssuedAt ?: existing.traktTokenIssuedAt,
     dryRun = patch.dryRun ?: existing.dryRun,
     logLevel = patch.logLevel ?: existing.logLevel,
     uiOrigin = patch.uiOrigin ?: existing.uiOrigin,
@@ -805,6 +814,7 @@ fun Route.v2Routes(state: AppState) {
             traktAccessToken = redactSecret(s.traktAccessToken),
             traktRefreshToken = redactSecret(s.traktRefreshToken),
             traktTokenExpiresAt = s.traktTokenExpiresAt,
+            traktTokenIssuedAt = s.traktTokenIssuedAt,
             apiKey = redactSecret(s.apiKey),
             uiOrigin = s.uiOrigin,
             dryRun = s.dryRun,
@@ -898,6 +908,7 @@ fun Route.v2Routes(state: AppState) {
             traktAccessToken = redactSecret(s.traktAccessToken),
             traktRefreshToken = redactSecret(s.traktRefreshToken),
             traktTokenExpiresAt = s.traktTokenExpiresAt,
+            traktTokenIssuedAt = s.traktTokenIssuedAt,
             apiKey = redactSecret(s.apiKey),
             uiOrigin = s.uiOrigin,
             dryRun = s.dryRun,
@@ -1165,6 +1176,7 @@ fun Route.v2Routes(state: AppState) {
             traktAccessToken = "",
             traktRefreshToken = "",
             traktTokenExpiresAt = "",
+            traktTokenIssuedAt = "",
         )
         state.db.setSettingsOverride(Json.encodeToString(
             org.yoshiz.app.prioritarr.backend.config.EditableSettings.serializer(),

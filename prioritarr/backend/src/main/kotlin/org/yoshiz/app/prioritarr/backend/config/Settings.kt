@@ -228,6 +228,13 @@ data class Settings(
     val traktAccessToken: String? = null,
     val traktRefreshToken: String? = null,
     val traktTokenExpiresAt: String? = null,
+    // Wall-clock at which the current access_token pair was minted.
+    // Written on every successful refresh + initial device-code connect.
+    // The UI uses this for the "Last refreshed N days ago" hint; without
+    // it the UI used to derive an `issuedAt` by subtracting a hardcoded
+    // 90 days from `traktTokenExpiresAt`, which gave wrong values now
+    // that Trakt issues 7-day access tokens.
+    val traktTokenIssuedAt: String? = null,
 
     val dryRun: Boolean = true,
     val logLevel: String = "INFO",
@@ -295,6 +302,7 @@ data class EditableSettings(
     val traktAccessToken: String? = null,
     val traktRefreshToken: String? = null,
     val traktTokenExpiresAt: String? = null,
+    val traktTokenIssuedAt: String? = null,
     val dryRun: Boolean? = null,
     val logLevel: String? = null,
     val uiOrigin: String? = null,
@@ -354,6 +362,7 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
     traktAccessToken = override.traktAccessToken ?: base.traktAccessToken,
     traktRefreshToken = override.traktRefreshToken ?: base.traktRefreshToken,
     traktTokenExpiresAt = override.traktTokenExpiresAt ?: base.traktTokenExpiresAt,
+    traktTokenIssuedAt = override.traktTokenIssuedAt ?: base.traktTokenIssuedAt,
     dryRun = override.dryRun ?: base.dryRun,
     logLevel = override.logLevel ?: base.logLevel,
     uiOrigin = override.uiOrigin ?: base.uiOrigin,
@@ -519,6 +528,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         traktAccessToken = env("TRAKT_ACCESS_TOKEN"),
         traktRefreshToken = env("TRAKT_REFRESH_TOKEN"),
         traktTokenExpiresAt = env("TRAKT_TOKEN_EXPIRES_AT"),
+        traktTokenIssuedAt = env("TRAKT_TOKEN_ISSUED_AT"),
         dryRun = dryRun,
         logLevel = env("LOG_LEVEL", "INFO") ?: "INFO",
         testMode = testMode,

@@ -2555,6 +2555,7 @@ function TraktAuthPanel() {
     traktAccessToken?: string | null
     traktRefreshToken?: string | null
     traktTokenExpiresAt?: string | null
+    traktTokenIssuedAt?: string | null
   }
   // Treat "***" (the redacted-secret marker) as "set"; "" or null as
   // "not set". The redactSecret helper returns "" for null/blank input.
@@ -2575,12 +2576,14 @@ function TraktAuthPanel() {
   const daysToExpiry = expiresAt
     ? Math.round((expiresAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
     : null
-  // Trakt issues access + refresh tokens together with ~90-day windows
-  // tied to the same created_at. Each successful refresh rotates the
-  // pair, so tracking access_token expiry implicitly tracks the refresh
-  // token's window too (always within ~24h of each other in practice).
-  const issuedAt = expiresAt
-    ? new Date(expiresAt.getTime() - 90 * 24 * 60 * 60 * 1000)
+  // Last-refresh hint reads `traktTokenIssuedAt` directly — written on
+  // every successful refresh + initial connect. Legacy deployments
+  // without the field get null and the "Last refreshed N days ago"
+  // line is omitted entirely. (Old code derived issuedAt from
+  // `expiresAt - 90 days`, which hardcoded a token lifetime that no
+  // longer matches reality — Trakt now issues 7-day access tokens.)
+  const issuedAt = s.traktTokenIssuedAt && s.traktTokenIssuedAt.length > 0
+    ? new Date(s.traktTokenIssuedAt)
     : null
   const tokenAgeDays = issuedAt
     ? Math.round((Date.now() - issuedAt.getTime()) / (1000 * 60 * 60 * 24))
@@ -2675,6 +2678,23 @@ function TraktAuthPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasAccessToken])
 
+  // Wipe stored tokens + start the device-code flow in one click. Used
+  // by both the bottom Reconnect button AND the inline "Reconnect now"
+  // affordance in the auth-failed banner. Both call sites need the same
+  // confirm + disconnect + refetch + startFlow sequence; extracting it
+  // here is the only sane way to keep them in sync.
+  const handleReconnect = async () => {
+    if (!confirm('Reconnect Trakt? This wipes your stored tokens and starts a fresh device-code flow. Client ID + secret are kept.')) return
+    setPollMessage(null)
+    try {
+      await disconnect.mutateAsync()
+      await settings.refetch()
+      await startFlow()
+    } catch (e) {
+      setPollMessage(`Reconnect failed: ${(e as Error).message ?? e}`)
+    }
+  }
+
   // Local draft for the OAuth-app credentials (clientId / clientSecret).
   // Replaces the now-deleted ServiceCredentialsPanel inputs — the user
   // sets these here on the same card that uses them, no jumping around.
@@ -2713,17 +2733,50 @@ function TraktAuthPanel() {
       description={description}
       statusBadge={statusBadge}
       banner={(() => {
-        // Four states, checked in priority order:
-        //   1. Zombie auth (access_token without refresh_token) — every
+        // Five states, checked in priority order:
+        //   1. Auth-failed test result + token still stored — Trakt's
+        //      /users/me returned 401 for the current access_token even
+        //      though prioritarr has been refreshing it. Most likely the
+        //      Trakt app was revoked or client_secret rotated. The
+        //      bottom Reconnect button is far from the badge, so we
+        //      surface the same action inline next to the explanation.
+        //   2. Zombie auth (access_token without refresh_token) — every
         //      button below is a no-op because Refresh has nothing to
         //      call and Test will 401 forever. The only recovery is to
         //      wipe + redo the device-code flow; the "Reconnect" button
         //      in the action row does this atomically.
-        //   2. Has access_token + missing secret → read calls work but
+        //   3. Has access_token + missing secret → read calls work but
         //      refresh + reconnect can't run. Soft warning.
-        //   3. No access_token + missing creds → blocking. Need both
+        //   4. No access_token + missing creds → blocking. Need both
         //      ID + secret to run the device-code flow.
-        //   4. All set → no banner.
+        //   5. All set → no banner.
+        if (
+          hasAccessToken &&
+          test.data &&
+          !test.data.ok &&
+          test.data.status === 'auth-failed' &&
+          !activeFlow
+        ) {
+          return (
+            <div className="text-xs text-red-300 bg-red-900/30 border border-red-800/60 rounded p-2 flex items-center justify-between gap-3 flex-wrap">
+              <span>
+                <strong>Trakt rejected the stored token.</strong>{' '}
+                Auto-refresh is running but Trakt is still 401-ing — usually means
+                the app was revoked at <code>trakt.tv/oauth/applications</code> or
+                the client secret was rotated. Re-authorise to fix.
+              </span>
+              <button
+                type="button"
+                className="px-2 py-1 rounded bg-red-700/60 hover:bg-red-700 text-white text-xs whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={handleReconnect}
+                disabled={!hasClientId || !hasClientSecret || disconnect.isPending || begin.isPending}
+                title={!hasClientId || !hasClientSecret ? 'Save Client ID + Client secret first' : 'Wipe tokens and start the device-code flow'}
+              >
+                {disconnect.isPending || begin.isPending ? 'Reconnecting…' : 'Reconnect now'}
+              </button>
+            </div>
+          )
+        }
         if (zombieAuth) {
           return (
             <div className="text-xs text-red-300 bg-red-900/30 border border-red-800/60 rounded p-2">
@@ -2881,6 +2934,10 @@ function TraktAuthPanel() {
                     )
                   } else {
                     setPollMessage('Tokens refreshed.')
+                    // Re-test against the new token so the badge stops
+                    // showing the stale auth-failed result from before
+                    // the refresh.
+                    test.mutate({ service: 'trakt', body: {} })
                   }
                 },
               })
@@ -2902,17 +2959,7 @@ function TraktAuthPanel() {
             disabled={!hasClientId || !hasClientSecret}
             loadingLabel="Reconnecting…"
             title={!hasClientId || !hasClientSecret ? 'Save Client ID + Client secret first' : 'Wipe stored tokens and re-run the device-code flow'}
-            onClick={async () => {
-              if (!confirm('Reconnect Trakt? This wipes your stored tokens and starts a fresh device-code flow. Client ID + secret are kept.')) return
-              setPollMessage(null)
-              try {
-                await disconnect.mutateAsync()
-                await settings.refetch()
-                await startFlow()
-              } catch (e) {
-                setPollMessage(`Reconnect failed: ${(e as Error).message ?? e}`)
-              }
-            }}
+            onClick={handleReconnect}
           >
             Reconnect
           </ActionButton>
