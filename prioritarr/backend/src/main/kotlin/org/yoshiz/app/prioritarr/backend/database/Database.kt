@@ -27,6 +27,15 @@ class Database(dbPath: String) {
         Db.Schema.create(driver)
         db = Db(driver)
         ensureLegacyColumns()
+        // One-time migration of p1p2_search_attempts → priority_episode_attempts.
+        // Idempotent: INSERT OR IGNORE no-ops if rows already exist with the
+        // same (priority_band, episode_id) primary key. Wrapped in try/catch
+        // because p1p2_search_attempts may not exist on fresh installs.
+        try {
+            q.migrateLegacyP1P2Attempts()
+        } catch (e: Exception) {
+            // Fresh install or already migrated — nothing to do.
+        }
     }
 
     /**
@@ -217,6 +226,28 @@ class Database(dbPath: String) {
 
     fun clearP1P2Attempt(episodeId: Long) {
         q.clearP1P2Attempt(episodeId)
+    }
+
+    // ------------------------------------------------------------------
+    // priority_episode_attempts
+    // ------------------------------------------------------------------
+
+    fun upsertPriorityAttempt(band: String, episodeId: Long, lastAttemptedAt: Long) {
+        q.upsertPriorityAttempt(
+            priority_band = band,
+            episode_id = episodeId,
+            last_attempted_at = lastAttemptedAt,
+        )
+    }
+
+    fun listPriorityAttemptedSince(band: String, thresholdEpochSeconds: Long): List<Long> =
+        q.listPriorityAttemptedSince(band, thresholdEpochSeconds).executeAsList()
+
+    fun getPriorityAttemptCount(band: String, episodeId: Long): Int? =
+        q.getPriorityAttemptCount(band, episodeId).executeAsOneOrNull()?.toInt()
+
+    fun clearPriorityAttempt(band: String, episodeId: Long) {
+        q.clearPriorityAttempt(band, episodeId)
     }
 
     // ------------------------------------------------------------------

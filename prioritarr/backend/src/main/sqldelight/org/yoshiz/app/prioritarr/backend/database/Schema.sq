@@ -76,6 +76,19 @@ CREATE TABLE IF NOT EXISTS p1p2_search_attempts (
     attempts_count INTEGER NOT NULL DEFAULT 1 CHECK (attempts_count >= 1)
 );
 
+-- Per-(priority_band, episode_id) attempt log for the priority-aware
+-- episode-search passes (P1/P2 and P3/P4). Replaces the original
+-- p1p2_search_attempts table; the priority_band column lets bands
+-- have independent cooldown windows without table duplication.
+-- `attempts_count` is reserved for future adaptive-escalation logic.
+CREATE TABLE IF NOT EXISTS priority_episode_attempts (
+    priority_band TEXT NOT NULL,
+    episode_id INTEGER NOT NULL,
+    last_attempted_at INTEGER NOT NULL CHECK (last_attempted_at > 0),
+    attempts_count INTEGER NOT NULL DEFAULT 1 CHECK (attempts_count >= 1),
+    PRIMARY KEY (priority_band, episode_id)
+);
+
 CREATE TABLE IF NOT EXISTS webhook_dedupe (
     event_key TEXT PRIMARY KEY,
     received_at TEXT NOT NULL
@@ -609,3 +622,34 @@ SELECT attempts_count FROM p1p2_search_attempts WHERE episode_id = ?;
 
 clearP1P2Attempt:
 DELETE FROM p1p2_search_attempts WHERE episode_id = ?;
+
+-- ------------------------------------------------------------------
+-- priority_episode_attempts
+-- ------------------------------------------------------------------
+
+upsertPriorityAttempt:
+INSERT INTO priority_episode_attempts (priority_band, episode_id, last_attempted_at, attempts_count)
+VALUES (?, ?, ?, 1)
+ON CONFLICT(priority_band, episode_id) DO UPDATE SET
+    last_attempted_at = excluded.last_attempted_at,
+    attempts_count = attempts_count + 1;
+
+listPriorityAttemptedSince:
+SELECT episode_id FROM priority_episode_attempts
+WHERE priority_band = ? AND last_attempted_at >= ?
+ORDER BY episode_id;
+
+getPriorityAttemptCount:
+SELECT attempts_count FROM priority_episode_attempts
+WHERE priority_band = ? AND episode_id = ?;
+
+clearPriorityAttempt:
+DELETE FROM priority_episode_attempts
+WHERE priority_band = ? AND episode_id = ?;
+
+-- One-time data migration from the legacy table. INSERT OR IGNORE so
+-- re-running on an already-migrated DB is a no-op.
+migrateLegacyP1P2Attempts:
+INSERT OR IGNORE INTO priority_episode_attempts (priority_band, episode_id, last_attempted_at, attempts_count)
+SELECT 'p1p2', episode_id, last_attempted_at, attempts_count
+FROM p1p2_search_attempts;
