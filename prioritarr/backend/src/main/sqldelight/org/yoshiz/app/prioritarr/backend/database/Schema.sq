@@ -647,6 +647,9 @@ clearPriorityAttempt:
 DELETE FROM priority_episode_attempts
 WHERE priority_band = ? AND episode_id = ?;
 
+deleteAllPriorityEpisodeAttempts:
+DELETE FROM priority_episode_attempts;
+
 -- One-time data migration from the legacy table. INSERT OR IGNORE so
 -- re-running on an already-migrated DB is a no-op.
 migrateLegacyP1P2Attempts:

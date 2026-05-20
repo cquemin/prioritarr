@@ -34,7 +34,10 @@ class Database(dbPath: String) {
         try {
             q.migrateLegacyP1P2Attempts()
         } catch (e: Exception) {
-            // Fresh install or already migrated — nothing to do.
+            // Only "no such table" is expected (fresh installs without the legacy
+            // table). Re-throw anything else — disk-full, schema mismatch, etc.
+            // should not be silently swallowed at boot.
+            if (e.message?.contains("no such table", ignoreCase = true) != true) throw e
         }
     }
 
@@ -250,6 +253,10 @@ class Database(dbPath: String) {
         q.clearPriorityAttempt(band, episodeId)
     }
 
+    fun deleteAllPriorityEpisodeAttempts() {
+        q.deleteAllPriorityEpisodeAttempts()
+    }
+
     // ------------------------------------------------------------------
     // webhook_dedupe
     // ------------------------------------------------------------------
@@ -462,6 +469,7 @@ class Database(dbPath: String) {
         db.transaction {
             q.deleteAllManagedDownloads()
             q.deleteAllP5SweepAttempts()
+            q.deleteAllPriorityEpisodeAttempts()
             q.deleteAllWebhookDedupe()
             q.deleteAllAuditLog()
             q.deleteAllSeriesPriorityCache()
@@ -478,6 +486,10 @@ class Database(dbPath: String) {
     }
 
     companion object {
+        /** Priority bands used as the `priority_band` column value in priority_episode_attempts. */
+        const val BAND_P1P2 = "p1p2"
+        const val BAND_P3P4 = "p3p4"
+
         /**
          * ISO 8601 with explicit '+00:00' offset (NOT 'Z') — matches
          * the historical Python `datetime.now(timezone.utc).isoformat()`

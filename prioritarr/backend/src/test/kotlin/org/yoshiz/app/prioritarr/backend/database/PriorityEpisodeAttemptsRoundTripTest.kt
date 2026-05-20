@@ -69,4 +69,20 @@ class PriorityEpisodeAttemptsRoundTripTest {
         val db = freshDb()
         assertNull(db.getPriorityAttemptCount("p1p2", 999L))
     }
+
+    @Test fun migration_copies_p1p2_search_attempts_rows() {
+        val tmp = Files.createTempFile("prio-migration", ".db")
+        tmp.toFile().deleteOnExit()
+        val path = tmp.toAbsolutePath().toString()
+
+        val db1 = Database(path)
+        db1.upsertP1P2Attempt(episodeId = 555L, lastAttemptedAt = 7_000_000L)
+        db1.upsertP1P2Attempt(episodeId = 666L, lastAttemptedAt = 8_000_000L)
+
+        // Construct a second Database against the same file — the new init
+        // block re-runs the migration.
+        val db2 = Database(path)
+        assertEquals(setOf(555L, 666L), db2.listPriorityAttemptedSince(Database.BAND_P1P2, 0L).toSet())
+        assertEquals(1, db2.getPriorityAttemptCount(Database.BAND_P1P2, 555L))
+    }
 }
