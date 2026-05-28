@@ -43,6 +43,21 @@ class HealthMonitorTest {
         return HttpClient(engine)
     }
 
+    /** Mock variant that also exposes the Authorization header — needed
+     *  to assert that a refreshed Trakt token is what actually goes on
+     *  the wire on the next probe pass. */
+    private fun mockedClientWithAuth(handler: (urlString: String, auth: String?) -> Pair<HttpStatusCode, String>): HttpClient {
+        val engine = MockEngine { req ->
+            val (status, body) = handler(req.url.toString(), req.headers["Authorization"])
+            respond(
+                content = ByteReadChannel(body),
+                status = status,
+                headers = headersOf("Content-Type", "application/json"),
+            )
+        }
+        return HttpClient(engine)
+    }
+
     private fun fullySetSettings(): Settings = Settings(
         sonarrUrl = "http://sonarr:8989/sonarr",
         sonarrApiKey = "sonarr-key",
@@ -61,7 +76,8 @@ class HealthMonitorTest {
     fun `all probes 200 result in zero unhealthy`() = runTest {
         val db = freshDb()
         val http = mockedClient { _ -> HttpStatusCode.OK to "{}" }
-        val monitor = HealthMonitor(db, fullySetSettings(), http)
+        val s = fullySetSettings()
+        val monitor = HealthMonitor(db, { s }, http)
 
         val unhealthy = monitor.probeAll()
 
@@ -85,7 +101,8 @@ class HealthMonitorTest {
                 HttpStatusCode.OK to "{}"
             }
         }
-        val monitor = HealthMonitor(db, fullySetSettings(), http)
+        val s = fullySetSettings()
+        val monitor = HealthMonitor(db, { s }, http)
 
         val unhealthy = monitor.probeAll()
 
@@ -110,7 +127,7 @@ class HealthMonitorTest {
             // plexUrl, plexToken, traktAccessToken intentionally unset
         )
         val http = mockedClient { _ -> HttpStatusCode.OK to "{}" }
-        val monitor = HealthMonitor(db, settings, http)
+        val monitor = HealthMonitor(db, { settings }, http)
 
         monitor.probeAll()
 
@@ -120,5 +137,39 @@ class HealthMonitorTest {
         assertEquals("unknown", trakt.status)
         // unknown probes don't bump last_ok.
         assertNull(plex.last_ok)
+    }
+
+    @Test
+    fun `trakt token refreshed between passes is picked up without restart`() = runTest {
+        // Regression for the stale-snapshot bug: probeAll() must re-read
+        // the settings provider each tick so a Trakt access_token minted
+        // by the runtime refresh flow (persisted to the DB override, not
+        // the boot Settings) flips the banner from unauth -> ok on the
+        // next 5-minute pass instead of waiting for a container restart.
+        val db = freshDb()
+        // Mock: Trakt 200 only when the bearer token matches "new-token".
+        val http = mockedClientWithAuth { url, auth ->
+            when {
+                url.contains("api.trakt.tv") ->
+                    if (auth == "Bearer new-token") HttpStatusCode.OK to "{}"
+                    else HttpStatusCode.Unauthorized to "{}"
+                else -> HttpStatusCode.OK to "{}"
+            }
+        }
+        var token = "stale-token"
+        val monitor = HealthMonitor(db, { fullySetSettings().copy(traktAccessToken = token) }, http)
+
+        // First pass: stale token rejected by Trakt mock.
+        monitor.probeAll()
+        assertEquals("unauth", db.listProviderHealth().single { it.provider == "trakt" }.status)
+
+        // Simulate a runtime refresh writing a new access_token to the DB
+        // override — the provider lambda now returns it.
+        token = "new-token"
+
+        // Second pass: provider re-read picks up the new token live and
+        // the trakt probe goes green.
+        monitor.probeAll()
+        assertEquals("ok", db.listProviderHealth().single { it.provider == "trakt" }.status)
     }
 }

@@ -351,7 +351,11 @@ fun main() {
 
     val healthMonitor = org.yoshiz.app.prioritarr.backend.health.HealthMonitor(
         db = db,
-        settings = settings,
+        // Live provider, not the boot snapshot: picks up a Trakt token
+        // refreshed at runtime (persisted to the DB override) so the
+        // health banner clears without a restart. Mirrors the scheduler
+        // job cadences below which also read liveSettings(db, settings).
+        settingsProvider = { liveSettings(db, settings) },
         http = healthHttp,
     )
 

@@ -29,6 +29,7 @@ import org.yoshiz.app.prioritarr.backend.app.AppState
 import org.yoshiz.app.prioritarr.backend.app.appJson
 import org.yoshiz.app.prioritarr.backend.clients.SABClient
 import org.yoshiz.app.prioritarr.backend.errors.NotFoundException
+import org.yoshiz.app.prioritarr.backend.liveSettings
 import org.yoshiz.app.prioritarr.backend.errors.UpstreamUnreachableException
 import org.yoshiz.app.prioritarr.backend.errors.ValidationException
 import org.yoshiz.app.prioritarr.backend.mapping.refreshMappings
@@ -974,7 +975,14 @@ fun Route.v2Routes(state: AppState) {
             return if (!provided.isNullOrBlank() && provided != "***") provided
                 else baseline.orEmpty()
         }
-        val s = state.settings
+        // Live settings, not the boot snapshot: the Trakt access_token
+        // can be refreshed at runtime (persisted to the DB override), so
+        // testing against state.settings would keep using the stale token
+        // and report a false "access token rejected" after a refresh.
+        // For the other providers liveSettings == state.settings today
+        // (their credentials only take effect at boot), so this is a
+        // no-op for them — but stays correct if that ever changes.
+        val s = liveSettings(state.db, state.settings)
         val result = when (service) {
             org.yoshiz.app.prioritarr.backend.ConnectionService.SONARR -> org.yoshiz.app.prioritarr.backend.connections.testSonarr(
                 rawUrl = field("sonarrUrl", s.sonarrUrl),

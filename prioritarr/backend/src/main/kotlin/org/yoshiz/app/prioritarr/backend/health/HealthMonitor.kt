@@ -40,7 +40,7 @@ import org.yoshiz.app.prioritarr.backend.schemas.ProviderStatus
  */
 class HealthMonitor(
     private val db: Database,
-    private val settings: Settings,
+    private val settingsProvider: () -> Settings,
     private val http: HttpClient,
 ) {
 
@@ -52,16 +52,26 @@ class HealthMonitor(
     /**
      * Run every probe (in parallel) and persist results. Returns the
      * count of providers in non-OK state for the scheduler summary.
+     *
+     * Settings are snapshotted once per pass via [settingsProvider]
+     * (typically `liveSettings(db, baseline)`) and passed into each
+     * probe — that way a credential that changes at runtime, notably
+     * a Trakt access_token minted by the refresh flow and persisted to
+     * the DB override (not the boot Settings), is picked up on the
+     * next pass instead of staying stale until a restart. Passing
+     * `Settings` as a `val` parameter (vs. a mutable field) also keeps
+     * Kotlin smart-casts working inside each probe.
      */
     suspend fun probeAll(): Int = coroutineScope {
+        val settings = settingsProvider()
         val now = Database.nowIsoOffset()
         val results = listOf(
-            async { "sonarr" to probeSonarr() },
-            async { "tautulli" to probeTautulli() },
-            async { "qbit" to probeQbit() },
-            async { "sab" to probeSab() },
-            async { "plex" to probePlex() },
-            async { "trakt" to probeTrakt() },
+            async { "sonarr" to probeSonarr(settings) },
+            async { "tautulli" to probeTautulli(settings) },
+            async { "qbit" to probeQbit(settings) },
+            async { "sab" to probeSab(settings) },
+            async { "plex" to probePlex(settings) },
+            async { "trakt" to probeTrakt(settings) },
         ).awaitAll()
 
         var unhealthy = 0
@@ -86,68 +96,68 @@ class HealthMonitor(
     // per-provider probes
     // ------------------------------------------------------------------
 
-    private suspend fun probeSonarr(): Probe {
-        if (settings.sonarrUrl.isBlank() || settings.sonarrApiKey.isBlank()) {
+    private suspend fun probeSonarr(s: Settings): Probe {
+        if (s.sonarrUrl.isBlank() || s.sonarrApiKey.isBlank()) {
             return Probe(ProviderStatus.UNKNOWN, "not configured")
         }
         return probeWithApiKeyHeader(
-            url = "${settings.sonarrUrl.trimEnd('/')}/api/v3/system/status",
+            url = "${s.sonarrUrl.trimEnd('/')}/api/v3/system/status",
             keyHeader = "X-Api-Key",
-            keyValue = settings.sonarrApiKey,
+            keyValue = s.sonarrApiKey,
         )
     }
 
-    private suspend fun probeTautulli(): Probe {
-        if (settings.tautulliUrl.isNullOrBlank() || settings.tautulliApiKey.isNullOrBlank()) {
+    private suspend fun probeTautulli(s: Settings): Probe {
+        if (s.tautulliUrl.isNullOrBlank() || s.tautulliApiKey.isNullOrBlank()) {
             return Probe(ProviderStatus.UNKNOWN, "not configured")
         }
         // Tautulli auths via apikey query param. `cmd=arnold` returns a
         // famous quote — cheap, no library access, clear 200/401 split.
         return probeRaw(
-            url = "${settings.tautulliUrl.trimEnd('/')}/api/v2",
-            params = mapOf("apikey" to settings.tautulliApiKey, "cmd" to "arnold"),
+            url = "${s.tautulliUrl.trimEnd('/')}/api/v2",
+            params = mapOf("apikey" to s.tautulliApiKey, "cmd" to "arnold"),
         )
     }
 
-    private suspend fun probeQbit(): Probe {
-        if (settings.qbitUrl.isNullOrBlank()) {
+    private suspend fun probeQbit(s: Settings): Probe {
+        if (s.qbitUrl.isNullOrBlank()) {
             return Probe(ProviderStatus.UNKNOWN, "not configured")
         }
         // Unauthenticated probe — just confirms qBit is reachable. Auth
         // is checked separately by the existing QBitClient on first use.
         return probeRaw(
-            url = "${settings.qbitUrl.trimEnd('/')}/api/v2/app/version",
+            url = "${s.qbitUrl.trimEnd('/')}/api/v2/app/version",
         )
     }
 
-    private suspend fun probeSab(): Probe {
-        if (settings.sabUrl.isNullOrBlank() || settings.sabApiKey.isNullOrBlank()) {
+    private suspend fun probeSab(s: Settings): Probe {
+        if (s.sabUrl.isNullOrBlank() || s.sabApiKey.isNullOrBlank()) {
             return Probe(ProviderStatus.UNKNOWN, "not configured")
         }
         return probeRaw(
-            url = "${settings.sabUrl.trimEnd('/')}/api",
-            params = mapOf("apikey" to settings.sabApiKey, "mode" to "version", "output" to "json"),
+            url = "${s.sabUrl.trimEnd('/')}/api",
+            params = mapOf("apikey" to s.sabApiKey, "mode" to "version", "output" to "json"),
         )
     }
 
-    private suspend fun probePlex(): Probe {
-        if (settings.plexUrl.isNullOrBlank() || settings.plexToken.isNullOrBlank()) {
+    private suspend fun probePlex(s: Settings): Probe {
+        if (s.plexUrl.isNullOrBlank() || s.plexToken.isNullOrBlank()) {
             return Probe(ProviderStatus.UNKNOWN, "not configured")
         }
         // /identity is unauthenticated, just confirms reachability. Use
         // /myplex/account when token validation matters; for the banner
         // we keep it cheap and let real calls surface auth issues.
         return probeRaw(
-            url = "${settings.plexUrl.trimEnd('/')}/identity",
+            url = "${s.plexUrl.trimEnd('/')}/identity",
         )
     }
 
-    private suspend fun probeTrakt(): Probe {
+    private suspend fun probeTrakt(s: Settings): Probe {
         // Token expiry is the canonical failure mode. /users/settings
         // requires a valid access_token and Trakt API headers.
-        val accessToken = settings.traktAccessToken?.takeIf { it.isNotBlank() }
+        val accessToken = s.traktAccessToken?.takeIf { it.isNotBlank() }
             ?: return Probe(ProviderStatus.UNKNOWN, "not configured")
-        val clientId = settings.traktClientId?.takeIf { it.isNotBlank() }
+        val clientId = s.traktClientId?.takeIf { it.isNotBlank() }
             ?: return Probe(ProviderStatus.UNKNOWN, "client_id missing")
         return runCatching {
             val resp: HttpResponse = http.get("https://api.trakt.tv/users/settings") {
