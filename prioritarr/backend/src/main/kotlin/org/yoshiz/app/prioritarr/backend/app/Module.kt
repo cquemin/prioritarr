@@ -51,6 +51,7 @@ import org.yoshiz.app.prioritarr.backend.webhooks.handleWatched
 import org.yoshiz.app.prioritarr.backend.webhooks.parseOnGrabPayload
 import org.yoshiz.app.prioritarr.backend.webhooks.parseTautulliWatched
 import org.yoshiz.app.prioritarr.backend.webhooks.runOnGrabFollowup
+import org.yoshiz.app.prioritarr.backend.database.Database
 import org.yoshiz.app.prioritarr.backend.liveSettings
 import org.slf4j.LoggerFactory
 import java.time.Duration
@@ -208,7 +209,7 @@ fun Application.prioritarrModule(state: AppState) {
                         .mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull?.toLongOrNull() }
                     if (seriesId != null) {
                         state.db.invalidatePriorityCache(seriesId)
-                        episodes.forEach { state.db.clearP1P2Attempt(it) }
+                        episodes.forEach { state.db.clearPriorityAttempt(Database.BAND_P1P2, it) }
                         state.eventBus.publish(
                             "episode-imported",
                             kotlinx.serialization.json.Json.parseToJsonElement(

@@ -94,25 +94,26 @@ internal suspend fun runBackfillSweep(
     val queueArr = try { sonarr.getQueue() } catch (_: Exception) { JsonArray(emptyList()) }
     val queuedIds = queueArr.toEpisodeIdSet()
     val nowSec = System.currentTimeMillis() / 1000L
-    val cooldownIds = db.listP1P2AttemptedSince(nowSec - p1p2CooldownMinutes * 60L).toSet()
+    val cooldownP1P2 = db.listPriorityAttemptedSince(Database.BAND_P1P2, nowSec - p1p2CooldownMinutes * 60L).toSet()
 
     logger.info(
         "[backfill] {} records / {} series; queue={}, cooldown={}, p1p2_budget={}, p3p4_budget={}",
-        records.size, order.size, queuedIds.size, cooldownIds.size, p1p2MaxPerSweep, maxSearches,
+        records.size, order.size, queuedIds.size, cooldownP1P2.size, p1p2MaxPerSweep, maxSearches,
     )
 
     // ---- Pass A1: P1/P2 episode-level ----
-    val p1p2 = buildP1P2Candidates(
+    val p1p2 = buildPriorityEpisodeCandidates(
         records = records,
         priorityBySeriesId = priorityBySeriesId,
         queuedEpisodeIds = queuedIds,
-        cooldownEpisodeIds = cooldownIds,
+        cooldownEpisodeIds = cooldownP1P2,
         perSeriesCap = P1P2_PER_SERIES_CAP,
+        priorities = 1..2,
     )
     val p1p2Fired = if (p1p2MaxPerSweep > 0) {
-        runP1P2EpisodePass(
+        runPriorityEpisodePass(
             candidates = p1p2,
-            sonarr = sonarr, db = db,
+            sonarr = sonarr, db = db, band = Database.BAND_P1P2,
             budget = p1p2MaxPerSweep,
             delaySeconds = delaySeconds,
             dryRun = dryRun,

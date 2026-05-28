@@ -85,7 +85,7 @@ class OnGrabFollowupTest {
         )
 
         assertEquals(listOf(listOf(707L, 708L)), sonarr.episodeSearches)
-        assertEquals(setOf(707L, 708L), db.listP1P2AttemptedSince(0L).toSet())
+        assertEquals(setOf(707L, 708L), db.listPriorityAttemptedSince(Database.BAND_P1P2, 0L).toSet())
     }
 
     @Test fun follow_up_does_not_fire_for_p3() = runTest {
@@ -115,7 +115,7 @@ class OnGrabFollowupTest {
         val sonarr = FakeSonarr(missing, queue)
         val db = freshDb()
         val now = 1_700_000_000L
-        db.upsertP1P2Attempt(708L, now - 60)     // recent, inside cooldown
+        db.upsertPriorityAttempt(Database.BAND_P1P2, 708L, now - 60)     // recent, inside cooldown
 
         runOnGrabFollowup(
             event = OnGrabEvent(7L, "x", 0L, listOf(706L), "sab", "x", null),
@@ -139,7 +139,7 @@ class OnGrabFollowupTest {
         val sonarr = FakeSonarr(missing, queue)
         val db = freshDb()
         val now = 1_700_000_000L
-        db.upsertP1P2Attempt(708L, now - 60)
+        db.upsertPriorityAttempt(Database.BAND_P1P2, 708L, now - 60)
 
         runOnGrabFollowup(
             event = OnGrabEvent(7L, "x", 0L, listOf(706L), "sab", "x", null),
@@ -148,7 +148,7 @@ class OnGrabFollowupTest {
         )
         assertTrue(sonarr.episodeSearches.isEmpty(), "no Sonarr call when all candidates excluded")
         // Cooldown is unchanged (708L still there from setup; no NEW rows for 706L/707L)
-        assertEquals(setOf(708L), db.listP1P2AttemptedSince(0L).toSet())
+        assertEquals(setOf(708L), db.listPriorityAttemptedSince(Database.BAND_P1P2, 0L).toSet())
     }
 
     @Test fun follow_up_no_op_when_cap_is_zero() = runTest {

@@ -126,7 +126,7 @@ class SweepIntegrationTest {
         assertTrue(4L !in sonarr.episodeSearches.flatten())
 
         // Cooldown rows written for P1/P2 episodes
-        assertEquals(setOf(11L, 12L, 21L), db.listP1P2AttemptedSince(0L).toSet())
+        assertEquals(setOf(11L, 12L, 21L), db.listPriorityAttemptedSince(Database.BAND_P1P2, 0L).toSet())
     }
 
     @Test fun queue_skip_blocks_p1p2_episode_search() = runTest {
@@ -155,7 +155,7 @@ class SweepIntegrationTest {
             priorityForSeriesFn = priorityFn(mapOf(1L to 1)),
         )
         assertTrue(sonarr.episodeSearches.isEmpty(), "queued episode should be skipped")
-        assertTrue(db.listP1P2AttemptedSince(0L).isEmpty())
+        assertTrue(db.listPriorityAttemptedSince(Database.BAND_P1P2, 0L).isEmpty())
     }
 
     @Test fun cooldown_blocks_p1p2_episode_search() = runTest {
@@ -163,7 +163,7 @@ class SweepIntegrationTest {
         val sonarr = FakeSonarr(records)
         val db = freshDb()
         val now = System.currentTimeMillis() / 1000L
-        db.upsertP1P2Attempt(11L, now - 60)   // 1 minute ago, well inside 30-min cooldown
+        db.upsertPriorityAttempt(Database.BAND_P1P2, 11L, now - 60)   // 1 minute ago, well inside 30-min cooldown
 
         runBackfillSweep(
             sonarr = sonarr,

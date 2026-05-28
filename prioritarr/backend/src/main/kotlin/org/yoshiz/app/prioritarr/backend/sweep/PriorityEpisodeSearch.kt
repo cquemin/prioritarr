@@ -11,57 +11,53 @@ import org.slf4j.LoggerFactory
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
 import org.yoshiz.app.prioritarr.backend.database.Database
 
-private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.sweep.p1p2")
+private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.sweep.priority")
 
-/** One missing episode from Sonarr's /wanted/missing, parsed for the P1/P2 planner. */
-internal data class P1P2Episode(
+internal data class PriorityEpisodeEpisode(
     val episodeId: Long,
     val airDateUtc: String,
     val seasonNumber: Int,
 )
 
-/** One P1 or P2 series' worth of candidates, in firing order. */
-internal data class P1P2Candidate(
+internal data class PriorityEpisodeCandidate(
     val seriesId: Long,
-    val priority: Int,                        // 1 or 2
+    val priority: Int,
     val oldestAirDate: String,
-    val episodes: List<P1P2Episode>,          // already sorted by airDateUtc asc and capped
+    val episodes: List<PriorityEpisodeEpisode>,
 )
 
 /**
- * Pure planner — given the raw missing-episode records, a priority lookup,
- * and exclusion sets, return one [P1P2Candidate] per P1/P2 series whose
- * top-N oldest episodes are not already queued or cooling down. Outer sort
- * is (priority asc, oldestAirDate asc) so P1 wins over P2, oldest wins
- * within each priority.
+ * Pure planner — group missing-episode records by series, keep only
+ * series whose priority is in [priorities], filter out queued + cooldown
+ * episode IDs, sort each series' episodes by airDate ASC, cap, then sort
+ * the outer list by (priority asc, oldestAirDate asc).
  */
-internal fun buildP1P2Candidates(
+internal fun buildPriorityEpisodeCandidates(
     records: JsonArray,
     priorityBySeriesId: Map<Long, Int>,
     queuedEpisodeIds: Set<Long>,
     cooldownEpisodeIds: Set<Long>,
     perSeriesCap: Int,
-): List<P1P2Candidate> {
-    // Group raw rows by seriesId, keep only P1/P2 series.
-    val grouped = mutableMapOf<Long, MutableList<P1P2Episode>>()
+    priorities: IntRange,
+): List<PriorityEpisodeCandidate> {
+    val grouped = mutableMapOf<Long, MutableList<PriorityEpisodeEpisode>>()
     for (row in records) {
         val obj = row.jsonObject
         val sid = obj["seriesId"]?.jsonPrimitive?.longOrNull ?: continue
         val priority = priorityBySeriesId[sid] ?: continue
-        if (priority !in 1..2) continue
+        if (priority !in priorities) continue
         val episodeId = obj["id"]?.jsonPrimitive?.longOrNull ?: continue
         if (episodeId in queuedEpisodeIds) continue
         if (episodeId in cooldownEpisodeIds) continue
         val airDate = obj["airDateUtc"]?.jsonPrimitive?.contentOrNull ?: "9999"
         val season = obj["seasonNumber"]?.jsonPrimitive?.intOrNull ?: 0
-        grouped.getOrPut(sid) { mutableListOf() }.add(P1P2Episode(episodeId, airDate, season))
+        grouped.getOrPut(sid) { mutableListOf() }.add(PriorityEpisodeEpisode(episodeId, airDate, season))
     }
-
     return grouped.entries.mapNotNull { (sid, eps) ->
         val sorted = eps.sortedBy { it.airDateUtc }.take(perSeriesCap)
         if (sorted.isEmpty()) return@mapNotNull null
         val priority = priorityBySeriesId.getValue(sid)
-        P1P2Candidate(
+        PriorityEpisodeCandidate(
             seriesId = sid,
             priority = priority,
             oldestAirDate = sorted.first().airDateUtc,
@@ -72,30 +68,24 @@ internal fun buildP1P2Candidates(
 
 /**
  * Execute [candidates] in order, calling Sonarr's EpisodeSearch and
- * recording per-episode cooldown rows. Each candidate counts as 1
- * against [budget] regardless of how many episode IDs are in its list
- * (one Sonarr command per series). On failure, break and DO NOT
- * record cooldown for the failed call so we retry next sweep.
+ * recording per-(band, episode) cooldown rows. Each candidate counts
+ * as 1 against [budget] regardless of how many episode IDs the
+ * command carries. On failure, break and DO NOT record cooldown for
+ * the failed call so we retry next sweep.
  *
- * [nowEpochSeconds] is injected so tests can use a frozen clock.
+ * @param band priority_band value written to priority_episode_attempts
+ *             — use [Database.BAND_P1P2] or [Database.BAND_P3P4].
+ * @param delaySeconds per-Sonarr-command throttle (expected 0..300).
  *
- * [delaySeconds] is the per-Sonarr-command throttle. Expected operator
- * range is 0..300 (i.e. zero to five minutes); callers should clamp
- * input before invoking — there is no internal upper-bound guard here.
- *
- * @return the count of candidates *processed* — not strictly the count
- *         actually grabbed. In dry-run mode every candidate within
- *         budget is counted as processed even though no Sonarr command
- *         fires; on a mid-loop failure the failed candidate is NOT
- *         counted (the loop breaks before `fired++`). Callers that
- *         need a true "actually fired Sonarr commands" count should
- *         compute it from log lines or a separate counter, not this
- *         return value.
+ * @return count of candidates processed (not strictly count actually
+ *         grabbed — dry-run candidates within budget are counted;
+ *         on mid-loop failure the failed one is NOT counted).
  */
-internal suspend fun runP1P2EpisodePass(
-    candidates: List<P1P2Candidate>,
+internal suspend fun runPriorityEpisodePass(
+    candidates: List<PriorityEpisodeCandidate>,
     sonarr: SonarrClient,
     db: Database,
+    band: String,
     budget: Int,
     delaySeconds: Int,
     dryRun: Boolean,
@@ -106,16 +96,16 @@ internal suspend fun runP1P2EpisodePass(
         if (fired >= budget) break
         val ids = c.episodes.map { it.episodeId }
         if (dryRun) {
-            logger.info("[backfill-p1p2] DRY RUN: would EpisodeSearch series {} eps {}", c.seriesId, ids)
+            logger.info("[backfill-{}] DRY RUN: would EpisodeSearch series {} eps {}", band, c.seriesId, ids)
         } else {
             try {
                 sonarr.triggerEpisodeSearch(ids)
             } catch (e: Exception) {
-                logger.warn("[backfill-p1p2] EpisodeSearch failed for series {}: {}", c.seriesId, e.message)
+                logger.warn("[backfill-{}] EpisodeSearch failed for series {}: {}", band, c.seriesId, e.message)
                 break
             }
-            ids.forEach { db.upsertP1P2Attempt(it, nowEpochSeconds) }
-            logger.info("[backfill-p1p2] triggered: series {} eps {} (P{})", c.seriesId, ids, c.priority)
+            ids.forEach { db.upsertPriorityAttempt(band, it, nowEpochSeconds) }
+            logger.info("[backfill-{}] triggered: series {} eps {} (P{})", band, c.seriesId, ids, c.priority)
             if (delaySeconds > 0) delay(delaySeconds * 1_000L)
         }
         fired++

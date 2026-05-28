@@ -37,7 +37,7 @@ suspend fun runOnGrabFollowup(
     try {
         val missing = sonarr.getWantedMissing()
         val queueIds = runCatching { sonarr.getQueue().toEpisodeIdSet() }.getOrDefault(emptySet())
-        val cooldownIds = db.listP1P2AttemptedSince(nowEpochSeconds - cooldownSeconds).toSet()
+        val cooldownIds = db.listPriorityAttemptedSince(Database.BAND_P1P2, nowEpochSeconds - cooldownSeconds).toSet()
         val grabbedIds = event.episodeIds.toSet()
 
         val candidates = missing.mapNotNull { row ->
@@ -56,7 +56,7 @@ suspend fun runOnGrabFollowup(
         if (candidates.isEmpty()) return
 
         sonarr.triggerEpisodeSearch(candidates)
-        candidates.forEach { db.upsertP1P2Attempt(it, nowEpochSeconds) }
+        candidates.forEach { db.upsertPriorityAttempt(Database.BAND_P1P2, it, nowEpochSeconds) }
         db.appendAudit(
             action = "ongrab_followup",
             seriesId = event.seriesId,
