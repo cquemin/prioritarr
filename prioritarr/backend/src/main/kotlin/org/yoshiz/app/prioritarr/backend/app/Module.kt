@@ -193,6 +193,31 @@ fun Application.prioritarrModule(state: AppState) {
                                 cooldownSeconds = s.intervals.backfillP1P2CooldownMinutes * 60L,
                             )
                         }
+                        if (priorityResult.priority == 1) {
+                            application.launch {
+                                // Give Sonarr a moment to register the grab in
+                                // the download client, then force the fresh P1
+                                // download to top-of-queue immediately rather
+                                // than waiting for the next 15-min reconcile.
+                                kotlinx.coroutines.delay(5_000)
+                                val rs = liveSettings(state.db, state.settings)
+                                runCatching {
+                                    org.yoshiz.app.prioritarr.backend.reconcile.reconcileAll(
+                                        qbit = state.qbit,
+                                        sab = state.sab,
+                                        sonarr = state.sonarr,
+                                        db = state.db,
+                                        priorityService = state.priorityService,
+                                        bandwidth = state.bandwidthSource.current(),
+                                        p5Ratchet = state.p5RatchetSource.current(),
+                                        telemetry = state.downloadTelemetry,
+                                        dryRun = rs.dryRun,
+                                    )
+                                }.onFailure {
+                                    logger.warn("p1-grab enforcement nudge failed: ${it.message}")
+                                }
+                            }
+                        }
                         call.respond(OnGrabProcessed(priority = priorityResult.priority, label = priorityResult.label))
                     } else {
                         call.respond(OnGrabDuplicate(priority = priorityResult.priority, label = priorityResult.label))
