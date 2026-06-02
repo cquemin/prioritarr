@@ -263,6 +263,16 @@ intervals:
   backfill_p1_p2_max_per_sweep: 20          # P1/P2 episode-search budget per sweep
   backfill_p1_p2_cooldown_minutes: 30       # min gap between P1/P2 episode searches
   backfill_p1_p2_followup_episodes: 2       # on-grab follow-up search size
+
+  # P1 fast-grab — aggressively chase freshly-aired top-priority episodes
+  # (docs/specs/2026-06-01-p1-fast-grab-design.md). Off = pre-feature behaviour.
+  p1_fast_enabled: true                     # master switch for the fast sweep + fast P1 stall pass
+  p1_fast_sweep_minutes: 20                 # cadence of the p1-fast-sweep job
+  p1_fast_release_delay_minutes: 60         # don't search an episode until 1h after it airs
+  p1_fast_window_hours: 48                  # stop the aggressive cadence 48h after air (then normal backfill)
+  p1_fast_cooldown_minutes: 20              # per-episode cooldown for the fast band
+  p1_fast_max_per_sweep: 10                 # EpisodeSearch budget per fast-sweep tick
+  p1_stall_minutes: 30                      # P1 download stuck threshold in the queue janitor (vs 48h default)
 ```
 
 ---
