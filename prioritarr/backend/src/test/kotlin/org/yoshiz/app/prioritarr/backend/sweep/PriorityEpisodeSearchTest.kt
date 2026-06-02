@@ -207,6 +207,17 @@ class PriorityEpisodeSearchRunnerTest {
         assertTrue(db.listPriorityAttemptedSince(Database.BAND_P1P2, 0L).isEmpty())
     }
 
+    @Test fun writes_cooldown_under_p1_fast_band() = runTest {
+        val db = freshDb(); val fake = FakeSonarr()
+        runPriorityEpisodePass(
+            candidates = listOf(candidate(1L, 11L)),
+            sonarr = fake, db = db, band = Database.BAND_P1_FAST,
+            budget = 10, delaySeconds = 0, dryRun = false, nowEpochSeconds = 1_700_000_000L,
+        )
+        assertEquals(listOf(11L), db.listPriorityAttemptedSince(Database.BAND_P1_FAST, 0L))
+        assertTrue(db.listPriorityAttemptedSince(Database.BAND_P1P2, 0L).isEmpty())
+    }
+
     @Test fun fires_episode_search_in_order_records_cooldown_p1p2() = runTest {
         val db = freshDb(); val fake = FakeSonarr()
         val fired = runPriorityEpisodePass(
