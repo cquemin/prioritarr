@@ -12,7 +12,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 /** SABnzbd JSON API client. Mirrors prioritarr/clients/sabnzbd.py. */
-class SABClient(
+open class SABClient(
     private val baseUrl: String,
     private val apiKey: String,
     private val http: HttpClient,
@@ -49,7 +49,7 @@ class SABClient(
 
     private val root: String = baseUrl.trimEnd('/')
 
-    suspend fun getQueue(): JsonArray {
+    open suspend fun getQueue(): JsonArray {
         val data = call("queue") as JsonObject
         return (data["queue"] as JsonObject)["slots"] as JsonArray
     }
@@ -71,7 +71,7 @@ class SABClient(
      *
      * Each slot has at minimum: nzo_id, status, fail_message, name.
      */
-    suspend fun getHistory(limit: Int = 100): JsonArray {
+    open suspend fun getHistory(limit: Int = 100): JsonArray {
         val data = call("history", mapOf("limit" to limit.toString())) as JsonObject
         return (data["history"] as JsonObject)["slots"] as JsonArray
     }

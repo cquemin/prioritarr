@@ -479,6 +479,7 @@ class Database(dbPath: String) {
         /** Priority bands used as the `priority_band` column value in priority_episode_attempts. */
         const val BAND_P1P2 = "p1p2"
         const val BAND_P3P4 = "p3p4"
+        const val BAND_P1_FAST = "p1_fast"
 
         /**
          * ISO 8601 with explicit '+00:00' offset (NOT 'Z') — matches

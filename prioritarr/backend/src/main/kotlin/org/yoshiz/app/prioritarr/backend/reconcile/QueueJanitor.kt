@@ -51,6 +51,7 @@ class QueueJanitor(
     private val sab: SABClient,
     private val db: Database,
     private val stuckAfter: java.time.Duration = java.time.Duration.ofHours(48),
+    private val p1StuckAfter: java.time.Duration = java.time.Duration.ofMinutes(30),
     private val perItemPauseMillis: Long = 5000,
 ) {
     private val logger = LoggerFactory.getLogger(QueueJanitor::class.java)
@@ -66,7 +67,9 @@ class QueueJanitor(
         val stuckSabFromQueue = findStuckSabQueue(now)
         val failedSab = findFailedSabHistory()
 
-        val all = (stuckQbit + stuckSabFromQueue + failedSab)
+        val stuckP1Sonarr = findStuckP1FromSonarrQueue()
+        val all = (stuckQbit + stuckSabFromQueue + failedSab + stuckP1Sonarr)
+            .distinctBy { it.client to it.clientId }
             .sortedBy { it.priority ?: 6 }   // P1 first; null priorities last
 
         var cleaned = 0
@@ -119,6 +122,34 @@ class QueueJanitor(
             all.size, cleaned, researched, ghosts.size, dryRun,
         )
         return JanitorReport(scanned = all.size + ghosts.size, cleaned = cleaned, researched = researched)
+    }
+
+    /**
+     * P1-only stall pass for the 20-min fast cadence. Scans the same
+     * sources as [sweep] but keeps only P1 items (qBit/SAB idle past
+     * [p1StuckAfter], plus Sonarr warning/error), and remediates each via
+     * the shared [handleStuck] (remove + blocklist + re-search). The
+     * full 48h sweep still runs on its own 30-min job for all priorities.
+     */
+    suspend fun sweepP1Fast(dryRun: Boolean): JanitorReport {
+        val now = Instant.now()
+        val items = (findStuckQbit(now) + findStuckSabQueue(now) + findStuckP1FromSonarrQueue())
+            .filter { it.priority == 1 }
+            .distinctBy { it.client to it.clientId }
+        if (items.isEmpty()) {
+            return JanitorReport(0, 0, 0)
+        }
+        var cleaned = 0
+        var researched = 0
+        for (item in items) {
+            if (handleStuck(item, dryRun)) {
+                cleaned++
+                if (item.episodeIds.isNotEmpty()) researched++
+            }
+            if (!dryRun && item.episodeIds.isNotEmpty()) delay(perItemPauseMillis)
+        }
+        logger.info("queue-janitor[p1-fast]: scanned={} cleaned={} re_searched={} dryRun={}", items.size, cleaned, researched, dryRun)
+        return JanitorReport(scanned = items.size, cleaned = cleaned, researched = researched)
     }
 
     /**
@@ -224,7 +255,8 @@ class QueueJanitor(
             val lastActivityEpoch = obj["last_activity"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
             val lastActivity = Instant.ofEpochSecond(lastActivityEpoch)
             val state = obj["state"]?.jsonPrimitive?.contentOrNull
-            val isStuck = java.time.Duration.between(lastActivity, now) > stuckAfter ||
+            val threshold = if (managed.current_priority.toInt() == 1) p1StuckAfter else stuckAfter
+            val isStuck = java.time.Duration.between(lastActivity, now) > threshold ||
                 state in TERMINAL_QBIT_STATES
             if (!isStuck) return@mapNotNull null
             StuckItem(
@@ -262,7 +294,8 @@ class QueueJanitor(
             val lastSeen = try {
                 java.time.OffsetDateTime.parse(managed.last_reconciled_at).toInstant()
             } catch (_: Exception) { return@mapNotNull null }
-            if (java.time.Duration.between(lastSeen, now) <= stuckAfter) return@mapNotNull null
+            val threshold = if (managed.current_priority.toInt() == 1) p1StuckAfter else stuckAfter
+            if (java.time.Duration.between(lastSeen, now) <= threshold) return@mapNotNull null
             StuckItem(
                 client = "sab",
                 clientId = nzo,
@@ -270,6 +303,41 @@ class QueueJanitor(
                 episodeIds = parseEpisodeIds(managed.episode_ids),
                 priority = managed.current_priority.toInt(),
                 reason = "sab queue Paused for >48h",
+            )
+        }
+    }
+
+    /**
+     * P1-only stall signal from Sonarr's own queue: an entry whose
+     * trackedDownloadStatus is "warning"/"error" (stalled, failed,
+     * import-blocked) and whose linked managed download is P1. No time
+     * threshold — Sonarr has already decided the grab is in trouble.
+     */
+    private suspend fun findStuckP1FromSonarrQueue(): List<StuckItem> {
+        val queue = try {
+            sonarr.getQueue()
+        } catch (e: Exception) {
+            logger.warn("queue-janitor: sonarr.getQueue (P1 status) failed: {}", e.message)
+            return emptyList()
+        }
+        val byClientId: Map<String, org.yoshiz.app.prioritarr.backend.database.Managed_downloads> =
+            (db.listManagedDownloads("qbit") + db.listManagedDownloads("sab"))
+                .associateBy { it.client_id.lowercase() }
+
+        return queue.mapNotNull { el ->
+            val o = el.jsonObject
+            val status = o["trackedDownloadStatus"]?.jsonPrimitive?.contentOrNull?.lowercase()
+            if (status != "warning" && status != "error") return@mapNotNull null
+            val downloadId = o["downloadId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val managed = byClientId[downloadId.lowercase()] ?: return@mapNotNull null
+            if (managed.current_priority.toInt() != 1) return@mapNotNull null
+            StuckItem(
+                client = managed.client,
+                clientId = managed.client_id,
+                seriesId = managed.series_id,
+                episodeIds = parseEpisodeIds(managed.episode_ids),
+                priority = 1,
+                reason = "sonarr trackedDownloadStatus=$status (P1)",
             )
         }
     }

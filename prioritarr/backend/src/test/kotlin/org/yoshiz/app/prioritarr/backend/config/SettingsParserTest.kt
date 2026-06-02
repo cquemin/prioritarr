@@ -62,4 +62,38 @@ class SettingsParserTest {
         assertEquals(60, result.intervals.backfillP1P2CooldownMinutes)
         assertEquals(5, result.intervals.backfillP1P2FollowupEpisodes)
     }
+
+    @Test
+    fun yaml_loads_p1_fast_fields() {
+        val yaml = """
+            intervals:
+              p1_fast_enabled: false
+              p1_fast_sweep_minutes: 7
+              p1_fast_release_delay_minutes: 90
+              p1_fast_window_hours: 24
+              p1_fast_cooldown_minutes: 15
+              p1_fast_max_per_sweep: 4
+              p1_stall_minutes: 45
+        """.trimIndent()
+        val settings = parseSettingsFromYamlString(yaml)
+        assertEquals(false, settings.intervals.p1FastEnabled)
+        assertEquals(7, settings.intervals.p1FastSweepMinutes)
+        assertEquals(90, settings.intervals.p1FastReleaseDelayMinutes)
+        assertEquals(24, settings.intervals.p1FastWindowHours)
+        assertEquals(15, settings.intervals.p1FastCooldownMinutes)
+        assertEquals(4, settings.intervals.p1FastMaxPerSweep)
+        assertEquals(45, settings.intervals.p1StallMinutes)
+    }
+
+    @Test
+    fun intervals_p1_fast_fields_have_documented_defaults() {
+        val s = loadSettingsFrom(requiredEnvForParser)
+        assertEquals(true, s.intervals.p1FastEnabled)
+        assertEquals(20, s.intervals.p1FastSweepMinutes)
+        assertEquals(60, s.intervals.p1FastReleaseDelayMinutes)
+        assertEquals(48, s.intervals.p1FastWindowHours)
+        assertEquals(20, s.intervals.p1FastCooldownMinutes)
+        assertEquals(10, s.intervals.p1FastMaxPerSweep)
+        assertEquals(30, s.intervals.p1StallMinutes)
+    }
 }

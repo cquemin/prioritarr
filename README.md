@@ -20,7 +20,7 @@ Sonarr downloads *everything*. Prioritarr asks the question Sonarr doesn't — *
 
 ## Priority decision graph
 
-Series priority is recomputed on demand (when a Sonarr grab fires, when a Plex watched event fires, when thresholds change) and every 30 minutes in the background. The rule is a first-match-wins cascade:
+Series priority is recomputed on demand (when a Sonarr grab fires, when an episode is imported, when a Plex watched event fires, when thresholds change) and every 30 minutes in the background. The rule is a first-match-wins cascade:
 
 ```mermaid
 flowchart TD
@@ -95,8 +95,9 @@ Torrents paused by prioritarr are tracked (`paused_by_us` flag); user-paused tor
 | **Priority refresh** | 30 min | Walks every monitored series, recomputes priority, updates cache. |
 | **Queue reconcile** | 15 min | Syncs `managed_downloads` with qBit + SAB state, applies pause-band rules. |
 | **Backfill sweep** | 2 h | Queries Sonarr for missing episodes, triggers up to N searches in P1-first order. |
+| **P1 fast sweep** | 20 min | Aggressively chases freshly-aired P1 (live-following) episodes from 1 h to 48 h after air, and runs a P1-only fast stall pass. Off when `p1_fast_enabled: false`. |
 | **Cutoff sweep** | 24 h | Same but for cutoff-unmet episodes (upgrade candidates). |
-| **Queue janitor** | 30 min | Detects stalled/failed downloads, removes + blocklists, re-queues search. |
+| **Queue janitor** | 30 min | Detects stalled/failed downloads, removes + blocklists, re-queues search. P1 downloads use a tighter 30-min stuck threshold (vs 48 h) and trip on Sonarr warning/error status. |
 | **Orphan reaper** | 60 min | Sweeps download folders, classifies orphans as delete/import/keep. |
 | **Mapping refresh** | 60 min | Refreshes Sonarr ↔ Plex series mapping (TVDB id / folder path / title fallback). |
 | **Series cache** | 5 min | Local read-model of Sonarr /series for fast UI queries. |
@@ -263,6 +264,16 @@ intervals:
   backfill_p1_p2_max_per_sweep: 20          # P1/P2 episode-search budget per sweep
   backfill_p1_p2_cooldown_minutes: 30       # min gap between P1/P2 episode searches
   backfill_p1_p2_followup_episodes: 2       # on-grab follow-up search size
+
+  # P1 fast-grab — aggressively chase freshly-aired top-priority episodes
+  # (docs/specs/2026-06-01-p1-fast-grab-design.md). Off = pre-feature behaviour.
+  p1_fast_enabled: true                     # master switch for the fast sweep + fast P1 stall pass
+  p1_fast_sweep_minutes: 20                 # cadence of the p1-fast-sweep job
+  p1_fast_release_delay_minutes: 60         # don't search an episode until 1h after it airs
+  p1_fast_window_hours: 48                  # stop the aggressive cadence 48h after air (then normal backfill)
+  p1_fast_cooldown_minutes: 20              # per-episode cooldown for the fast band
+  p1_fast_max_per_sweep: 10                 # EpisodeSearch budget per fast-sweep tick
+  p1_stall_minutes: 30                      # P1 download stuck threshold in the queue janitor (vs 48h default)
 ```
 
 ---

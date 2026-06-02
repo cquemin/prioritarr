@@ -258,7 +258,16 @@ fun Route.v2Routes(state: AppState) {
             val title = seriesObj["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
             val titleSlug = seriesObj["titleSlug"]?.jsonPrimitive?.contentOrNull
             val tvdbId = seriesObj["tvdbId"]?.jsonPrimitive?.longOrNull
+            // Recompute-on-miss: a just-invalidated row (e.g. right after
+            // an import) would otherwise surface as a blank priority until
+            // the next refresh-priorities batch. priorityForSeries
+            // recomputes + re-caches, so the immediately-following read
+            // returns the fresh value.
             val cache = state.db.getPriorityCache(id)
+                ?: run {
+                    runCatching { state.priorityService.priorityForSeries(id) }
+                    state.db.getPriorityCache(id)
+                }
             val managed = state.db.listManagedDownloads().filter { it.series_id == id }
 
             // Fetch live state for this series' downloads so the UI

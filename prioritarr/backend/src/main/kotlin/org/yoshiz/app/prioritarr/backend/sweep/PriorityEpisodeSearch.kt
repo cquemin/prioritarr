@@ -10,6 +10,7 @@ import kotlinx.serialization.json.longOrNull
 import org.slf4j.LoggerFactory
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
 import org.yoshiz.app.prioritarr.backend.database.Database
+import java.time.OffsetDateTime
 
 private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.sweep.priority")
 
@@ -111,4 +112,29 @@ internal suspend fun runPriorityEpisodePass(
         fired++
     }
     return fired
+}
+
+/**
+ * Keep only missing-episode records whose own air date falls inside the
+ * fast-grab window: at least [minAgeMinutes] old (don't search before
+ * fansubs post) and at most [maxAgeHours] old (after that the normal 2h
+ * backfill takes over). Rows with a missing/unparseable airDateUtc are
+ * dropped — the fast path only acts on episodes it can place in time.
+ */
+internal fun filterRecordsByReleaseWindow(
+    records: JsonArray,
+    nowEpochSeconds: Long,
+    minAgeMinutes: Int,
+    maxAgeHours: Int,
+): JsonArray {
+    val minAgeSec = minAgeMinutes * 60L
+    val maxAgeSec = maxAgeHours * 3600L
+    return JsonArray(
+        records.filter { row ->
+            val air = row.jsonObject["airDateUtc"]?.jsonPrimitive?.contentOrNull ?: return@filter false
+            val airEpoch = try { OffsetDateTime.parse(air).toEpochSecond() } catch (_: Exception) { return@filter false }
+            val age = nowEpochSeconds - airEpoch
+            age in minAgeSec..maxAgeSec
+        },
+    )
 }
