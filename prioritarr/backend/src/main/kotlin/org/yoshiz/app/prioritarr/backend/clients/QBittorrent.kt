@@ -20,7 +20,7 @@ import kotlinx.serialization.json.longOrNull
  * The qBit API tracks auth via cookie — Ktor HttpClient with the default
  * CIO engine maintains the cookie jar between calls.
  */
-class QBitClient(
+open class QBitClient(
     private val baseUrl: String,
     private val username: String = "",
     private val password: String = "",
@@ -109,7 +109,7 @@ class QBitClient(
     private val root: String = baseUrl.trimEnd('/')
     @Volatile private var authenticated: Boolean = false
 
-    suspend fun getTorrents(category: String? = null): JsonArray = request {
+    open suspend fun getTorrents(category: String? = null): JsonArray = request {
         http.get("$root/api/v2/torrents/info") {
             if (category != null) parameter("category", category)
         }.body()

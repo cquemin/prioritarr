@@ -51,6 +51,7 @@ class QueueJanitor(
     private val sab: SABClient,
     private val db: Database,
     private val stuckAfter: java.time.Duration = java.time.Duration.ofHours(48),
+    private val p1StuckAfter: java.time.Duration = java.time.Duration.ofMinutes(30),
     private val perItemPauseMillis: Long = 5000,
 ) {
     private val logger = LoggerFactory.getLogger(QueueJanitor::class.java)
@@ -224,7 +225,8 @@ class QueueJanitor(
             val lastActivityEpoch = obj["last_activity"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
             val lastActivity = Instant.ofEpochSecond(lastActivityEpoch)
             val state = obj["state"]?.jsonPrimitive?.contentOrNull
-            val isStuck = java.time.Duration.between(lastActivity, now) > stuckAfter ||
+            val threshold = if (managed.current_priority.toInt() == 1) p1StuckAfter else stuckAfter
+            val isStuck = java.time.Duration.between(lastActivity, now) > threshold ||
                 state in TERMINAL_QBIT_STATES
             if (!isStuck) return@mapNotNull null
             StuckItem(
@@ -262,7 +264,8 @@ class QueueJanitor(
             val lastSeen = try {
                 java.time.OffsetDateTime.parse(managed.last_reconciled_at).toInstant()
             } catch (_: Exception) { return@mapNotNull null }
-            if (java.time.Duration.between(lastSeen, now) <= stuckAfter) return@mapNotNull null
+            val threshold = if (managed.current_priority.toInt() == 1) p1StuckAfter else stuckAfter
+            if (java.time.Duration.between(lastSeen, now) <= threshold) return@mapNotNull null
             StuckItem(
                 client = "sab",
                 clientId = nzo,
