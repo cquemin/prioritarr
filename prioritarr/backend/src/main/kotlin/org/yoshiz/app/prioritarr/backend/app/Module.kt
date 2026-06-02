@@ -217,6 +217,14 @@ fun Application.prioritarrModule(state: AppState) {
                             ),
                         )
                         logger.info("[sonarr-webhook] Download: series {} episodes {}", seriesId, episodes)
+                        application.launch {
+                            org.yoshiz.app.prioritarr.backend.webhooks.recomputeAfterImport(
+                                seriesId = seriesId,
+                                importedEpisodeIds = episodes,
+                                fetchEpisodes = { state.sonarr.getEpisodes(it) },
+                                recompute = { state.priorityService.priorityForSeries(it); Unit },
+                            )
+                        }
                     }
                     call.respond(OnGrabIgnored(eventType = eventType))
                 }
