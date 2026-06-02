@@ -42,6 +42,7 @@ object JobId {
     const val WATCHED_ARCHIVER = "watched-archiver"
     const val ORPHAN_REAPER = "orphan-reaper"
     const val BACKFILL_SWEEP = "backfill-sweep"
+    const val P1_FAST_SWEEP = "p1-fast-sweep"
     const val CUTOFF_SWEEP = "cutoff-sweep"
     const val HEALTH_MONITOR = "health-monitor"
 }

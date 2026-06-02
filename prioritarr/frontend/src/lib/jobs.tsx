@@ -238,6 +238,23 @@ export const JOBS: ReadonlyArray<JobMeta> = [
     ],
   },
   {
+    id: 'p1-fast-sweep',
+    name: 'P1 fast sweep',
+    icon: <FileSearch size={18} />,
+    trigger: 'auto',
+    short: 'Quickly grab freshly-aired top-priority episodes.',
+    description:
+      'Tight-cadence sweep that searches for recently-aired P1 episodes inside a short air-date window, after a brief release delay, so the highest-priority shows get grabbed fast without waiting for the slower backfill sweep. Throttled per episode by a cooldown and capped per run.',
+    cadence: { key: 'intervals.p1FastSweepMinutes', unit: 'minutes', min: 1 },
+    settings: [
+      { key: 'p1FastEnabled', label: 'Enabled', type: 'boolean' },
+      { key: 'p1FastReleaseDelayMinutes', label: 'Release delay (min)', type: 'number', min: 0, step: 1 },
+      { key: 'p1FastWindowHours', label: 'Air-date window (hours)', type: 'number', min: 1, step: 1 },
+      { key: 'p1FastCooldownMinutes', label: 'Per-episode cooldown (min)', type: 'number', min: 1, step: 1 },
+      { key: 'p1FastMaxPerSweep', label: 'Max per sweep', type: 'number', min: 1, step: 1 },
+    ],
+  },
+  {
     id: 'cutoff-sweep',
     name: 'Cutoff sweep',
     icon: <FileSearch size={18} />,

@@ -542,6 +542,31 @@ fun main() {
                 },
             ))
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.P1_FAST_SWEEP,
+                cadenceMinutes = { liveSettings(db, settings).intervals.p1FastSweepMinutes.toLong() },
+                // Off when disabled, and never before the priority cache
+                // is primed (same guard as backfill-sweep).
+                prerequisites = {
+                    val s = liveSettings(db, settings)
+                    s.intervals.p1FastEnabled && state.prioritiesPrimed.get()
+                },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                run = {
+                    val s = liveSettings(db, settings)
+                    org.yoshiz.app.prioritarr.backend.sweep.runFastP1Sweep(
+                        sonarr = sonarr,
+                        priorityService = priorityService,
+                        db = db,
+                        releaseDelayMinutes = s.intervals.p1FastReleaseDelayMinutes,
+                        windowHours = s.intervals.p1FastWindowHours,
+                        cooldownMinutes = s.intervals.p1FastCooldownMinutes,
+                        maxPerSweep = s.intervals.p1FastMaxPerSweep,
+                        dryRun = s.dryRun,
+                    )
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
                 id = JobId.CUTOFF_SWEEP,
                 cadenceMinutes = { liveSettings(db, settings).intervals.cutoffSweepHours.toLong() * 60L },
                 weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
