@@ -344,6 +344,7 @@ fun main() {
     // tick to prevent dogpiling Sonarr.
     val queueJanitor = org.yoshiz.app.prioritarr.backend.reconcile.QueueJanitor(
         sonarr = sonarr, qbit = qbit, sab = sab, db = db,
+        p1StuckAfter = java.time.Duration.ofMinutes(settings.intervals.p1StallMinutes.toLong()),
     )
     val unmonitoredReaper = org.yoshiz.app.prioritarr.backend.reconcile.UnmonitoredReaper(
         sonarr = sonarr, db = db,
@@ -563,6 +564,7 @@ fun main() {
                         maxPerSweep = s.intervals.p1FastMaxPerSweep,
                         dryRun = s.dryRun,
                     )
+                    queueJanitor.sweepP1Fast(dryRun = s.dryRun)
                     org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
                 },
             ))

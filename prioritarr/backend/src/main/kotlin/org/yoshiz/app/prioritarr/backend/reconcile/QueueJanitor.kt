@@ -125,6 +125,34 @@ class QueueJanitor(
     }
 
     /**
+     * P1-only stall pass for the 20-min fast cadence. Scans the same
+     * sources as [sweep] but keeps only P1 items (qBit/SAB idle past
+     * [p1StuckAfter], plus Sonarr warning/error), and remediates each via
+     * the shared [handleStuck] (remove + blocklist + re-search). The
+     * full 48h sweep still runs on its own 30-min job for all priorities.
+     */
+    suspend fun sweepP1Fast(dryRun: Boolean): JanitorReport {
+        val now = Instant.now()
+        val items = (findStuckQbit(now) + findStuckSabQueue(now) + findStuckP1FromSonarrQueue())
+            .filter { it.priority == 1 }
+            .distinctBy { it.client to it.clientId }
+        if (items.isEmpty()) {
+            return JanitorReport(0, 0, 0)
+        }
+        var cleaned = 0
+        var researched = 0
+        for (item in items) {
+            if (handleStuck(item, dryRun)) {
+                cleaned++
+                if (item.episodeIds.isNotEmpty()) researched++
+            }
+            if (!dryRun && item.episodeIds.isNotEmpty()) delay(perItemPauseMillis)
+        }
+        logger.info("queue-janitor[p1-fast]: scanned={} cleaned={} re_searched={} dryRun={}", items.size, cleaned, researched, dryRun)
+        return JanitorReport(scanned = items.size, cleaned = cleaned, researched = researched)
+    }
+
+    /**
      * Find qBit torrents + SAB jobs that:
      *   1. aren't in Sonarr's queue (no pending grab record), AND
      *   2. aren't in our managed_downloads (reconciler doesn't track), AND
