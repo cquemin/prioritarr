@@ -67,7 +67,9 @@ class QueueJanitor(
         val stuckSabFromQueue = findStuckSabQueue(now)
         val failedSab = findFailedSabHistory()
 
-        val all = (stuckQbit + stuckSabFromQueue + failedSab)
+        val stuckP1Sonarr = findStuckP1FromSonarrQueue()
+        val all = (stuckQbit + stuckSabFromQueue + failedSab + stuckP1Sonarr)
+            .distinctBy { it.client to it.clientId }
             .sortedBy { it.priority ?: 6 }   // P1 first; null priorities last
 
         var cleaned = 0
@@ -273,6 +275,41 @@ class QueueJanitor(
                 episodeIds = parseEpisodeIds(managed.episode_ids),
                 priority = managed.current_priority.toInt(),
                 reason = "sab queue Paused for >48h",
+            )
+        }
+    }
+
+    /**
+     * P1-only stall signal from Sonarr's own queue: an entry whose
+     * trackedDownloadStatus is "warning"/"error" (stalled, failed,
+     * import-blocked) and whose linked managed download is P1. No time
+     * threshold — Sonarr has already decided the grab is in trouble.
+     */
+    private suspend fun findStuckP1FromSonarrQueue(): List<StuckItem> {
+        val queue = try {
+            sonarr.getQueue()
+        } catch (e: Exception) {
+            logger.warn("queue-janitor: sonarr.getQueue (P1 status) failed: {}", e.message)
+            return emptyList()
+        }
+        val byClientId: Map<String, org.yoshiz.app.prioritarr.backend.database.Managed_downloads> =
+            (db.listManagedDownloads("qbit") + db.listManagedDownloads("sab"))
+                .associateBy { it.client_id.lowercase() }
+
+        return queue.mapNotNull { el ->
+            val o = el.jsonObject
+            val status = o["trackedDownloadStatus"]?.jsonPrimitive?.contentOrNull?.lowercase()
+            if (status != "warning" && status != "error") return@mapNotNull null
+            val downloadId = o["downloadId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            val managed = byClientId[downloadId.lowercase()] ?: return@mapNotNull null
+            if (managed.current_priority.toInt() != 1) return@mapNotNull null
+            StuckItem(
+                client = managed.client,
+                clientId = managed.client_id,
+                seriesId = managed.series_id,
+                episodeIds = parseEpisodeIds(managed.episode_ids),
+                priority = 1,
+                reason = "sonarr trackedDownloadStatus=$status (P1)",
             )
         }
     }
