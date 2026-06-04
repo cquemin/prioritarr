@@ -18,12 +18,20 @@ COPY openapi.json /src/openapi.json
 COPY prioritarr/ /src/prioritarr/
 COPY --from=ui-build /ui/dist/ /src/prioritarr/backend/src/main/resources/static/
 WORKDIR /src/prioritarr
-RUN gradle --no-daemon :backend:shadowJar
+ARG APP_VERSION=0.0.0-dev
+ARG GIT_SHA=unknown
+RUN gradle --no-daemon -PappVersion=$APP_VERSION -PgitSha=$GIT_SHA :backend:shadowJar
 
 # Stage 3: runtime — JRE-only, fat jar carries the UI inside.
 FROM eclipse-temurin:21-jre-alpine
 RUN apk add --no-cache curl
 WORKDIR /app
+ARG APP_VERSION=0.0.0-dev
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.title="prioritarr" \
+      org.opencontainers.image.version="$APP_VERSION" \
+      org.opencontainers.image.revision="$GIT_SHA" \
+      org.opencontainers.image.source="https://github.com/cquemin/prioritarr"
 COPY --from=build /src/prioritarr/backend/build/libs/prioritarr.jar /app/prioritarr.jar
 EXPOSE 8000
 ENTRYPOINT ["java", "-jar", "/app/prioritarr.jar"]
