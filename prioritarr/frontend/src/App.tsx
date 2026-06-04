@@ -8,6 +8,7 @@ import { useEventStream } from './hooks/useEventStream'
 import { useSettings } from './hooks/queries'
 import { navigate, useEnsureHash, useRoute, type Page } from './hooks/useHashRoute'
 import { HealthBanner } from './components/HealthBanner'
+import { useVersion } from './api/version'
 
 // Downloads was its own tab; as of the unified-series-view change
 // every download surface lives inside the Series drawer alongside the
@@ -76,6 +77,7 @@ function Shell() {
               title={`SSE ${status}`}
             />
           </div>
+          <VersionBadge />
         </nav>
         <main className="flex-1 overflow-auto">
           {view === 'series' && <SeriesPage />}
@@ -84,6 +86,20 @@ function Shell() {
         </main>
       </div>
       <EventTicker events={recent} />
+    </div>
+  )
+}
+
+function VersionBadge() {
+  const v = useVersion()
+  if (!v) return null
+  return (
+    <div
+      className="mt-auto pt-2 text-[9px] leading-tight text-center break-all px-1 opacity-60"
+      title={`${v.version} · ${v.gitSha} · built ${v.buildTime}`}
+    >
+      <span className="hidden sm:inline">{v.version}</span>
+      <span className="sm:hidden">ⓥ</span>
     </div>
   )
 }

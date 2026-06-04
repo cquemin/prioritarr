@@ -182,6 +182,39 @@ Trakt OAuth: POST `/oauth/device/code` with your client id, visit the returned `
 
 ---
 
+## Building & versioning
+
+**Build from source** (uses buildx `--load` so the local `:latest` always
+updates — a plain `docker build` can leave a stale `:latest` via attestation
+manifests):
+
+```sh
+./scripts/build-image.ps1      # Windows
+./scripts/build-image.sh       # macOS/Linux
+```
+
+Both tag the image `:latest` **and** `:<git-describe version>` and inject the
+version/sha as build-args. Then redeploy:
+
+```sh
+docker compose -f media-stack-v3.yml up -d --no-deps --force-recreate prioritarr
+```
+
+**Check what's running:**
+
+```sh
+curl -s http://localhost:8000/version      # {"version","gitSha","buildTime"}
+docker inspect prioritarr --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+```
+
+The version is `git describe --tags --always --dirty`, derived once and used
+everywhere: stamped into the jar (`/version` + startup log + UI footer), set as
+OCI image labels (`org.opencontainers.image.version`/`.revision`), and used as
+the image tag. CI (`.github/workflows/release.yml`) pushes `:edge` + `:sha-…`
+on `main` and `:<semver>` + `:latest` on a `v*` tag.
+
+---
+
 ## Extending prioritarr
 
 ### New watch source (e.g. BetaSeries)
