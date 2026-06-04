@@ -1,3 +1,7 @@
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
@@ -7,7 +11,31 @@ plugins {
 }
 
 group = "org.yoshiz.app.prioritarr"
-version = "0.3.0"
+
+// Run git via the provider-based exec API so it is compatible with the
+// Gradle configuration cache (starting external processes directly at
+// configuration time is unsupported there). Returns null on any failure.
+fun runGit(vararg args: String): String? = runCatching {
+    val result = providers.exec {
+        workingDir = rootProject.projectDir
+        commandLine(listOf("git") + args)
+        isIgnoreExitValue = true
+    }
+    if (result.result.get().exitValue == 0) {
+        result.standardOutput.asText.get().trim().takeIf { it.isNotEmpty() }
+    } else {
+        null
+    }
+}.getOrNull()
+
+val appVersion: String = (findProperty("appVersion") as String?)?.takeIf { it.isNotBlank() }
+    ?: runGit("describe", "--tags", "--always", "--dirty")
+    ?: "0.0.0-dev"
+val gitSha: String = (findProperty("gitSha") as String?)?.takeIf { it.isNotBlank() }
+    ?: runGit("rev-parse", "--short", "HEAD")
+    ?: "unknown"
+
+version = appVersion
 
 repositories {
     mavenCentral()
@@ -63,6 +91,31 @@ java {
 application {
     mainClass = "org.yoshiz.app.prioritarr.backend.MainKt"
 }
+
+val buildInfoDir = layout.buildDirectory.dir("generated/buildInfo")
+
+val generateBuildInfo by tasks.registering {
+    // Capture into locals so the doLast lambda closes over plain
+    // values (String / File) rather than Gradle script object
+    // references, which the configuration cache cannot serialize.
+    val versionValue = appVersion
+    val gitShaValue = gitSha
+    val outputFile = buildInfoDir.map { it.file("build-info.properties") }
+    inputs.property("version", versionValue)
+    inputs.property("gitSha", gitShaValue)
+    outputs.dir(buildInfoDir)
+    doLast {
+        val f = outputFile.get().asFile
+        f.parentFile.mkdirs()
+        val buildTime = OffsetDateTime
+            .now(ZoneOffset.UTC)
+            .format(DateTimeFormatter.ISO_INSTANT)
+        f.writeText("version=$versionValue\ngitSha=$gitShaValue\nbuildTime=$buildTime\n")
+    }
+}
+
+sourceSets.named("main") { resources.srcDir(buildInfoDir) }
+tasks.named("processResources") { dependsOn(generateBuildInfo) }
 
 sqldelight {
     databases {
