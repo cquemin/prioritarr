@@ -179,6 +179,12 @@ fun main() {
         }
     }
     logger.info("prioritarr (kotlin) starting (dry_run={}, test_mode={})", settings.dryRun, settings.testMode)
+    logger.info(
+        "prioritarr {} ({}, built {})",
+        org.yoshiz.app.prioritarr.backend.app.BuildInfo.version,
+        org.yoshiz.app.prioritarr.backend.app.BuildInfo.gitSha,
+        org.yoshiz.app.prioritarr.backend.app.BuildInfo.buildTime,
+    )
 
     val sonarrHttp = defaultJsonClient()
     val tautulliHttp = defaultJsonClient()

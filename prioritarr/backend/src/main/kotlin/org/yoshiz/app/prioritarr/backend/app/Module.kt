@@ -163,6 +163,8 @@ fun Application.prioritarrModule(state: AppState) {
             }
         }
 
+        versionRoute()
+
         post("/api/sonarr/on-grab") {
             val raw = call.receiveText()
             val payload = appJson.parseToJsonElement(raw) as JsonObject
