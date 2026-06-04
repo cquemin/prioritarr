@@ -1,23 +1,15 @@
 name: Build and Push Docker Image
 
-# Push + release triggers temporarily disabled — local Docker builds
-# are the deploy path while iterating. Re-enable by uncommenting the
-# release / push blocks below.
 on:
-  # release:
-  #   types: [published]
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - 'prioritarr/**'
-  #     - 'contract-tests/**'
-  #     - 'openapi.json'
-  #     - '.github/workflows/**'
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'prioritarr/**'
+      - 'contract-tests/**'
+      - 'openapi.json'
+      - '.github/workflows/**'
   workflow_dispatch:
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   frontend-build:
@@ -149,37 +141,58 @@ jobs:
         if: failure()
         run: docker logs prioritarr
 
-  build-and-push-app:
-    needs: [app-contract-tests, frontend-build]
+  build-push:
+    needs: [frontend-build, openapi-lint, app-contract-tests]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history so git describe works
 
-      - name: Log in to GitHub Container Registry
+      - name: Compute version
+        id: ver
+        run: |
+          echo "app_version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+          echo "git_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (app)
-        id: meta_app
+      - name: Docker metadata
+        id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ghcr.io/${{ github.repository }}
           tags: |
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+          labels: |
+            org.opencontainers.image.title=prioritarr
+            org.opencontainers.image.version=${{ steps.ver.outputs.app_version }}
+            org.opencontainers.image.revision=${{ steps.ver.outputs.git_sha }}
 
-      - name: Build and push (app)
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: prioritarr/Dockerfile
           push: true
-          tags: ${{ steps.meta_app.outputs.tags }}
-          labels: ${{ steps.meta_app.outputs.labels }}
+          provenance: false
+          sbom: false
+          build-args: |
+            APP_VERSION=${{ steps.ver.outputs.app_version }}
+            GIT_SHA=${{ steps.ver.outputs.git_sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
