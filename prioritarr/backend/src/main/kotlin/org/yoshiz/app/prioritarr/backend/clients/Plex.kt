@@ -79,6 +79,19 @@ class PlexClient(
         }.bodyAsText()
     }
 
+    /**
+     * Number of active playback sessions reported by Plex
+     * (`/status/sessions`). The MediaContainer's `size` attribute is the
+     * session count; each Video/Track child is one active stream. Returns
+     * 0 on error or when nothing is playing. Used to pause background
+     * Tdarr transcoding while anything is streaming.
+     */
+    suspend fun activeSessionCount(): Int {
+        val doc = getXml("/status/sessions") ?: return 0
+        doc.getAttribute("size").toIntOrNull()?.let { return it }
+        return doc.getElementsByTagName("Video").length + doc.getElementsByTagName("Track").length
+    }
+
     private suspend fun getXml(path: String): Element? {
         val body: String = http.get("$root$path") {
             header("X-Plex-Token", token)
