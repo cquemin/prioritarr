@@ -45,6 +45,7 @@ object JobId {
     const val P1_FAST_SWEEP = "p1-fast-sweep"
     const val CUTOFF_SWEEP = "cutoff-sweep"
     const val HEALTH_MONITOR = "health-monitor"
+    const val TDARR_PLEX_PAUSE = "tdarr-plex-pause"
 }
 
 /**

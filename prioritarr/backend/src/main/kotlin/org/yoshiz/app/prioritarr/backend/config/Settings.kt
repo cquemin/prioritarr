@@ -226,6 +226,12 @@ data class Settings(
     val plexUrl: String? = null,
     val plexToken: String? = null,
 
+    // Tdarr base URL (e.g. http://tdarr:8265). When set, the Plex-aware
+    // pause job can reach Tdarr. [tdarrPauseEnabled] gates whether that
+    // job actually runs — both are needed for the feature to act.
+    val tdarrUrl: String? = null,
+    val tdarrPauseEnabled: Boolean = false,
+
     // Trakt OAuth credentials. clientId + accessToken must be set for
     // the Trakt provider to be installed; either missing = Trakt
     // disabled, Tautulli alone. clientSecret is only required to mint
@@ -305,6 +311,8 @@ data class EditableSettings(
     val sabApiKey: String? = null,
     val plexUrl: String? = null,
     val plexToken: String? = null,
+    val tdarrUrl: String? = null,
+    val tdarrPauseEnabled: Boolean? = null,
     val traktClientId: String? = null,
     val traktClientSecret: String? = null,
     val traktAccessToken: String? = null,
@@ -372,6 +380,8 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
     sabApiKey = override.sabApiKey ?: base.sabApiKey,
     plexUrl = override.plexUrl ?: base.plexUrl,
     plexToken = override.plexToken ?: base.plexToken,
+    tdarrUrl = override.tdarrUrl ?: base.tdarrUrl,
+    tdarrPauseEnabled = override.tdarrPauseEnabled ?: base.tdarrPauseEnabled,
     traktClientId = override.traktClientId ?: base.traktClientId,
     traktClientSecret = override.traktClientSecret ?: base.traktClientSecret,
     traktAccessToken = override.traktAccessToken ?: base.traktAccessToken,
@@ -552,6 +562,8 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         qbitPassword = env("QBIT_PASSWORD"),
         plexUrl = env("PLEX_URL"),
         plexToken = env("PLEX_TOKEN"),
+        tdarrUrl = env("TDARR_URL"),
+        tdarrPauseEnabled = (env("TDARR_PAUSE_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
         traktClientId = env("TRAKT_CLIENT_ID"),
         traktClientSecret = env("TRAKT_CLIENT_SECRET"),
         traktAccessToken = env("TRAKT_ACCESS_TOKEN"),

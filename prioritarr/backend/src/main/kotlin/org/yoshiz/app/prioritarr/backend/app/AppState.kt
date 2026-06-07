@@ -61,6 +61,8 @@ data class AppState(
     val traktClient: TraktClient?,
     /** OAuth helper — null when client_id or client_secret missing. Routes use it for begin/poll/refresh. */
     val traktOAuth: TraktOAuth?,
+    /** Tdarr client for the Plex-aware pause job — null when PRIORITARR_TDARR_URL is unset. */
+    val tdarr: org.yoshiz.app.prioritarr.backend.clients.TdarrClient? = null,
     val eventBus: EventBus,
     val httpClients: List<HttpClient>,
     /**

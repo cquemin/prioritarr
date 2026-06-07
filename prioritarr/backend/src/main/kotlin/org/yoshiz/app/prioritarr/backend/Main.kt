@@ -208,6 +208,16 @@ fun main() {
             org.yoshiz.app.prioritarr.backend.clients.PlexClient(settings.plexUrl, settings.plexToken, plexHttp)
         } else null
 
+    // Tdarr client for the Plex-aware pause job. Built whenever a URL is
+    // configured; the job's prerequisite also checks tdarrPauseEnabled,
+    // so the client can exist while the feature is off. Short timeout —
+    // a hung Tdarr must not stall a scheduler tick.
+    val tdarrHttp = defaultJsonClient(timeoutMs = 15_000)
+    val tdarrClient: org.yoshiz.app.prioritarr.backend.clients.TdarrClient? =
+        if (!settings.tdarrUrl.isNullOrBlank()) {
+            org.yoshiz.app.prioritarr.backend.clients.TdarrClient(settings.tdarrUrl, tdarrHttp)
+        } else null
+
     val mappings = MappingState()
 
     val cache: MappingCache = SqliteMappingCache(db)
@@ -322,8 +332,9 @@ fun main() {
         traktUnmonitor = traktUnmonitor,
         traktClient = traktClient,
         traktOAuth = traktOAuth,
+        tdarr = tdarrClient,
         eventBus = EventBus(),
-        httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp, healthHttp),
+        httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp, healthHttp, tdarrHttp),
     )
 
     // Heartbeat coroutine — enough to make /health flip to 200 after startup.
@@ -448,6 +459,20 @@ fun main() {
                 run = {
                     unmonitoredReaper.sweep(dryRun = liveSettings(db, settings).dryRun)
                     org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.TDARR_PLEX_PAUSE,
+                // Poll every minute: pause Tdarr's CPU transcoding while
+                // Plex is streaming, resume when idle. Reactive prereq —
+                // flipping tdarrPauseEnabled takes effect within ~60s.
+                cadenceMinutes = { 1L },
+                prerequisites = {
+                    liveSettings(db, settings).tdarrPauseEnabled && plexClient != null && tdarrClient != null
+                },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                run = {
+                    org.yoshiz.app.prioritarr.backend.orchestration.reconcileTdarrPause(plexClient!!, tdarrClient!!)
                 },
             ))
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
