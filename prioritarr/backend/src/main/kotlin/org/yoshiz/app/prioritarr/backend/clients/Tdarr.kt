@@ -1,6 +1,7 @@
 package org.yoshiz.app.prioritarr.backend.clients
 
 import io.ktor.client.HttpClient
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -25,6 +26,7 @@ import org.yoshiz.app.prioritarr.backend.http.ClientJson
 class TdarrClient(
     private val baseUrl: String,
     private val http: HttpClient,
+    private val apiKey: String? = null,
 ) {
     private val root: String = baseUrl.trimEnd('/')
 
@@ -48,6 +50,7 @@ class TdarrClient(
     private suspend fun post(jsonBody: String): String =
         http.post("$root/api/v2/cruddb") {
             contentType(ContentType.Application.Json)
+            if (!apiKey.isNullOrBlank()) header("x-api-key", apiKey)
             setBody(jsonBody)
         }.bodyAsText()
 }
