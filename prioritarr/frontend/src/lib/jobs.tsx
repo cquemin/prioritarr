@@ -17,7 +17,7 @@
 
 import {
   RefreshCw, Database, Search, Activity, Trash2, ListChecks, KeyRound, Cog,
-  Webhook, ArrowLeftRight, Box, FileSearch,
+  Webhook, ArrowLeftRight, Box, FileSearch, Pause,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 
@@ -144,6 +144,24 @@ export const JOBS: ReadonlyArray<JobMeta> = [
     // buys little (correctness doesn't change with the cadence) and
     // adds a knob users would mostly leave alone. Documented in the
     // description above for transparency.
+  },
+  {
+    id: 'tdarr-plex-pause',
+    name: 'Tdarr pause (Plex-aware)',
+    icon: <Pause size={18} />,
+    trigger: 'auto',
+    short: 'Pause Tdarr transcoding while Plex is streaming.',
+    description:
+      'Every cycle, checks Plex for active playback sessions. When anything is streaming, it sets Tdarr’s global pauseAllNodes flag so background transcoding stops; when playback ends, it resumes Tdarr. Idempotent — only writes when the desired state differs.',
+    why:
+      'This host has no GPU, so a Plex software-transcode and a Tdarr encode fight over the same CPU and the stream buffers. Pausing Tdarr for the duration of a stream keeps playback smooth, then lets the conversion backlog resume automatically.',
+    cadence: { key: 'intervals.tdarrPauseMinutes', unit: 'minutes', min: 1 },
+    settings: [
+      { key: 'tdarrPauseEnabled', label: 'Enabled', type: 'boolean', hint: 'Off by default. Requires a Tdarr URL in Connections.' },
+    ],
+    relatedSettings: [
+      { section: 'connections', sectionLabel: 'Connections', field: 'Tdarr' },
+    ],
   },
   {
     id: 'queue-janitor',
