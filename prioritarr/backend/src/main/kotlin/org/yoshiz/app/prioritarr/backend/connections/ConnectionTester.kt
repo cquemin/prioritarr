@@ -9,13 +9,17 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
 import io.ktor.http.parameters
 import io.ktor.client.request.forms.submitForm
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -220,6 +224,36 @@ suspend fun testPlex(rawUrl: String, token: String): ConnectionTestResult = test
         }
         401 -> ConnectionTestResult(false, ConnectionTestStatus.AUTH_FAILED.wire, "Plex token rejected (HTTP 401).")
         else -> ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "HTTP ${resp.status.value}.")
+    }
+}
+
+/**
+ * Tdarr: POST /api/v2/cruddb reading global settings. Tdarr has no
+ * dedicated status endpoint and (by default) no auth, so a successful
+ * read that parses as a JSON array confirms we're talking to Tdarr.
+ * An optional apiKey is sent as a header for setups that enable auth.
+ */
+suspend fun testTdarr(rawUrl: String, apiKey: String?): ConnectionTestResult = testClient().use { http ->
+    val url = "${normalize(rawUrl)}/api/v2/cruddb"
+    val resp: HttpResponse = try {
+        http.post(url) {
+            contentType(ContentType.Application.Json)
+            if (!apiKey.isNullOrBlank()) header("x-api-key", apiKey)
+            setBody("""{"data":{"collection":"SettingsGlobalJSONDB","mode":"getAll"}}""")
+        }
+    } catch (e: Throwable) { return@use connectionFailure(e) }
+    when (resp.status.value) {
+        in 200..299 -> {
+            val body = try { resp.body<JsonArray>() }
+            catch (_: Throwable) {
+                return@use ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire,
+                    "Reached upstream but the response wasn't a JSON array — wrong URL path or not a Tdarr server.")
+            }
+            if (body.isNotEmpty()) ConnectionTestResult(true, ConnectionTestStatus.CONNECTED.wire)
+            else ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Tdarr returned an empty settings collection.")
+        }
+        401, 403 -> ConnectionTestResult(false, ConnectionTestStatus.AUTH_FAILED.wire, "Tdarr rejected the request (HTTP ${resp.status.value}). If Tdarr auth is on, set an API key.")
+        else -> ConnectionTestResult(false, ConnectionTestStatus.VERSION_FAILED.wire, "Unexpected HTTP ${resp.status.value}.")
     }
 }
 
