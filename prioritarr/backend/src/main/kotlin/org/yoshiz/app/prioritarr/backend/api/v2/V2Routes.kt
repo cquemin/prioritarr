@@ -1032,7 +1032,7 @@ fun Route.v2Routes(state: AppState) {
             )
             org.yoshiz.app.prioritarr.backend.ConnectionService.TDARR -> org.yoshiz.app.prioritarr.backend.connections.testTdarr(
                 rawUrl = field("tdarrUrl", s.tdarrUrl),
-                apiKey = s.tdarrApiKey,
+                apiKey = field("tdarrApiKey", s.tdarrApiKey),
             )
         }
         call.respond(result)
