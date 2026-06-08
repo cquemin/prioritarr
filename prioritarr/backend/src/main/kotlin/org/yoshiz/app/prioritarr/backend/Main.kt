@@ -215,7 +215,7 @@ fun main() {
     val tdarrHttp = defaultJsonClient(timeoutMs = 15_000)
     val tdarrClient: org.yoshiz.app.prioritarr.backend.clients.TdarrClient? =
         if (!settings.tdarrUrl.isNullOrBlank()) {
-            org.yoshiz.app.prioritarr.backend.clients.TdarrClient(settings.tdarrUrl, tdarrHttp)
+            org.yoshiz.app.prioritarr.backend.clients.TdarrClient(settings.tdarrUrl, tdarrHttp, settings.tdarrApiKey)
         } else null
 
     val mappings = MappingState()
@@ -466,7 +466,7 @@ fun main() {
                 // Poll every minute: pause Tdarr's CPU transcoding while
                 // Plex is streaming, resume when idle. Reactive prereq —
                 // flipping tdarrPauseEnabled takes effect within ~60s.
-                cadenceMinutes = { 1L },
+                cadenceMinutes = { liveSettings(db, settings).intervals.tdarrPauseMinutes.toLong() },
                 prerequisites = {
                     liveSettings(db, settings).tdarrPauseEnabled && plexClient != null && tdarrClient != null
                 },
