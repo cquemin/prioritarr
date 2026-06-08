@@ -289,6 +289,15 @@ function ConnectionsSection({ s }: { s: any }) {
           { key: 'plexToken', label: 'Token', secret: true },
         ]}
       />
+      <ConnectionCard
+        title="Tdarr"
+        service="tdarr"
+        current={s}
+        fields={[
+          { key: 'tdarrUrl', label: 'URL', type: 'url' },
+          { key: 'tdarrApiKey', label: 'API key (optional)', secret: true },
+        ]}
+      />
       {/* Trakt has its own card with the OAuth dance + a hot-swap
           access token, so we don't duplicate the URL/key inputs here.
           The Trakt card embeds its own Test button. */}
