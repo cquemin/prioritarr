@@ -87,6 +87,8 @@ data class Intervals(
     val queueJanitorMinutes: Int = 30,
     val unmonitoredReaperMinutes: Int = 30,
     val traktTokenRefreshHours: Int = 24,
+    /** Cadence of the Plex-aware Tdarr pause job. */
+    val tdarrPauseMinutes: Int = 1,
 )
 
 data class CacheConfig(val priorityTtlMinutes: Int = 60)
@@ -230,6 +232,7 @@ data class Settings(
     // pause job can reach Tdarr. [tdarrPauseEnabled] gates whether that
     // job actually runs — both are needed for the feature to act.
     val tdarrUrl: String? = null,
+    val tdarrApiKey: String? = null,
     val tdarrPauseEnabled: Boolean = false,
 
     // Trakt OAuth credentials. clientId + accessToken must be set for
@@ -312,7 +315,9 @@ data class EditableSettings(
     val plexUrl: String? = null,
     val plexToken: String? = null,
     val tdarrUrl: String? = null,
+    val tdarrApiKey: String? = null,
     val tdarrPauseEnabled: Boolean? = null,
+    val tdarrPauseMinutes: Int? = null,
     val traktClientId: String? = null,
     val traktClientSecret: String? = null,
     val traktAccessToken: String? = null,
@@ -381,6 +386,7 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
     plexUrl = override.plexUrl ?: base.plexUrl,
     plexToken = override.plexToken ?: base.plexToken,
     tdarrUrl = override.tdarrUrl ?: base.tdarrUrl,
+    tdarrApiKey = override.tdarrApiKey ?: base.tdarrApiKey,
     tdarrPauseEnabled = override.tdarrPauseEnabled ?: base.tdarrPauseEnabled,
     traktClientId = override.traktClientId ?: base.traktClientId,
     traktClientSecret = override.traktClientSecret ?: base.traktClientSecret,
@@ -421,6 +427,7 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
         queueJanitorMinutes = override.queueJanitorMinutes ?: base.intervals.queueJanitorMinutes,
         unmonitoredReaperMinutes = override.unmonitoredReaperMinutes ?: base.intervals.unmonitoredReaperMinutes,
         traktTokenRefreshHours = override.traktTokenRefreshHours ?: base.intervals.traktTokenRefreshHours,
+        tdarrPauseMinutes = override.tdarrPauseMinutes ?: base.intervals.tdarrPauseMinutes,
     ),
     orphanReaperIntervalMinutes = override.orphanReaperIntervalMinutes ?: base.orphanReaperIntervalMinutes,
     orphanReaperPaths = override.orphanReaperPaths ?: base.orphanReaperPaths,
@@ -496,6 +503,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 p1FastCooldownMinutes = o.num("p1_fast_cooldown_minutes") { it.toInt() } ?: intervals.p1FastCooldownMinutes,
                 p1FastMaxPerSweep = o.num("p1_fast_max_per_sweep") { it.toInt() } ?: intervals.p1FastMaxPerSweep,
                 p1StallMinutes = o.num("p1_stall_minutes") { it.toInt() } ?: intervals.p1StallMinutes,
+                tdarrPauseMinutes = o.num("tdarr_pause_minutes") { it.toInt() } ?: intervals.tdarrPauseMinutes,
             )
         }
         (root["cache"] as? Map<*, *>)?.let { o ->
@@ -563,6 +571,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         plexUrl = env("PLEX_URL"),
         plexToken = env("PLEX_TOKEN"),
         tdarrUrl = env("TDARR_URL"),
+        tdarrApiKey = env("TDARR_API_KEY"),
         tdarrPauseEnabled = (env("TDARR_PAUSE_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
         traktClientId = env("TRAKT_CLIENT_ID"),
         traktClientSecret = env("TRAKT_CLIENT_SECRET"),
