@@ -14,6 +14,7 @@ Sonarr downloads *everything*. Prioritarr asks the question Sonarr doesn't — *
 - **Detects stale / failed downloads and cleans them up**, re-queuing a fresh search in priority order.
 - **Mirrors watch state between Plex and Trakt** so both sides always agree.
 - **Reaps orphan files in the download folder** — deletes safe ones (already hardlinked into the library), triggers Sonarr to import the ones that were missed, surfaces the rest for manual review with rename / re-probe / delete / import buttons.
+- **Tdarr coordination** — pauses Tdarr's CPU transcoding while Plex is streaming (for no-GPU hosts) and resumes automatically when idle.
 - **Exposes a live UI** at `/prioritarr` with series list, priority detail drawer, Settings with a what-if preview for threshold tweaks, and the orphan-review table.
 
 ---
@@ -102,6 +103,7 @@ Torrents paused by prioritarr are tracked (`paused_by_us` flag); user-paused tor
 | **Mapping refresh** | 60 min | Refreshes Sonarr ↔ Plex series mapping (TVDB id / folder path / title fallback). |
 | **Series cache** | 5 min | Local read-model of Sonarr /series for fast UI queries. |
 | **Episode cache** | 60 min | Pulls every monitored episode title into a local table; feeds the global search box. |
+| **Tdarr pause (Plex-aware)** | 1 min | Pauses Tdarr's global transcoding while any Plex session is active; resumes when idle. Configure under Connections → Tdarr and enable in Background jobs. Off by default. |
 
 Every job is wrapped in a supervisor coroutine — a crash in one doesn't kill the others.
 
