@@ -149,6 +149,9 @@ data class SettingsRedacted(
     val sabApiKey: String,
     val plexUrl: String?,
     val plexToken: String?,
+    val tdarrUrl: String?,
+    val tdarrApiKey: String?,
+    val tdarrPauseEnabled: Boolean?,
     val traktClientId: String?,
     val traktClientSecret: String?,
     val traktAccessToken: String?,
@@ -198,6 +201,7 @@ data class IntervalsWire(
     val queueJanitorMinutes: Int = 30,
     val unmonitoredReaperMinutes: Int = 30,
     val traktTokenRefreshHours: Int = 24,
+    val tdarrPauseMinutes: Int = 1,
 )
 
 /**

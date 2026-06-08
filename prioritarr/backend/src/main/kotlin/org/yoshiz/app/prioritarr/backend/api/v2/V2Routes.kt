@@ -156,6 +156,10 @@ private fun mergeEditable(
     sabApiKey = patch.sabApiKey ?: existing.sabApiKey,
     plexUrl = patch.plexUrl ?: existing.plexUrl,
     plexToken = patch.plexToken ?: existing.plexToken,
+    tdarrUrl = patch.tdarrUrl ?: existing.tdarrUrl,
+    tdarrApiKey = patch.tdarrApiKey ?: existing.tdarrApiKey,
+    tdarrPauseEnabled = patch.tdarrPauseEnabled ?: existing.tdarrPauseEnabled,
+    tdarrPauseMinutes = patch.tdarrPauseMinutes ?: existing.tdarrPauseMinutes,
     traktClientId = patch.traktClientId ?: existing.traktClientId,
     traktClientSecret = patch.traktClientSecret ?: existing.traktClientSecret,
     traktAccessToken = patch.traktAccessToken ?: existing.traktAccessToken,
@@ -819,6 +823,9 @@ fun Route.v2Routes(state: AppState) {
             sabApiKey = "***",
             plexUrl = s.plexUrl,
             plexToken = redactSecret(s.plexToken),
+            tdarrUrl = s.tdarrUrl,
+            tdarrApiKey = redactSecret(s.tdarrApiKey),
+            tdarrPauseEnabled = s.tdarrPauseEnabled,
             traktClientId = s.traktClientId,
             traktClientSecret = redactSecret(s.traktClientSecret),
             traktAccessToken = redactSecret(s.traktAccessToken),
@@ -852,6 +859,7 @@ fun Route.v2Routes(state: AppState) {
                 queueJanitorMinutes = s.intervals.queueJanitorMinutes,
                 unmonitoredReaperMinutes = s.intervals.unmonitoredReaperMinutes,
                 traktTokenRefreshHours = s.intervals.traktTokenRefreshHours,
+                tdarrPauseMinutes = s.intervals.tdarrPauseMinutes,
             ),
             orphanReaperIntervalMinutes = s.orphanReaperIntervalMinutes,
             orphanReaperPaths = s.orphanReaperPaths,
@@ -913,6 +921,9 @@ fun Route.v2Routes(state: AppState) {
             sabApiKey = "***",
             plexUrl = s.plexUrl,
             plexToken = redactSecret(s.plexToken),
+            tdarrUrl = s.tdarrUrl,
+            tdarrApiKey = redactSecret(s.tdarrApiKey),
+            tdarrPauseEnabled = s.tdarrPauseEnabled,
             traktClientId = s.traktClientId,
             traktClientSecret = redactSecret(s.traktClientSecret),
             traktAccessToken = redactSecret(s.traktAccessToken),
@@ -948,6 +959,7 @@ fun Route.v2Routes(state: AppState) {
                 queueJanitorMinutes = s.intervals.queueJanitorMinutes,
                 unmonitoredReaperMinutes = s.intervals.unmonitoredReaperMinutes,
                 traktTokenRefreshHours = s.intervals.traktTokenRefreshHours,
+                tdarrPauseMinutes = s.intervals.tdarrPauseMinutes,
             ),
             orphanReaperIntervalMinutes = s.orphanReaperIntervalMinutes,
             orphanReaperPaths = s.orphanReaperPaths,
@@ -1020,7 +1032,7 @@ fun Route.v2Routes(state: AppState) {
             )
             org.yoshiz.app.prioritarr.backend.ConnectionService.TDARR -> org.yoshiz.app.prioritarr.backend.connections.testTdarr(
                 rawUrl = field("tdarrUrl", s.tdarrUrl),
-                apiKey = null,
+                apiKey = s.tdarrApiKey,
             )
         }
         call.respond(result)
