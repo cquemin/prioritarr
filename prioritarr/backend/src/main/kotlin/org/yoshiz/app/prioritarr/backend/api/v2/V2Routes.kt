@@ -1018,6 +1018,10 @@ fun Route.v2Routes(state: AppState) {
                 clientId = field("traktClientId", s.traktClientId),
                 accessToken = field("traktAccessToken", s.traktAccessToken),
             )
+            org.yoshiz.app.prioritarr.backend.ConnectionService.TDARR -> org.yoshiz.app.prioritarr.backend.connections.testTdarr(
+                rawUrl = field("tdarrUrl", s.tdarrUrl),
+                apiKey = null,
+            )
         }
         call.respond(result)
     }

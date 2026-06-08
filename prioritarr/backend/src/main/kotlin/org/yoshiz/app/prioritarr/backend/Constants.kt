@@ -99,7 +99,8 @@ enum class ConnectionService(val wire: String) {
     QBIT("qbit"),
     SAB("sab"),
     PLEX("plex"),
-    TRAKT("trakt");
+    TRAKT("trakt"),
+    TDARR("tdarr");
 
     companion object {
         fun fromWire(s: String?): ConnectionService? =
