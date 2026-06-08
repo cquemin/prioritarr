@@ -172,6 +172,9 @@ prioritarr:
     PRIORITARR_PLEX_TOKEN: ${PLEX_TOKEN}              # optional
     PRIORITARR_TRAKT_CLIENT_ID: ${TRAKT_CLIENT_ID}    # optional
     PRIORITARR_TRAKT_ACCESS_TOKEN: ${TRAKT_ACCESS}    # optional
+    PRIORITARR_TDARR_URL: http://tdarr:8265            # optional (enables the Tdarr pause job)
+    PRIORITARR_TDARR_API_KEY: ${TDARR_API_KEY}        # optional (only if Tdarr auth is enabled)
+    PRIORITARR_TDARR_PAUSE_ENABLED: "true"            # optional, default false
     PRIORITARR_API_KEY: ${PRIORITARR_API_KEY}
     PRIORITARR_DRY_RUN: "true"                        # start here!
   ports:
