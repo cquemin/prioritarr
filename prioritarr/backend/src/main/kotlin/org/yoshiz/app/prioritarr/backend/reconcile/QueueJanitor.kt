@@ -329,17 +329,44 @@ class QueueJanitor(
             val status = o["trackedDownloadStatus"]?.jsonPrimitive?.contentOrNull?.lowercase()
             if (status != "warning" && status != "error") return@mapNotNull null
             val downloadId = o["downloadId"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-            val managed = byClientId[downloadId.lowercase()] ?: return@mapNotNull null
-            if (managed.current_priority.toInt() != 1) return@mapNotNull null
-            StuckItem(
-                client = managed.client,
-                clientId = managed.client_id,
-                seriesId = managed.series_id,
-                episodeIds = parseEpisodeIds(managed.episode_ids),
-                priority = 1,
-                reason = "sonarr trackedDownloadStatus=$status (P1)",
-            )
+            val managed = byClientId[downloadId.lowercase()]
+            if (managed != null) {
+                if (managed.current_priority.toInt() != 1) return@mapNotNull null
+                StuckItem(
+                    client = managed.client,
+                    clientId = managed.client_id,
+                    seriesId = managed.series_id,
+                    episodeIds = parseEpisodeIds(managed.episode_ids),
+                    priority = 1,
+                    reason = "sonarr trackedDownloadStatus=$status (P1)",
+                )
+            } else {
+                // Untracked grab — typically a Sonarr RSS auto-grab that
+                // never went through prioritarr's OnGrab flow, so there's
+                // no managed_downloads row. Resolve priority from the
+                // cache by seriesId; remediate if P1 so a bad RSS grab on
+                // a P1 episode still gets blocklisted + re-searched
+                // instead of sitting stuck in importBlocked forever.
+                val seriesId = o["seriesId"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+                if (db.getPriorityCache(seriesId)?.priority?.toInt() != 1) return@mapNotNull null
+                StuckItem(
+                    client = downloadClientKey(o["downloadClient"]?.jsonPrimitive?.contentOrNull),
+                    clientId = downloadId,
+                    seriesId = seriesId,
+                    episodeIds = listOfNotNull(o["episodeId"]?.jsonPrimitive?.longOrNull),
+                    priority = 1,
+                    reason = "sonarr trackedDownloadStatus=$status (P1, untracked grab)",
+                )
+            }
         }
+    }
+
+    /** Map Sonarr's downloadClient name to our internal client key. */
+    private fun downloadClientKey(name: String?): String = when {
+        name == null -> ""
+        name.contains("sab", ignoreCase = true) -> "sab"
+        name.contains("qbit", ignoreCase = true) -> "qbit"
+        else -> ""
     }
 
     private suspend fun findFailedSabHistory(): List<StuckItem> {
