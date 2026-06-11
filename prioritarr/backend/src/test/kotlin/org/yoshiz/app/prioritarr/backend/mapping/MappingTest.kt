@@ -10,6 +10,7 @@ import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.ByteReadChannel
 import kotlinx.coroutines.test.runTest
+import org.yoshiz.app.prioritarr.backend.clients.PlexClient
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
 import org.yoshiz.app.prioritarr.backend.clients.TautulliClient
 import kotlin.test.Test
@@ -34,6 +35,69 @@ class MappingTest {
     @Test
     fun `normaliseTitle trims and lowercases`() {
         assertEquals("attack on titan", normaliseTitle("  Attack on Titan  "))
+    }
+
+    private fun jsonClient(body: String): HttpClient = HttpClient(MockEngine {
+        respond(
+            ByteReadChannel(body),
+            HttpStatusCode.OK,
+            headersOf("Content-Type", ContentType.Application.Json.toString()),
+        )
+    }) { install(ContentNegotiation) { json() } }
+
+    @Test
+    fun `refreshMappings resolves plex key by tvdb id even when sonarr and plex titles differ`() = runTest {
+        // The Re:Zero case: Sonarr title and Plex title differ, so a
+        // title join would miss. The tvdb id (305089) is identical on
+        // both sides and must carry the match.
+        val sonarrBody =
+            """[{"id":233,"title":"Re: ZERO, Starting Life in Another World","tvdbId":305089,"path":"/anime/Re Zero"}]"""
+        val sonarr = SonarrClient("http://sonarr", "k", jsonClient(sonarrBody))
+
+        val sectionsXml = """<MediaContainer><Directory key="5" title="Anime" type="show"/></MediaContainer>"""
+        val showsXml = """
+            <MediaContainer>
+              <Directory ratingKey="85175" title="Re:ZERO -Starting Life in Another World-">
+                <Guid id="tvdb://305089"/>
+              </Directory>
+            </MediaContainer>
+        """.trimIndent()
+        val plexHttp = HttpClient(MockEngine { req ->
+            val url = req.url.toString()
+            val body = when {
+                "/library/sections/5/all" in url -> showsXml
+                "/library/sections" in url -> sectionsXml
+                else -> "<MediaContainer/>"
+            }
+            respond(ByteReadChannel(body), HttpStatusCode.OK)
+        })
+        val plex = PlexClient("http://plex:32400", "tok", plexHttp)
+
+        // Tautulli must not be consulted for key sourcing when Plex is present.
+        val tautulli = TautulliClient(
+            "http://tautulli", "k",
+            jsonClient("""{"response":{"result":"success","data":{}}}"""),
+        )
+
+        val state = MappingState()
+        refreshMappings(sonarr, tautulli, InMemoryMappingCache(), state, plex = plex)
+
+        assertEquals(233L, state.seriesIdForPlexKey("85175"))
+        assertEquals("85175", state.plexKeyForSeriesId(233L))
+    }
+
+    @Test
+    fun `plexKeyForSeriesId reverse-resolves the plex key for a series id`() {
+        val state = MappingState()
+        // Title intentionally absent — resolution must work off the id alone.
+        state.apply(
+            tvdb = emptyMap(),
+            title = emptyMap(),
+            keyToSid = mapOf("85175" to 233L),
+            tautulliUp = true,
+        )
+        assertEquals("85175", state.plexKeyForSeriesId(233L))
+        assertEquals(null, state.plexKeyForSeriesId(999L))
     }
 
     @Test

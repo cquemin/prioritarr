@@ -333,6 +333,7 @@ fun main() {
         traktClient = traktClient,
         traktOAuth = traktOAuth,
         tdarr = tdarrClient,
+        plex = plexClient,
         eventBus = EventBus(),
         httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp, healthHttp, tdarrHttp),
     )
@@ -385,7 +386,7 @@ fun main() {
                 cadenceMinutes = { liveSettings(db, settings).intervals.refreshMappingsMinutes.toLong() },
                 weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.HEAVY,
                 run = {
-                    org.yoshiz.app.prioritarr.backend.mapping.refreshMappings(sonarr, tautulli, cache, mappings)
+                    org.yoshiz.app.prioritarr.backend.mapping.refreshMappings(sonarr, tautulli, cache, mappings, plexClient)
                     state.eventBus.publish("mapping-refreshed", kotlinx.serialization.json.JsonNull)
                     org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
                 },

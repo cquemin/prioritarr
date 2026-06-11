@@ -61,6 +61,34 @@ class PlexClientTest {
     }
 
     @Test
+    fun `getShowsWithGuids returns ratingKey, title and per-show Guid children`() = runTest {
+        // One call per section returns every show with its external guids
+        // inline (?includeGuids=1) — the tvdb guid is the stable join key.
+        val xml = """
+            <MediaContainer size="2">
+              <Directory ratingKey="85175" title="Re:ZERO -Starting Life in Another World-">
+                <Guid id="imdb://tt5607616"/>
+                <Guid id="tmdb://65942"/>
+                <Guid id="tvdb://305089"/>
+              </Directory>
+              <Directory ratingKey="900" title="No Guids Show"/>
+            </MediaContainer>
+        """.trimIndent()
+        val (http, tokens) = clientReturning(xml)
+        val client = PlexClient("http://plex:32400", "tok", http)
+        val shows = client.getShowsWithGuids("5")
+        assertEquals(2, shows.size)
+        assertEquals("85175", shows[0]["rating_key"])
+        assertEquals(
+            listOf("imdb://tt5607616", "tmdb://65942", "tvdb://305089"),
+            shows[0]["guids"],
+        )
+        // A show with no Guid children must not pick up its neighbour's.
+        assertEquals(emptyList<String>(), shows[1]["guids"])
+        assertEquals("tok", tokens[0])
+    }
+
+    @Test
     fun `getLibrarySections extracts key title type`() = runTest {
         val xml = """
             <MediaContainer size="1">
