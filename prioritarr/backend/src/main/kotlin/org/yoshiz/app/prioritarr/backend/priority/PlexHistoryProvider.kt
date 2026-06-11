@@ -30,11 +30,12 @@ class PlexHistoryProvider(
     private val logger = LoggerFactory.getLogger(PlexHistoryProvider::class.java)
 
     override suspend fun historyFor(ref: SeriesRef): Result<List<WatchEvent>> = runCatching {
-        // Plex needs a per-show ratingKey; reuse the title→plex_key
-        // mapping the Tautulli pipeline already populates. No mapping
-        // means we don't know which Plex show this Sonarr series is —
-        // skip rather than guess.
-        val plexKey = mappings.plexKeyForSeriesTitle(ref.title) ?: return@runCatching emptyList()
+        // Plex needs a per-show ratingKey; resolve it from the series id
+        // via the id-based mapping. Title resolution is unsafe here —
+        // Sonarr and Plex titles routinely differ (anime especially), so
+        // a title lookup silently misses. No mapping means we don't know
+        // which Plex show this Sonarr series is — skip rather than guess.
+        val plexKey = mappings.plexKeyForSeriesId(ref.seriesId) ?: return@runCatching emptyList()
 
         val rows = plex.getShowEpisodesWatchStatus(plexKey)
         rows.mapNotNull { row ->

@@ -39,6 +39,33 @@ class PlexClient(
     }
 
     /**
+     * Return every show in a library [sectionId] with its external Guid
+     * children (`?includeGuids=1`) — one call per section. Each entry:
+     * {rating_key, title, guids: List<String>}.
+     *
+     * This is the authoritative, *live* source of Plex rating-keys for
+     * the mapping job. Plex re-indexes change a show's rating-key, and
+     * Tautulli's library media-info cache lags behind those changes, so
+     * sourcing keys from Plex directly (rather than via Tautulli) keeps
+     * the plex_key↔series mapping fresh. The tvdb guid is the stable
+     * join key to Sonarr.
+     */
+    suspend fun getShowsWithGuids(sectionId: String): List<Map<String, Any?>> {
+        val doc = getXml("/library/sections/$sectionId/all?includeGuids=1&type=2") ?: return emptyList()
+        return doc.getElementsByTagName("Directory").toList().mapNotNull { dir ->
+            val ratingKey = dir.getAttribute("ratingKey").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val guids = dir.getElementsByTagName("Guid").toList()
+                .map { it.getAttribute("id") }
+                .filter { it.isNotEmpty() }
+            mapOf(
+                "rating_key" to ratingKey,
+                "title" to dir.getAttribute("title"),
+                "guids" to guids,
+            )
+        }
+    }
+
+    /**
      * Return all episodes for [ratingKey] with watch status.
      * Each entry: {season, episode, watched (bool), last_viewed_at (Long|null), rating_key}
      * The `rating_key` is the per-episode Plex item id, needed to scrobble

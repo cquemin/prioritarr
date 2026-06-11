@@ -71,7 +71,9 @@ class CrossSourceSync(
         val errors = mutableListOf<String>()
 
         // ---- pull Plex side (one fetch — yields both watched-set and ratingKey index) ----
-        val plexKey = mappings.plexKeyForSeriesTitle(title)
+        // Resolve by series id, never title: Sonarr and Plex titles
+        // routinely differ (anime), so a title lookup silently skips.
+        val plexKey = mappings.plexKeyForSeriesId(seriesId)
         val plexEpisodes: List<Map<String, Any?>> = if (plex != null && plexKey != null) {
             try {
                 plex.getShowEpisodesWatchStatus(plexKey)

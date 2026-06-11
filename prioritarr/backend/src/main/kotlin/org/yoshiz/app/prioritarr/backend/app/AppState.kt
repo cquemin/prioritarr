@@ -63,6 +63,8 @@ data class AppState(
     val traktOAuth: TraktOAuth?,
     /** Tdarr client for the Plex-aware pause job — null when PRIORITARR_TDARR_URL is unset. */
     val tdarr: org.yoshiz.app.prioritarr.backend.clients.TdarrClient? = null,
+    /** Direct Plex client — null when PLEX_URL/PLEX_TOKEN unset. Used to source the mapping from Plex directly. */
+    val plex: org.yoshiz.app.prioritarr.backend.clients.PlexClient? = null,
     val eventBus: EventBus,
     val httpClients: List<HttpClient>,
     /**

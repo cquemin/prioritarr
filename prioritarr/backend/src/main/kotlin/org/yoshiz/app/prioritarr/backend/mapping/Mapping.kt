@@ -7,6 +7,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import org.yoshiz.app.prioritarr.backend.clients.PlexClient
 import org.yoshiz.app.prioritarr.backend.clients.SonarrClient
 import org.yoshiz.app.prioritarr.backend.clients.TautulliClient
 import org.slf4j.LoggerFactory
@@ -19,6 +20,7 @@ class MappingState {
         private set
     @Volatile var plexKeyToSeriesId: Map<String, Long> = emptyMap()
         private set
+    @Volatile private var seriesIdToPlexKey: Map<Long, String> = emptyMap()
     @Volatile var tautulliAvailable: Boolean = true
         private set
     @Volatile var lastRefreshStats: RefreshStats? = null
@@ -31,6 +33,15 @@ class MappingState {
 
     fun seriesIdForPlexKey(plexKey: String): Long? = plexKeyToSeriesId[plexKey]
 
+    /**
+     * Reverse of [seriesIdForPlexKey]: the Plex rating-key for a Sonarr
+     * series id. This is the ID-based resolution business logic must use
+     * — Sonarr and Plex titles routinely differ (anime especially), so
+     * resolving Plex via [plexKeyForSeriesTitle] silently misses. O(1)
+     * off a map maintained in [apply].
+     */
+    fun plexKeyForSeriesId(seriesId: Long): String? = seriesIdToPlexKey[seriesId]
+
     internal fun apply(
         tvdb: Map<Long, Long>,
         title: Map<String, String>,
@@ -40,6 +51,10 @@ class MappingState {
         tvdbToSeries = tvdb
         titleToPlexKey = title
         plexKeyToSeriesId = keyToSid
+        // Maintain the reverse index alongside. If two Plex keys ever map
+        // to one series id (duplicate library entries) the last wins —
+        // acceptable, the relationship is 1:1 in practice.
+        seriesIdToPlexKey = keyToSid.entries.associate { (key, sid) -> sid to key }
         tautulliAvailable = tautulliUp
     }
 
@@ -50,6 +65,7 @@ class MappingState {
     @Synchronized
     fun inject(plexKey: String, seriesId: Long) {
         plexKeyToSeriesId = plexKeyToSeriesId + (plexKey to seriesId)
+        seriesIdToPlexKey = seriesIdToPlexKey + (seriesId to plexKey)
     }
 }
 
@@ -83,15 +99,24 @@ data class RefreshStats(
 )
 
 /**
- * Rebuild plex↔sonarr mapping tables. Three-step matching (TVDB →
- * path → title) with a persistent-cache skip-on-hit optimisation
- * backed by [SqliteMappingCache].
+ * Rebuild plex↔sonarr mapping tables.
+ *
+ * When a [plex] client is supplied (the production default), rating-keys
+ * are sourced straight from Plex and joined to Sonarr on the stable tvdb
+ * id — see [refreshMappingsFromPlex]. Plex is authoritative for its own
+ * rating-keys; Tautulli's library media-info cache lags Plex re-indexes
+ * and was poisoning the mapping with dead keys.
+ *
+ * With no [plex] client (Plex not configured), falls back to the legacy
+ * Tautulli-sourced three-step matching (TVDB → path → title) with a
+ * persistent-cache skip-on-hit optimisation.
  */
 suspend fun refreshMappings(
     sonarr: SonarrClient,
     tautulli: TautulliClient,
     cache: MappingCache,
     state: MappingState,
+    plex: PlexClient? = null,
 ): RefreshStats {
     val allSeries: JsonArray = try {
         sonarr.getAllSeries()
@@ -112,6 +137,11 @@ suspend fun refreshMappings(
         sonarrTitles[normaliseTitle(title)] = sid
         val path = s["path"]?.jsonPrimitive?.contentOrNull.orEmpty()
         if (path.isNotEmpty()) sonarrFolders[extractFolderName(path)] = sid
+    }
+
+    // Preferred path: source rating-keys live from Plex, join on tvdb id.
+    if (plex != null) {
+        return refreshMappingsFromPlex(plex, newTvdb, sonarrTitles, cache, state)
     }
 
     val libraries: JsonArray = try {
@@ -216,6 +246,76 @@ suspend fun refreshMappings(
             "(cached={}, tvdb={}, path={}, title={}, unmatched={})",
         allSeries.size, newTitleToKey.size, newKeyToSid.size,
         stats.cached, stats.tvdb, stats.path, stats.title, stats.unmatched,
+    )
+    return stats
+}
+
+/**
+ * Build the plex_key → series_id mapping from Plex directly.
+ *
+ * One library-listing call per show section yields every show's current
+ * rating-key plus its external guids inline. We join on the tvdb id
+ * (stable across both Sonarr and Plex); a normalised-title match is the
+ * only fallback, used when a Plex show carries no tvdb guid. Plex titles
+ * still populate [MappingState.titleToPlexKey] for UI/legacy callers,
+ * but they are never the primary join key.
+ */
+private suspend fun refreshMappingsFromPlex(
+    plex: PlexClient,
+    sonarrTvdb: Map<Long, Long>,
+    sonarrTitles: Map<String, Long>,
+    cache: MappingCache,
+    state: MappingState,
+): RefreshStats {
+    val sections = try {
+        plex.getLibrarySections()
+    } catch (e: Exception) {
+        logger.error("refreshMappings: failed to fetch Plex sections", e)
+        return RefreshStats()
+    }
+
+    val newTitleToKey = mutableMapOf<String, String>()
+    val newKeyToSid = mutableMapOf<String, Long>()
+    var stats = RefreshStats()
+
+    for (sec in sections) {
+        if (sec["type"] != "show") continue
+        val sectionId = sec["id"]?.takeIf { it.isNotEmpty() } ?: continue
+        val shows = try {
+            plex.getShowsWithGuids(sectionId)
+        } catch (e: Exception) {
+            logger.error("refreshMappings: failed to fetch Plex shows for section $sectionId", e)
+            continue
+        }
+
+        for (show in shows) {
+            val plexKey = (show["rating_key"] as? String)?.takeIf { it.isNotEmpty() } ?: continue
+            val norm = normaliseTitle(show["title"] as? String ?: "")
+            if (norm.isNotEmpty()) newTitleToKey[norm] = plexKey
+            @Suppress("UNCHECKED_CAST")
+            val guids = (show["guids"] as? List<String>).orEmpty()
+
+            val sid = extractTvdbFromGuids(guids)?.let { sonarrTvdb[it] }
+            if (sid != null) {
+                newKeyToSid[plexKey] = sid
+                stats = stats.copy(tvdb = stats.tvdb + 1)
+            } else {
+                sonarrTitles[norm]?.let {
+                    newKeyToSid[plexKey] = it
+                    stats = stats.copy(title = stats.title + 1)
+                } ?: run { stats = stats.copy(unmatched = stats.unmatched + 1) }
+            }
+        }
+    }
+
+    state.apply(sonarrTvdb, newTitleToKey, newKeyToSid, tautulliUp = state.tautulliAvailable)
+    state.lastRefreshStats = stats
+    state.lastRefreshAt = org.yoshiz.app.prioritarr.backend.database.Database.nowIsoOffset()
+    cache.save(newKeyToSid)
+
+    logger.info(
+        "refreshMappings (plex-direct): {} plex shows matched (tvdb={}, title={}, unmatched={})",
+        newKeyToSid.size, stats.tvdb, stats.title, stats.unmatched,
     )
     return stats
 }

@@ -28,13 +28,18 @@ class TautulliHistoryProvider(
     private val logger = LoggerFactory.getLogger(TautulliHistoryProvider::class.java)
 
     override suspend fun historyFor(ref: SeriesRef): Result<List<WatchEvent>> = runCatching {
-        val plexKey = mappings.plexKeyForSeriesTitle(ref.title)
+        val plexKey = mappings.plexKeyForSeriesId(ref.seriesId)
         val raw: JsonArray = if (plexKey != null) {
             tautulli.getHistory(grandparentRatingKey = plexKey, mediaType = "episode", length = 500)
         } else {
-            // Fallback — ~2k rows then filter by title. Slow but covers
-            // shows the mapping job hasn't resolved yet (new Plex adds,
-            // title-only matches, etc.).
+            // Fallback — ~2k rows then filter by title. Slow and fragile
+            // (Sonarr/Plex titles differ for anime), so this is a genuine
+            // last resort for shows the mapping job hasn't resolved yet
+            // (new Plex adds). Logged so silent title-matching is visible.
+            logger.info(
+                "tautulli: no id mapping for series {} ({}), falling back to title filter",
+                ref.seriesId, ref.title,
+            )
             val all = tautulli.getHistory(mediaType = "episode", length = 2000)
             val norm = normaliseTitle(ref.title)
             JsonArray(all.filter {

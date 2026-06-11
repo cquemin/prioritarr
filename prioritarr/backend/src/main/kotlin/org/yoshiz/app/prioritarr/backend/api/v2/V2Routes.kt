@@ -372,8 +372,7 @@ fun Route.v2Routes(state: AppState) {
             val priority = cache?.let {
                 PriorityResultWire(it.priority.toInt(), "P${it.priority}", it.reason.orEmpty())
             }
-            val plexKey = state.mappings.plexKeyToSeriesId.entries
-                .firstOrNull { it.value == id }?.key
+            val plexKey = state.mappings.plexKeyForSeriesId(id)
             val links = buildExternalLinks(
                 origin = state.settings.uiOrigin,
                 titleSlug = titleSlug,
@@ -1815,7 +1814,7 @@ fun Route.v2Routes(state: AppState) {
         // scheduler's periodic refresh uses the real cache; this endpoint is
         // intentionally side-effect-light.
         val cache = org.yoshiz.app.prioritarr.backend.mapping.InMemoryMappingCache()
-        val stats = refreshMappings(state.sonarr, state.tautulli, cache, state.mappings)
+        val stats = refreshMappings(state.sonarr, state.tautulli, cache, state.mappings, state.plex)
         state.eventBus.publish(
             "mapping-refreshed",
             Json.encodeToJsonElement(org.yoshiz.app.prioritarr.backend.mapping.RefreshStats.serializer(), stats),
