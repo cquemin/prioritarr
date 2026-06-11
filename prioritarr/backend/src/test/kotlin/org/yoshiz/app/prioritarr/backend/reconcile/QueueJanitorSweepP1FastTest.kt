@@ -62,4 +62,31 @@ class QueueJanitorSweepP1FastTest {
         // sweepP1Fast must scan exactly the P1 one.
         assertEquals(1, janitor.sweepP1Fast(dryRun = true).scanned)
     }
+
+    @Test fun fast_pass_remediates_untracked_p1_grab_from_sonarr_queue() = runTest {
+        val db = freshDb()
+        // Series 200 computes to P1 (priority cache), but the grab was a
+        // Sonarr RSS auto-grab — there is NO managed_downloads row for it.
+        // The janitor must still remediate it off the cached priority.
+        db.upsertPriorityCache(
+            seriesId = 200L, priority = 1L, watchPct = null, daysSinceWatch = null,
+            unwatchedPending = null, computedAt = "2024-01-01T00:00:00Z",
+            expiresAt = "2999-01-01T00:00:00Z", reason = "P1",
+        )
+        val stuckEntry = buildJsonObject {
+            put("trackedDownloadStatus", JsonPrimitive("warning"))
+            put("downloadId", JsonPrimitive("ABC-NZO"))
+            put("downloadClient", JsonPrimitive("SABnzbd"))
+            put("seriesId", JsonPrimitive(200))
+            put("episodeId", JsonPrimitive(27703))
+        }
+        val sonarr = object : SonarrClient("http://fake", "x", mockHttp()) {
+            override suspend fun getQueue(pageSize: Int): JsonArray = buildJsonArray { add(stuckEntry) }
+        }
+        val janitor = QueueJanitor(
+            sonarr = sonarr, qbit = FakeQbit(JsonArray(emptyList())), sab = FakeSab(), db = db,
+            stuckAfter = Duration.ofHours(48), p1StuckAfter = Duration.ofMinutes(30),
+        )
+        assertEquals(1, janitor.sweepP1Fast(dryRun = true).scanned)
+    }
 }
