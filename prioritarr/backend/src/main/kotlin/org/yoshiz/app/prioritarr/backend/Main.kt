@@ -378,6 +378,21 @@ fun main() {
         http = healthHttp,
     )
 
+    // Stateful across ticks (carries the consecutive-idle counter that
+    // debounces Plex's mid-playback false-negatives), so it's built once
+    // here rather than per tick. Non-null only when both clients exist;
+    // the job's prerequisite guards the same condition.
+    val tdarrPlexPause: org.yoshiz.app.prioritarr.backend.orchestration.TdarrPlexPause? =
+        if (plexClient != null && tdarrClient != null) {
+            org.yoshiz.app.prioritarr.backend.orchestration.TdarrPlexPause(
+                sessionCount = plexClient::activeSessionCount,
+                isPaused = tdarrClient::isPaused,
+                setPaused = tdarrClient::setPaused,
+            )
+        } else {
+            null
+        }
+
     val scheduler = org.yoshiz.app.prioritarr.backend.scheduler.Scheduler(
         db = db,
         jobs = buildList {
@@ -473,7 +488,7 @@ fun main() {
                 },
                 weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
                 run = {
-                    org.yoshiz.app.prioritarr.backend.orchestration.reconcileTdarrPause(plexClient!!, tdarrClient!!)
+                    tdarrPlexPause!!.reconcile()
                 },
             ))
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
