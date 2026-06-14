@@ -34,6 +34,8 @@ suspend fun runFastP1Sweep(
     perSeriesCap: Int = 5,
     dryRun: Boolean,
     nowEpochSeconds: Long = System.currentTimeMillis() / 1000L,
+    searchQueueControl: org.yoshiz.app.prioritarr.backend.orchestration.SearchQueueControl? = null,
+    cancelBackfillForPriority: Boolean = false,
 ): Int {
     if (maxPerSweep <= 0) return 0
     val records = try {
@@ -64,6 +66,11 @@ suspend fun runFastP1Sweep(
     )
     if (candidates.isEmpty()) return 0
 
+    // P1 work exists — clear in-flight backfill searches so these run first.
+    if (cancelBackfillForPriority && searchQueueControl != null) {
+        searchQueueControl.cancelBackfill()
+    }
+
     logger.info("[fast-p1] {} windowed records, {} candidate series", windowed.size, candidates.size)
     return runPriorityEpisodePass(
         candidates = candidates,
@@ -83,6 +90,8 @@ suspend fun runFastP1Sweep(
     cooldownMinutes: Int,
     maxPerSweep: Int,
     dryRun: Boolean,
+    searchQueueControl: org.yoshiz.app.prioritarr.backend.orchestration.SearchQueueControl? = null,
+    cancelBackfillForPriority: Boolean = false,
 ): Int = runFastP1Sweep(
     sonarr = sonarr, db = db,
     priorityForSeriesFn = priorityService::priorityForSeries,
@@ -91,4 +100,6 @@ suspend fun runFastP1Sweep(
     cooldownMinutes = cooldownMinutes,
     maxPerSweep = maxPerSweep,
     dryRun = dryRun,
+    searchQueueControl = searchQueueControl,
+    cancelBackfillForPriority = cancelBackfillForPriority,
 )
