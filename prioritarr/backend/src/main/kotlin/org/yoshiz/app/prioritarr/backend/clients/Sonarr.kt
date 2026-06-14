@@ -68,6 +68,13 @@ open class SonarrClient(
         }
     }
 
+    /** Cancel a Sonarr command. Fire-and-forget; response body unused. */
+    open suspend fun cancelCommand(id: Long) {
+        http.delete("$root/api/v3/command/$id") {
+            header("X-Api-Key", apiKey)
+        }
+    }
+
     open suspend fun triggerSeriesSearch(seriesId: Long): JsonObject =
         post("/api/v3/command", buildJsonObject {
             put("name", "SeriesSearch")
