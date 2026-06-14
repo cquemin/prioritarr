@@ -393,6 +393,36 @@ fun main() {
             null
         }
 
+    // Sonarr command-queue watchdog: detect commands wedged in "started" state
+    // and recover via escalating restarts (app-restart x3, then a scoped
+    // docker-socket-proxy container restart). Stateful, so built once. The
+    // container fallback is wired only when a docker proxy URL is configured.
+    val dockerRestartClient: org.yoshiz.app.prioritarr.backend.clients.DockerRestartClient? =
+        settings.dockerProxyUrl?.let {
+            org.yoshiz.app.prioritarr.backend.clients.DockerRestartClient(it, tdarrHttp)
+        }
+    val sonarrWatchdog = org.yoshiz.app.prioritarr.backend.orchestration.SonarrWatchdog(
+        getStuckCommands = {
+            org.yoshiz.app.prioritarr.backend.orchestration.stuckCommands(
+                org.yoshiz.app.prioritarr.backend.orchestration.parseCommands(sonarr.getCommands()),
+                java.time.Instant.now(),
+                liveSettings(db, settings).intervals.sonarrWatchdogStallMinutes,
+            )
+        },
+        appRestart = { sonarr.restartApp() },
+        containerRestart = dockerRestartClient?.let { dc ->
+            { dc.restartContainer(liveSettings(db, settings).sonarrContainerName) }
+        },
+        now = { java.time.Instant.now() },
+        cfg = org.yoshiz.app.prioritarr.backend.orchestration.WatchdogConfig(
+            stallMinutes = settings.intervals.sonarrWatchdogStallMinutes,
+            confirmChecks = 2,
+            graceMinutes = settings.intervals.sonarrWatchdogRestartGraceMinutes,
+            cooldownMinutes = settings.intervals.sonarrWatchdogCooldownMinutes,
+        ),
+        dryRun = { liveSettings(db, settings).dryRun },
+    )
+
     val scheduler = org.yoshiz.app.prioritarr.backend.scheduler.Scheduler(
         db = db,
         jobs = buildList {
@@ -489,6 +519,20 @@ fun main() {
                 weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
                 run = {
                     tdarrPlexPause!!.reconcile()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.SONARR_WATCHDOG,
+                // Detect a wedged Sonarr command executor (commands stuck in
+                // "started") and restart Sonarr. Reactive prereq — flipping
+                // sonarrWatchdogEnabled takes effect within ~1 tick.
+                cadenceMinutes = { liveSettings(db, settings).intervals.sonarrWatchdogIntervalMinutes.toLong() },
+                prerequisites = {
+                    liveSettings(db, settings).sonarrWatchdogEnabled
+                },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                run = {
+                    sonarrWatchdog.reconcile()
                 },
             ))
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
