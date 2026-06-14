@@ -89,6 +89,11 @@ data class Intervals(
     val traktTokenRefreshHours: Int = 24,
     /** Cadence of the Plex-aware Tdarr pause job. */
     val tdarrPauseMinutes: Int = 1,
+    /** Sonarr command-queue watchdog: poll cadence and escalation timers. */
+    val sonarrWatchdogIntervalMinutes: Int = 5,
+    val sonarrWatchdogStallMinutes: Int = 30,
+    val sonarrWatchdogRestartGraceMinutes: Int = 10,
+    val sonarrWatchdogCooldownMinutes: Int = 120,
 )
 
 data class CacheConfig(val priorityTtlMinutes: Int = 60)
@@ -235,6 +240,13 @@ data class Settings(
     val tdarrApiKey: String? = null,
     val tdarrPauseEnabled: Boolean = false,
 
+    // Sonarr command-queue watchdog. When enabled, detects commands wedged
+    // in "started" state and restarts Sonarr (app-restart, then a scoped
+    // docker-socket-proxy container restart if [dockerProxyUrl] is set).
+    val sonarrWatchdogEnabled: Boolean = false,
+    val dockerProxyUrl: String? = null,
+    val sonarrContainerName: String = "sonarr",
+
     // Trakt OAuth credentials. clientId + accessToken must be set for
     // the Trakt provider to be installed; either missing = Trakt
     // disabled, Tautulli alone. clientSecret is only required to mint
@@ -318,6 +330,11 @@ data class EditableSettings(
     val tdarrApiKey: String? = null,
     val tdarrPauseEnabled: Boolean? = null,
     val tdarrPauseMinutes: Int? = null,
+    val sonarrWatchdogEnabled: Boolean? = null,
+    val sonarrWatchdogIntervalMinutes: Int? = null,
+    val sonarrWatchdogStallMinutes: Int? = null,
+    val sonarrWatchdogRestartGraceMinutes: Int? = null,
+    val sonarrWatchdogCooldownMinutes: Int? = null,
     val traktClientId: String? = null,
     val traktClientSecret: String? = null,
     val traktAccessToken: String? = null,
@@ -388,6 +405,7 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
     tdarrUrl = override.tdarrUrl ?: base.tdarrUrl,
     tdarrApiKey = override.tdarrApiKey ?: base.tdarrApiKey,
     tdarrPauseEnabled = override.tdarrPauseEnabled ?: base.tdarrPauseEnabled,
+    sonarrWatchdogEnabled = override.sonarrWatchdogEnabled ?: base.sonarrWatchdogEnabled,
     traktClientId = override.traktClientId ?: base.traktClientId,
     traktClientSecret = override.traktClientSecret ?: base.traktClientSecret,
     traktAccessToken = override.traktAccessToken ?: base.traktAccessToken,
@@ -428,6 +446,10 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
         unmonitoredReaperMinutes = override.unmonitoredReaperMinutes ?: base.intervals.unmonitoredReaperMinutes,
         traktTokenRefreshHours = override.traktTokenRefreshHours ?: base.intervals.traktTokenRefreshHours,
         tdarrPauseMinutes = override.tdarrPauseMinutes ?: base.intervals.tdarrPauseMinutes,
+        sonarrWatchdogIntervalMinutes = override.sonarrWatchdogIntervalMinutes ?: base.intervals.sonarrWatchdogIntervalMinutes,
+        sonarrWatchdogStallMinutes = override.sonarrWatchdogStallMinutes ?: base.intervals.sonarrWatchdogStallMinutes,
+        sonarrWatchdogRestartGraceMinutes = override.sonarrWatchdogRestartGraceMinutes ?: base.intervals.sonarrWatchdogRestartGraceMinutes,
+        sonarrWatchdogCooldownMinutes = override.sonarrWatchdogCooldownMinutes ?: base.intervals.sonarrWatchdogCooldownMinutes,
     ),
     orphanReaperIntervalMinutes = override.orphanReaperIntervalMinutes ?: base.orphanReaperIntervalMinutes,
     orphanReaperPaths = override.orphanReaperPaths ?: base.orphanReaperPaths,
@@ -504,6 +526,10 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 p1FastMaxPerSweep = o.num("p1_fast_max_per_sweep") { it.toInt() } ?: intervals.p1FastMaxPerSweep,
                 p1StallMinutes = o.num("p1_stall_minutes") { it.toInt() } ?: intervals.p1StallMinutes,
                 tdarrPauseMinutes = o.num("tdarr_pause_minutes") { it.toInt() } ?: intervals.tdarrPauseMinutes,
+                sonarrWatchdogIntervalMinutes = o.num("sonarr_watchdog_interval_minutes") { it.toInt() } ?: intervals.sonarrWatchdogIntervalMinutes,
+                sonarrWatchdogStallMinutes = o.num("sonarr_watchdog_stall_minutes") { it.toInt() } ?: intervals.sonarrWatchdogStallMinutes,
+                sonarrWatchdogRestartGraceMinutes = o.num("sonarr_watchdog_grace_minutes") { it.toInt() } ?: intervals.sonarrWatchdogRestartGraceMinutes,
+                sonarrWatchdogCooldownMinutes = o.num("sonarr_watchdog_cooldown_minutes") { it.toInt() } ?: intervals.sonarrWatchdogCooldownMinutes,
             )
         }
         (root["cache"] as? Map<*, *>)?.let { o ->
@@ -573,6 +599,9 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         tdarrUrl = env("TDARR_URL"),
         tdarrApiKey = env("TDARR_API_KEY"),
         tdarrPauseEnabled = (env("TDARR_PAUSE_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
+        sonarrWatchdogEnabled = (env("SONARR_WATCHDOG_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
+        dockerProxyUrl = env("DOCKER_PROXY_URL")?.takeIf { it.isNotBlank() },
+        sonarrContainerName = env("SONARR_CONTAINER_NAME", "sonarr") ?: "sonarr",
         traktClientId = env("TRAKT_CLIENT_ID"),
         traktClientSecret = env("TRAKT_CLIENT_SECRET"),
         traktAccessToken = env("TRAKT_ACCESS_TOKEN"),
