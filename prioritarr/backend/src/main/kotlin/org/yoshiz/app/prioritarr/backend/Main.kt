@@ -423,6 +423,18 @@ fun main() {
         dryRun = { liveSettings(db, settings).dryRun },
     )
 
+    // Throttles the backfill search flood and cancels in-flight backfill
+    // searches so P1/P2 episode searches run first. Reads Sonarr's command
+    // queue; threshold + dryRun are live.
+    val searchQueueControl = org.yoshiz.app.prioritarr.backend.orchestration.SearchQueueControl(
+        getCommands = {
+            org.yoshiz.app.prioritarr.backend.orchestration.parseCommands(sonarr.getCommands())
+        },
+        cancelCommand = { id -> sonarr.cancelCommand(id) },
+        threshold = { liveSettings(db, settings).intervals.searchCongestionThreshold },
+        dryRun = { liveSettings(db, settings).dryRun },
+    )
+
     val scheduler = org.yoshiz.app.prioritarr.backend.scheduler.Scheduler(
         db = db,
         jobs = buildList {
@@ -629,6 +641,7 @@ fun main() {
                         dryRun = s.dryRun,
                         p1p2MaxPerSweep = s.intervals.backfillP1P2MaxPerSweep,
                         p1p2CooldownMinutes = s.intervals.backfillP1P2CooldownMinutes,
+                        lowPriorityCongested = searchQueueControl.isCongested(),
                     )
                     org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
                 },
@@ -654,6 +667,8 @@ fun main() {
                         cooldownMinutes = s.intervals.p1FastCooldownMinutes,
                         maxPerSweep = s.intervals.p1FastMaxPerSweep,
                         dryRun = s.dryRun,
+                        searchQueueControl = searchQueueControl,
+                        cancelBackfillForPriority = s.cancelBackfillForPriority,
                     )
                     queueJanitor.sweepP1Fast(dryRun = s.dryRun)
                     org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
@@ -665,13 +680,19 @@ fun main() {
                 weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
                 run = {
                     val s = liveSettings(db, settings)
-                    org.yoshiz.app.prioritarr.backend.sweep.runCutoffSweep(
-                        sonarr, priorityService,
-                        maxSearches = s.intervals.cutoffMaxSearchesPerSweep,
-                        delaySeconds = s.intervals.backfillDelayBetweenSearchesSeconds,
-                        dryRun = s.dryRun,
-                    )
-                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                    if (searchQueueControl.isCongested()) {
+                        org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(
+                            summary = "skipped: sonarr search queue congested", noop = true,
+                        )
+                    } else {
+                        org.yoshiz.app.prioritarr.backend.sweep.runCutoffSweep(
+                            sonarr, priorityService,
+                            maxSearches = s.intervals.cutoffMaxSearchesPerSweep,
+                            delaySeconds = s.intervals.backfillDelayBetweenSearchesSeconds,
+                            dryRun = s.dryRun,
+                        )
+                        org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                    }
                 },
             ))
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
