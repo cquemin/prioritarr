@@ -75,6 +75,10 @@ internal suspend fun runBackfillSweep(
     dryRun: Boolean,
     p1p2MaxPerSweep: Int,
     p1p2CooldownMinutes: Int,
+    // When true, the low-priority passes (A2 P3/P4 + B P5) are skipped this
+    // sweep because Sonarr's command queue is congested; Pass A1 (P1/P2)
+    // still runs.
+    lowPriorityCongested: Boolean = false,
     // Test seam: allows unit tests to supply a simple lambda without
     // constructing a full PriorityService (which needs SonarrClient,
     // watch providers, DB, etc.). Production callers use the overload
@@ -120,6 +124,11 @@ internal suspend fun runBackfillSweep(
             nowEpochSeconds = nowSec,
         )
     } else 0
+
+    if (lowPriorityCongested) {
+        logger.info("[backfill] search queue congested; deferring P3/P4 + P5 passes this sweep")
+        return p1p2Fired
+    }
 
     // ---- Pass A2: P3/P4 series-level ----
     var fired = 0
@@ -223,6 +232,7 @@ suspend fun runBackfillSweep(
     dryRun: Boolean,
     p1p2MaxPerSweep: Int,
     p1p2CooldownMinutes: Int,
+    lowPriorityCongested: Boolean = false,
 ): Int = runBackfillSweep(
     sonarr = sonarr,
     db = db,
@@ -234,6 +244,7 @@ suspend fun runBackfillSweep(
     dryRun = dryRun,
     p1p2MaxPerSweep = p1p2MaxPerSweep,
     p1p2CooldownMinutes = p1p2CooldownMinutes,
+    lowPriorityCongested = lowPriorityCongested,
     priorityForSeriesFn = priorityService::priorityForSeries,
 )
 
