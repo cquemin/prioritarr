@@ -94,6 +94,8 @@ data class Intervals(
     val sonarrWatchdogStallMinutes: Int = 30,
     val sonarrWatchdogRestartGraceMinutes: Int = 10,
     val sonarrWatchdogCooldownMinutes: Int = 120,
+    /** Sonarr command-queue is "congested" at/above this many pending searches; backfill defers. */
+    val searchCongestionThreshold: Int = 3,
 )
 
 data class CacheConfig(val priorityTtlMinutes: Int = 60)
@@ -247,6 +249,11 @@ data class Settings(
     val dockerProxyUrl: String? = null,
     val sonarrContainerName: String = "sonarr",
 
+    // When true, the P1-fast sweep cancels in-flight backfill searches
+    // (SeriesSearch/SeasonSearch/CutoffUnmetSearch) before firing P1/P2 so
+    // the urgent episode searches run first.
+    val cancelBackfillForPriority: Boolean = true,
+
     // Trakt OAuth credentials. clientId + accessToken must be set for
     // the Trakt provider to be installed; either missing = Trakt
     // disabled, Tautulli alone. clientSecret is only required to mint
@@ -335,6 +342,8 @@ data class EditableSettings(
     val sonarrWatchdogStallMinutes: Int? = null,
     val sonarrWatchdogRestartGraceMinutes: Int? = null,
     val sonarrWatchdogCooldownMinutes: Int? = null,
+    val searchCongestionThreshold: Int? = null,
+    val cancelBackfillForPriority: Boolean? = null,
     val traktClientId: String? = null,
     val traktClientSecret: String? = null,
     val traktAccessToken: String? = null,
@@ -406,6 +415,7 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
     tdarrApiKey = override.tdarrApiKey ?: base.tdarrApiKey,
     tdarrPauseEnabled = override.tdarrPauseEnabled ?: base.tdarrPauseEnabled,
     sonarrWatchdogEnabled = override.sonarrWatchdogEnabled ?: base.sonarrWatchdogEnabled,
+    cancelBackfillForPriority = override.cancelBackfillForPriority ?: base.cancelBackfillForPriority,
     traktClientId = override.traktClientId ?: base.traktClientId,
     traktClientSecret = override.traktClientSecret ?: base.traktClientSecret,
     traktAccessToken = override.traktAccessToken ?: base.traktAccessToken,
@@ -450,6 +460,7 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
         sonarrWatchdogStallMinutes = override.sonarrWatchdogStallMinutes ?: base.intervals.sonarrWatchdogStallMinutes,
         sonarrWatchdogRestartGraceMinutes = override.sonarrWatchdogRestartGraceMinutes ?: base.intervals.sonarrWatchdogRestartGraceMinutes,
         sonarrWatchdogCooldownMinutes = override.sonarrWatchdogCooldownMinutes ?: base.intervals.sonarrWatchdogCooldownMinutes,
+        searchCongestionThreshold = override.searchCongestionThreshold ?: base.intervals.searchCongestionThreshold,
     ),
     orphanReaperIntervalMinutes = override.orphanReaperIntervalMinutes ?: base.orphanReaperIntervalMinutes,
     orphanReaperPaths = override.orphanReaperPaths ?: base.orphanReaperPaths,
@@ -530,6 +541,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 sonarrWatchdogStallMinutes = o.num("sonarr_watchdog_stall_minutes") { it.toInt() } ?: intervals.sonarrWatchdogStallMinutes,
                 sonarrWatchdogRestartGraceMinutes = o.num("sonarr_watchdog_grace_minutes") { it.toInt() } ?: intervals.sonarrWatchdogRestartGraceMinutes,
                 sonarrWatchdogCooldownMinutes = o.num("sonarr_watchdog_cooldown_minutes") { it.toInt() } ?: intervals.sonarrWatchdogCooldownMinutes,
+                searchCongestionThreshold = o.num("search_congestion_threshold") { it.toInt() } ?: intervals.searchCongestionThreshold,
             )
         }
         (root["cache"] as? Map<*, *>)?.let { o ->
@@ -602,6 +614,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         sonarrWatchdogEnabled = (env("SONARR_WATCHDOG_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
         dockerProxyUrl = env("DOCKER_PROXY_URL")?.takeIf { it.isNotBlank() },
         sonarrContainerName = env("SONARR_CONTAINER_NAME", "sonarr") ?: "sonarr",
+        cancelBackfillForPriority = (env("CANCEL_BACKFILL_FOR_PRIORITY", "true") ?: "true").lowercase() in TRUTHY,
         traktClientId = env("TRAKT_CLIENT_ID"),
         traktClientSecret = env("TRAKT_CLIENT_SECRET"),
         traktAccessToken = env("TRAKT_ACCESS_TOKEN"),
