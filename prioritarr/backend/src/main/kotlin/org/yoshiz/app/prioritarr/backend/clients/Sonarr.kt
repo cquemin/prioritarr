@@ -54,6 +54,20 @@ open class SonarrClient(
         ((get("/api/v3/queue", mapOf("pageSize" to pageSize.toString())) as JsonObject)
             ["records"] as JsonArray)
 
+    /** All Sonarr commands (queued/started/completed). Used by the wedge watchdog. */
+    open suspend fun getCommands(): JsonArray =
+        get("/api/v3/command").jsonArray
+
+    /** Restart the Sonarr application process. Fire-and-forget: Sonarr drops the
+     *  connection as it restarts, so we intentionally don't parse the response. */
+    open suspend fun restartApp() {
+        http.post("$root/api/v3/system/restart") {
+            header("X-Api-Key", apiKey)
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject { })
+        }
+    }
+
     open suspend fun triggerSeriesSearch(seriesId: Long): JsonObject =
         post("/api/v3/command", buildJsonObject {
             put("name", "SeriesSearch")
