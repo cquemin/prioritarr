@@ -24,7 +24,9 @@ RUN gradle --no-daemon -PappVersion=$APP_VERSION -PgitSha=$GIT_SHA :backend:shad
 
 # Stage 3: runtime — JRE-only, fat jar carries the UI inside.
 FROM eclipse-temurin:21-jre-alpine
-RUN apk add --no-cache curl
+# ffmpeg brings ffprobe too — the sub-extract job shells out to both to
+# turn embedded TEXT subtitle tracks into external .srt sidecars.
+RUN apk add --no-cache curl ffmpeg
 WORKDIR /app
 ARG APP_VERSION=0.0.0-dev
 ARG GIT_SHA=unknown

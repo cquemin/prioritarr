@@ -96,6 +96,8 @@ data class Intervals(
     val sonarrWatchdogCooldownMinutes: Int = 120,
     /** Sonarr command-queue is "congested" at/above this many pending searches; backfill defers. */
     val searchCongestionThreshold: Int = 3,
+    /** Cadence of the embedded-subtitle → SRT-sidecar extraction sweep. */
+    val subExtractIntervalMinutes: Int = 30,
 )
 
 data class CacheConfig(val priorityTtlMinutes: Int = 60)
@@ -300,6 +302,19 @@ data class Settings(
     ),
     /** OrphanReaper sweep cadence in minutes. */
     val orphanReaperIntervalMinutes: Int = 60,
+
+    // ---- Embedded-subtitle → SRT-sidecar extractor (anime soft-subs).
+    // Extracts embedded TEXT subtitle tracks to external `.srt` sidecars
+    // so Plex serves them as soft subs instead of burning them in a
+    // transcode. Default OFF — inert until explicitly enabled.
+    /** Master switch. Must be true (and [subExtractPaths] non-empty) for the job to run. */
+    val subExtractEnabled: Boolean = false,
+    /** Container-absolute roots to walk for anime video files. Empty disables the job. */
+    val subExtractPaths: List<String> = listOf("/storage/media/video/anime"),
+    /** Target lang2 codes to extract, in preference order. */
+    val subExtractLangs: List<String> = listOf("en", "fr"),
+    /** Cap on sidecars written per sweep (bounds ffmpeg work per tick). */
+    val subExtractMaxPerRun: Int = 25,
 )
 
 /**
@@ -396,6 +411,14 @@ data class EditableSettings(
      * absolute path mounted into the prioritarr container.
      */
     val orphanReaperPaths: List<String>? = null,
+
+    // ---- Embedded-subtitle → SRT-sidecar extractor. Null = use baseline
+    // (env/YAML). Live-editable so the job can be toggled from the UI.
+    val subExtractEnabled: Boolean? = null,
+    val subExtractIntervalMinutes: Int? = null,
+    val subExtractPaths: List<String>? = null,
+    val subExtractLangs: List<String>? = null,
+    val subExtractMaxPerRun: Int? = null,
 )
 
 /** Apply [override] on top of [base], returning a new [Settings]. */
@@ -461,9 +484,14 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
         sonarrWatchdogRestartGraceMinutes = override.sonarrWatchdogRestartGraceMinutes ?: base.intervals.sonarrWatchdogRestartGraceMinutes,
         sonarrWatchdogCooldownMinutes = override.sonarrWatchdogCooldownMinutes ?: base.intervals.sonarrWatchdogCooldownMinutes,
         searchCongestionThreshold = override.searchCongestionThreshold ?: base.intervals.searchCongestionThreshold,
+        subExtractIntervalMinutes = override.subExtractIntervalMinutes ?: base.intervals.subExtractIntervalMinutes,
     ),
     orphanReaperIntervalMinutes = override.orphanReaperIntervalMinutes ?: base.orphanReaperIntervalMinutes,
     orphanReaperPaths = override.orphanReaperPaths ?: base.orphanReaperPaths,
+    subExtractEnabled = override.subExtractEnabled ?: base.subExtractEnabled,
+    subExtractPaths = override.subExtractPaths ?: base.subExtractPaths,
+    subExtractLangs = override.subExtractLangs ?: base.subExtractLangs,
+    subExtractMaxPerRun = override.subExtractMaxPerRun ?: base.subExtractMaxPerRun,
     archive = base.archive.copy(
         intervalHours = override.archiveIntervalHours ?: base.archive.intervalHours,
     ),
@@ -542,6 +570,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 sonarrWatchdogRestartGraceMinutes = o.num("sonarr_watchdog_grace_minutes") { it.toInt() } ?: intervals.sonarrWatchdogRestartGraceMinutes,
                 sonarrWatchdogCooldownMinutes = o.num("sonarr_watchdog_cooldown_minutes") { it.toInt() } ?: intervals.sonarrWatchdogCooldownMinutes,
                 searchCongestionThreshold = o.num("search_congestion_threshold") { it.toInt() } ?: intervals.searchCongestionThreshold,
+                subExtractIntervalMinutes = o.num("sub_extract_interval_minutes") { it.toInt() } ?: intervals.subExtractIntervalMinutes,
             )
         }
         (root["cache"] as? Map<*, *>)?.let { o ->
@@ -635,5 +664,13 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         archive = archive,
         traktUnmonitor = traktUnmonitor,
         p5Ratchet = p5Ratchet,
+        subExtractEnabled = (env("SUB_EXTRACT_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
+        subExtractPaths = env("SUB_EXTRACT_PATHS")
+            ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
+            ?: listOf("/storage/media/video/anime"),
+        subExtractLangs = env("SUB_EXTRACT_LANGS")
+            ?.split(",")?.map { it.trim().lowercase() }?.filter { it.isNotEmpty() }
+            ?: listOf("en", "fr"),
+        subExtractMaxPerRun = env("SUB_EXTRACT_MAX_PER_RUN")?.toIntOrNull() ?: 25,
     )
 }

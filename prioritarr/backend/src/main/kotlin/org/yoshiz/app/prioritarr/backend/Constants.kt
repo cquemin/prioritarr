@@ -47,6 +47,7 @@ object JobId {
     const val HEALTH_MONITOR = "health-monitor"
     const val TDARR_PLEX_PAUSE = "tdarr-plex-pause"
     const val SONARR_WATCHDOG = "sonarr-watchdog"
+    const val SUB_EXTRACT = "sub-extract"
 }
 
 /**

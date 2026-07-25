@@ -297,6 +297,16 @@ fun main() {
         cleanupPaths = { liveSettings(db, settings).orphanReaperPaths },
         autoImport = true,
     )
+    // Embedded-subtitle → SRT-sidecar extractor. Config (enabled/paths/
+    // langs/cap) is read live inside each lambda; the ffprobe/ffmpeg
+    // subprocesses are the real FfmpegSubtitleIo seams.
+    val subtitleExtractor = org.yoshiz.app.prioritarr.backend.reconcile.SubtitleExtractor(
+        paths = { liveSettings(db, settings).subExtractPaths },
+        langs = { liveSettings(db, settings).subExtractLangs },
+        maxPerRun = { liveSettings(db, settings).subExtractMaxPerRun },
+        probe = org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo::probe,
+        extract = org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo::extract,
+    )
     val watchedArchiver = org.yoshiz.app.prioritarr.backend.reconcile.WatchedArchiver(
         sonarr = sonarr,
         watchProviders = watchProviders,
@@ -328,6 +338,7 @@ fun main() {
         thresholdsSource = thresholdsSource,
         crossSourceSync = crossSourceSync,
         orphanReaper = orphanReaper,
+        subtitleExtractor = subtitleExtractor,
         watchedArchiver = watchedArchiver,
         traktUnmonitor = traktUnmonitor,
         traktClient = traktClient,
@@ -620,6 +631,31 @@ fun main() {
                 run = {
                     orphanReaper.sweep(dryRun = liveSettings(db, settings).dryRun)
                     org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.SUB_EXTRACT,
+                cadenceMinutes = { liveSettings(db, settings).intervals.subExtractIntervalMinutes.toLong() },
+                // Off by default; enabling + a non-empty path list turns it
+                // on within ~1 tick, no restart. Reactive prereq.
+                prerequisites = {
+                    val s = liveSettings(db, settings)
+                    s.subExtractEnabled && s.subExtractPaths.isNotEmpty()
+                },
+                // LIGHT (like orphan-reaper/unmonitored-reaper): the FS walk +
+                // ffprobe run on Dispatchers.IO and the run is self-capped
+                // (subExtractMaxPerRun). HEAVY would starve here — the single
+                // HEAVY slot/tick is perpetually taken by the refresh-* jobs
+                // that sort before "sub-extract".
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                firstRunDelayMinutes = 2,
+                run = {
+                    val report = subtitleExtractor.sweep()
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(
+                        summary = "scanned=${report.filesScanned} extracted=${report.extracted} " +
+                            "hasSidecar=${report.skippedHasSidecar} noText=${report.skippedNoTextTrack} " +
+                            "errors=${report.errors}" + if (report.capHit) " (cap hit)" else "",
+                    )
                 },
             ))
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(

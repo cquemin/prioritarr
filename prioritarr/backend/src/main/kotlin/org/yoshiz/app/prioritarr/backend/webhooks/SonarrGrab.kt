@@ -54,6 +54,28 @@ fun parseOnGrabPayload(data: JsonObject): OnGrabEvent {
     )
 }
 
+/**
+ * Derive the absolute container path of the file Sonarr just imported from
+ * a "Download" (import) webhook payload. Prefers the fully-qualified
+ * `episodeFile.path`; falls back to joining `series.path` + `/` +
+ * `episodeFile.relativePath` when only the relative path is present.
+ * Returns null when neither can be resolved. Pure so it is unit-testable.
+ *
+ * The paths Sonarr sends are already in the container/`/storage/...`
+ * namespace that matches prioritarr's volume mounts, so no translation
+ * is applied here.
+ */
+fun sonarrImportedFilePath(payload: JsonObject): String? {
+    val episodeFile = payload["episodeFile"] as? JsonObject ?: return null
+    episodeFile["path"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { return it }
+    val relative = episodeFile["relativePath"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        ?: return null
+    val seriesPath = (payload["series"] as? JsonObject)?.get("path")
+        ?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        ?: return null
+    return seriesPath.trimEnd('/') + "/" + relative.trimStart('/')
+}
+
 fun eventKey(event: OnGrabEvent): String {
     val raw = "Grab:${event.seriesId}:${event.episodeIds.sorted()}:${event.downloadId}"
     val sha = MessageDigest.getInstance("SHA-1").digest(raw.toByteArray())

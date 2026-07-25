@@ -19,6 +19,7 @@ import org.yoshiz.app.prioritarr.backend.mapping.MappingState
 import org.yoshiz.app.prioritarr.backend.priority.PriorityService
 import org.yoshiz.app.prioritarr.backend.priority.ThresholdsSource
 import org.yoshiz.app.prioritarr.backend.reconcile.OrphanReaper
+import org.yoshiz.app.prioritarr.backend.reconcile.SubtitleExtractor
 import org.yoshiz.app.prioritarr.backend.reconcile.TraktUnmonitorReconciler
 import org.yoshiz.app.prioritarr.backend.reconcile.WatchedArchiver
 import org.yoshiz.app.prioritarr.backend.sync.CrossSourceSync
@@ -55,6 +56,9 @@ data class AppState(
     val thresholdsSource: ThresholdsSource,
     val crossSourceSync: CrossSourceSync,
     val orphanReaper: OrphanReaper,
+    /** Embedded-subtitle → SRT-sidecar extractor. Used by the sub-extract
+     *  scheduled job (backfill) and the Sonarr on-import webhook (event-driven). */
+    val subtitleExtractor: SubtitleExtractor,
     val watchedArchiver: WatchedArchiver,
     val traktUnmonitor: TraktUnmonitorReconciler,
     /** Live TraktClient — null when Trakt isn't configured. Routes use it for hot-swapping the access token after refresh. */

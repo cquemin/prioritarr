@@ -51,6 +51,7 @@ import org.yoshiz.app.prioritarr.backend.webhooks.handleWatched
 import org.yoshiz.app.prioritarr.backend.webhooks.parseOnGrabPayload
 import org.yoshiz.app.prioritarr.backend.webhooks.parseTautulliWatched
 import org.yoshiz.app.prioritarr.backend.webhooks.runOnGrabFollowup
+import org.yoshiz.app.prioritarr.backend.webhooks.sonarrImportedFilePath
 import org.yoshiz.app.prioritarr.backend.database.Database
 import org.yoshiz.app.prioritarr.backend.liveSettings
 import org.slf4j.LoggerFactory
@@ -251,6 +252,31 @@ fun Application.prioritarrModule(state: AppState) {
                                 fetchEpisodes = { state.sonarr.getEpisodes(it) },
                                 recompute = { state.priorityService.priorityForSeries(it); Unit },
                             )
+                        }
+                    }
+
+                    // Event-driven subtitle extraction: the instant Sonarr
+                    // imports a file, turn its embedded TEXT sub into an
+                    // external .srt sidecar (same logic as the sub-extract
+                    // backfill job, applied to just this file). Fire-and-forget
+                    // so the webhook still responds immediately.
+                    val s = liveSettings(state.db, state.settings)
+                    if (s.subExtractEnabled) {
+                        val filePath = sonarrImportedFilePath(payload)
+                        if (filePath != null && s.subExtractPaths.any {
+                                filePath.startsWith(it.trimEnd('/') + "/") || filePath == it
+                            }
+                        ) {
+                            application.launch {
+                                runCatching {
+                                    state.subtitleExtractor.extractForFile(java.nio.file.Paths.get(filePath))
+                                }.onFailure {
+                                    logger.warn(
+                                        "[sonarr-webhook] on-import sub-extract failed for {}: {}",
+                                        filePath, it.message,
+                                    )
+                                }
+                            }
                         }
                     }
                     call.respond(OnGrabIgnored(eventType = eventType))

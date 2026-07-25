@@ -17,7 +17,7 @@
 
 import {
   RefreshCw, Database, Search, Activity, Trash2, ListChecks, KeyRound, Cog,
-  Webhook, ArrowLeftRight, Box, FileSearch, Pause,
+  Webhook, ArrowLeftRight, Box, FileSearch, Pause, Captions,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 
@@ -237,6 +237,22 @@ export const JOBS: ReadonlyArray<JobMeta> = [
       'Walks the configured download paths, collates files Sonarr and SAB no longer reference, auto-imports the importable, deletes the hardlink-twins + "not an upgrade" cases, and queues anything ambiguous for the operator to action via Settings \u2192 Orphans.',
     cadence: { key: 'orphanReaperIntervalMinutes', unit: 'minutes', min: 5 },
     manual: { method: 'POST', path: '/api/v2/orphans/sweep', label: 'Run sweep now' },
+  },
+  {
+    id: 'sub-extract',
+    name: 'Subtitle extractor',
+    icon: <Captions size={18} />,
+    trigger: 'auto',
+    short: 'Extract embedded text subs to .srt sidecars (anime soft-subs).',
+    description:
+      'Walks the configured anime paths for .mkv/.mp4 files and, for any video with an embedded TEXT subtitle track but no matching external .srt sidecar, extracts that track to a sidecar via ffmpeg. Plex then serves it as a soft subtitle instead of burning it in with a CPU transcode. Skips any file that already has a sidecar (never clobbers Bazarr’s subs), prefers the full-dialogue track over signs/songs, and strips ASS-derived <font> styling.',
+    why:
+      'Anime commonly ships with ASS/SSA subtitles embedded in the MKV. Plex can’t serve those as soft subs, so it transcodes the whole video to burn them in — hammering a GPU-less host. Turning them into .srt sidecars lets clients direct-play with selectable subs, no transcode.',
+    cadence: { key: 'intervals.subExtractIntervalMinutes', unit: 'minutes', min: 5 },
+    settings: [
+      { key: 'subExtractEnabled', label: 'Enabled', type: 'boolean', hint: 'Off by default. Requires ffmpeg in the image (bundled).' },
+      { key: 'subExtractMaxPerRun', label: 'Max extractions per run', type: 'number', min: 1, step: 1, hint: 'Bounds ffmpeg work per tick.' },
+    ],
   },
   {
     id: 'backfill-sweep',

@@ -1,0 +1,408 @@
+package org.yoshiz.app.prioritarr.backend.reconcile
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import org.slf4j.LoggerFactory
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.PosixFilePermissions
+import kotlin.streams.toList
+
+/**
+ * Eliminates Plex subtitle-burn transcodes for anime by turning
+ * embedded TEXT subtitle tracks into external `.srt` sidecars.
+ *
+ * For each configured path we walk for video files (.mkv/.mp4). For
+ * each file and each target language we:
+ *
+ *   1. Skip when a sidecar already exists for that language (never
+ *      clobber Bazarr's downloaded subs) — see [hasSidecar].
+ *   2. Probe the file's subtitle streams, keep only TEXT codecs whose
+ *      `tags.language` matches the target, and pick the best dialogue
+ *      track (see [selectSubStream]).
+ *   3. Extract it to a temp file, strip ASS-derived `<font>` styling
+ *      (see [stripFontTags]), then atomically rename to
+ *      `<base>.<lang2>.srt`.
+ *
+ * The ffprobe/ffmpeg subprocesses are injected as [probe]/[extract]
+ * seams so the decision/selection/skip/cap logic is unit-testable
+ * without a real ffmpeg on the box. [FfmpegSubtitleIo] holds the real
+ * `ProcessBuilder`-based implementations that Main.kt wires in.
+ *
+ * Nothing here is destructive to existing files: it only ever writes a
+ * new sidecar next to a video, and only when none already exists.
+ */
+class SubtitleExtractor(
+    /** Live-read list of container-absolute roots to walk. */
+    private val paths: () -> List<String>,
+    /** Live-read list of lang2 codes (e.g. ["en","fr"]). */
+    private val langs: () -> List<String>,
+    /** Live-read cap on sidecars written per run. */
+    private val maxPerRun: () -> Int,
+    /** ffprobe seam — returns the file's subtitle streams. */
+    private val probe: suspend (Path) -> List<SubStream>,
+    /**
+     * ffmpeg seam — extracts the subtitle stream at the given
+     * subtitle-relative index (the N in `-map 0:s:N`) to [target],
+     * returning true on success.
+     */
+    private val extract: suspend (file: Path, streamIndex: Int, target: Path) -> Boolean,
+) {
+    private val logger = LoggerFactory.getLogger(SubtitleExtractor::class.java)
+
+    suspend fun sweep(): SubExtractReport {
+        val report = SubExtractReport()
+        val cap = maxPerRun().coerceAtLeast(0)
+        val targetLangs = langs().map { it.lowercase() }
+        for (root in paths()) {
+            if (report.capHit) break
+            val rootPath = Paths.get(root)
+            if (!Files.isDirectory(rootPath)) {
+                logger.debug("sub-extract: skipping missing path {}", rootPath)
+                continue
+            }
+            val videos = try {
+                walkVideos(rootPath)
+            } catch (e: Exception) {
+                logger.warn("sub-extract: walk failed for {}: {}", rootPath, e.message)
+                continue
+            }
+            for (file in videos) {
+                if (report.capHit) break
+                report.filesScanned++
+                // Accumulate into the shared [report] so the cap counts total
+                // extractions across every file in the sweep, not per-file.
+                extractInto(file, targetLangs, cap, report)
+            }
+        }
+        logger.info(
+            "sub-extract: scanned={} extracted={} skippedHasSidecar={} skippedNoTextTrack={} errors={} capHit={}",
+            report.filesScanned, report.extracted, report.skippedHasSidecar,
+            report.skippedNoTextTrack, report.errors, report.capHit,
+        )
+        return report
+    }
+
+    /**
+     * Event-driven single-file entry point used by the Sonarr on-import
+     * webhook. Runs the exact per-file logic [sweep] runs, but for just
+     * [file], and returns a [SubExtractReport] scoped to that one file
+     * (`filesScanned = 1`). Non-video files (extension not in [VIDEO_EXTS])
+     * are a no-op. The per-run [maxPerRun] cap still applies — for a single
+     * file that only matters in the pathological case of a file needing more
+     * sidecars than the cap allows.
+     */
+    suspend fun extractForFile(file: Path): SubExtractReport {
+        val report = SubExtractReport()
+        val ext = file.fileName?.toString()?.substringAfterLast('.', "")?.lowercase()
+        if (ext !in VIDEO_EXTS) return report
+        report.filesScanned = 1
+        val cap = maxPerRun().coerceAtLeast(0)
+        val targetLangs = langs().map { it.lowercase() }
+        extractInto(file, targetLangs, cap, report)
+        return report
+    }
+
+    /**
+     * Shared per-file logic: for each target lang lacking a sidecar, probe
+     * → keep TEXT-codec streams matching the lang → [selectSubStream] →
+     * [extractOne]. Accumulates into [report]; the [cap] is checked against
+     * the running `report.extracted` so callers can share a report across
+     * many files (sweep) or use a fresh one (extractForFile).
+     */
+    private suspend fun extractInto(
+        file: Path,
+        targetLangs: List<String>,
+        cap: Int,
+        report: SubExtractReport,
+    ) {
+        // Languages still lacking a sidecar for this file.
+        val pending = targetLangs.filter { !hasSidecar(file, it) }
+        report.skippedHasSidecar += (targetLangs.size - pending.size)
+        if (pending.isEmpty()) return
+
+        val streams = try {
+            probe(file)
+        } catch (e: Exception) {
+            logger.warn("sub-extract: probe failed for {}: {}", file, e.message)
+            report.errors++
+            return
+        }
+        for (lang2 in pending) {
+            if (report.extracted >= cap) {
+                report.capHit = true
+                break
+            }
+            val matched = streams.filter {
+                matchesLang(it, lang2) && it.codecName.lowercase() in TEXT_CODECS
+            }
+            val chosen = selectSubStream(matched)
+            if (chosen == null) {
+                report.skippedNoTextTrack++
+                continue
+            }
+            extractOne(file, lang2, chosen, report)
+        }
+    }
+
+    private suspend fun extractOne(file: Path, lang2: String, stream: SubStream, report: SubExtractReport) {
+        val target = sidecarTarget(file, lang2)
+        val tmp = file.parent.resolve("${baseName(file)}.$lang2.srt.tmp")
+        val ok = try {
+            extract(file, stream.index, tmp)
+        } catch (e: Exception) {
+            logger.warn("sub-extract: ffmpeg threw for {} (s:{}): {}", file, stream.index, e.message)
+            false
+        }
+        if (!ok || !Files.exists(tmp)) {
+            deleteQuiet(tmp)
+            report.errors++
+            return
+        }
+        try {
+            val cleaned = stripFontTags(Files.readString(tmp))
+            Files.writeString(tmp, cleaned)
+            try {
+                Files.setPosixFilePermissions(tmp, PosixFilePermissions.fromString("rw-r--r--"))
+            } catch (_: Exception) { /* non-POSIX FS (e.g. dev on Windows) — best-effort */ }
+            atomicMove(tmp, target)
+            report.extracted++
+            logger.info("sub-extract: wrote {} (from s:{} {})", target, stream.index, stream.codecName)
+        } catch (e: Exception) {
+            logger.warn("sub-extract: post-process/rename failed for {}: {}", target, e.message)
+            deleteQuiet(tmp)
+            report.errors++
+        }
+    }
+
+    private fun walkVideos(root: Path): List<Path> =
+        Files.walk(root).use { stream ->
+            stream.filter { Files.isRegularFile(it) }
+                .filter { it.fileName.toString().substringAfterLast('.', "").lowercase() in VIDEO_EXTS }
+                .toList()
+        }
+
+    /**
+     * True if any known sidecar spelling for [lang2] already exists next
+     * to [file] — including the language-less `<base>.srt`. When true we
+     * never touch that language (Bazarr/Whisper already covered it).
+     */
+    private fun hasSidecar(file: Path, lang2: String): Boolean {
+        val dir = file.parent ?: return false
+        val base = baseName(file)
+        val candidates = listOf(
+            "$base.$lang2.srt",
+            "$base.$lang2.hi.srt",
+            "$base.$lang2.forced.srt",
+            "$base.srt",
+        )
+        return candidates.any { Files.exists(dir.resolve(it)) }
+    }
+
+    private fun sidecarTarget(file: Path, lang2: String): Path =
+        file.parent.resolve("${baseName(file)}.$lang2.srt")
+
+    private fun matchesLang(s: SubStream, lang2: String): Boolean {
+        val lang = s.language?.lowercase()?.trim() ?: return false
+        val aliases = LANG_ALIASES[lang2] ?: setOf(lang2)
+        return lang in aliases
+    }
+
+    private fun atomicMove(from: Path, to: Path) {
+        try {
+            Files.move(from, to, StandardCopyOption.ATOMIC_MOVE)
+        } catch (_: Exception) {
+            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    private fun deleteQuiet(p: Path) {
+        try { Files.deleteIfExists(p) } catch (_: Exception) { /* best-effort */ }
+    }
+
+    private fun baseName(file: Path): String {
+        val n = file.fileName.toString()
+        val dot = n.lastIndexOf('.')
+        return if (dot > 0) n.substring(0, dot) else n
+    }
+
+    companion object {
+        val VIDEO_EXTS = setOf("mkv", "mp4")
+
+        /** SRT-convertible text codecs. */
+        val TEXT_CODECS = setOf("ass", "ssa", "subrip", "srt", "mov_text", "webvtt", "text")
+
+        /** Bitmap codecs that can NOT convert to SRT — excluded from selection. */
+        val IMAGE_CODECS = setOf("hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub")
+
+        /** lang2 -> accepted `tags.language` spellings (2/3-letter + full word). */
+        val LANG_ALIASES: Map<String, Set<String>> = mapOf(
+            "en" to setOf("en", "eng", "english"),
+            "fr" to setOf("fr", "fre", "fra", "french"),
+        )
+    }
+}
+
+/** One subtitle stream, reduced to the fields selection needs. */
+@Serializable
+data class SubStream(
+    /** Subtitle-relative index — the N in ffmpeg `-map 0:s:N`. */
+    val index: Int,
+    val codecName: String,
+    val language: String? = null,
+    val title: String? = null,
+    val default: Boolean = false,
+    val forced: Boolean = false,
+)
+
+/** Per-run aggregate returned to the scheduler + surfaced in job summaries. */
+@Serializable
+data class SubExtractReport(
+    var filesScanned: Int = 0,
+    var extracted: Int = 0,
+    var skippedHasSidecar: Int = 0,
+    var skippedNoTextTrack: Int = 0,
+    var errors: Int = 0,
+    /** True when [SubtitleExtractor.maxPerRun] stopped the run early. */
+    var capHit: Boolean = false,
+)
+
+/**
+ * Pick the best dialogue track out of already-filtered [candidates]:
+ *   1. a `default`-disposition track, else
+ *   2. a non-forced track whose title isn't a signs/songs track, else
+ *   3. the first candidate.
+ * Returns null when there's nothing to pick.
+ */
+internal fun selectSubStream(candidates: List<SubStream>): SubStream? {
+    if (candidates.isEmpty()) return null
+    candidates.firstOrNull { it.default }?.let { return it }
+    candidates.firstOrNull { !it.forced && !isSignsSongs(it.title) }?.let { return it }
+    return candidates.first()
+}
+
+private fun isSignsSongs(title: String?): Boolean {
+    val t = title?.lowercase() ?: return false
+    return t.contains("sign") || t.contains("song")
+}
+
+/**
+ * Strip ASS-derived `<font ...>` / `</font>` styling from SRT text
+ * while keeping the bold/italic/underline tags Plex renders. Pure so
+ * it can be unit-tested in isolation.
+ */
+internal fun stripFontTags(input: String): String =
+    input.replace(FONT_TAG_REGEX, "").replace(ASS_OVERRIDE_REGEX, "")
+
+private val FONT_TAG_REGEX = Regex("</?font[^>]*>", RegexOption.IGNORE_CASE)
+
+/**
+ * ASS inline override blocks that leak into ffmpeg's SRT output, e.g.
+ * `{\an8}` (position), `{\i1}`, `{\pos(1,2)}`. Only blocks that start with
+ * `{\` are stripped, so ordinary text containing braces is preserved.
+ */
+private val ASS_OVERRIDE_REGEX = Regex("""\{\\[^}]*}""")
+
+/**
+ * Real ffprobe/ffmpeg seams. Kept out of [SubtitleExtractor] so the
+ * reconciler stays subprocess-free (and thus unit-testable). Wired into
+ * the reconciler from Main.kt. There is no existing ProcessBuilder
+ * precedent in this codebase — this is the one place we shell out.
+ */
+object FfmpegSubtitleIo {
+    private val logger = LoggerFactory.getLogger(FfmpegSubtitleIo::class.java)
+
+    /** List the subtitle streams of [file] via ffprobe (JSON). */
+    suspend fun probe(file: Path): List<SubStream> = withContext(Dispatchers.IO) {
+        val cmd = listOf(
+            "ffprobe", "-v", "error",
+            "-select_streams", "s",
+            "-show_entries", "stream=index,codec_name:stream_tags=language,title:stream_disposition=default,forced",
+            "-of", "json",
+            file.toString(),
+        )
+        try {
+            val proc = ProcessBuilder(cmd).redirectErrorStream(false).start()
+            val out = proc.inputStream.bufferedReader().readText()
+            proc.errorStream.bufferedReader().readText() // drain stderr
+            val code = proc.waitFor()
+            if (code != 0) {
+                logger.warn("sub-extract: ffprobe exit {} for {}", code, file)
+                emptyList()
+            } else {
+                parseFfprobe(out)
+            }
+        } catch (e: Exception) {
+            logger.warn("sub-extract: ffprobe launch failed for {}: {}", file, e.message)
+            emptyList()
+        }
+    }
+
+    /** Extract subtitle stream `0:s:[streamIndex]` from [file] into [target] as SRT. */
+    suspend fun extract(file: Path, streamIndex: Int, target: Path): Boolean = withContext(Dispatchers.IO) {
+        val cmd = listOf(
+            "ffmpeg", "-v", "error", "-y",
+            "-i", file.toString(),
+            "-map", "0:s:$streamIndex",
+            "-c:s", "srt",
+            // Force the SRT muxer explicitly: the temp target ends in
+            // ".srt.tmp", and ffmpeg would otherwise try to infer the format
+            // from the ".tmp" extension and fail ("Unable to choose an output
+            // format").
+            "-f", "srt",
+            target.toString(),
+        )
+        try {
+            val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
+            val log = proc.inputStream.bufferedReader().readText()
+            val code = proc.waitFor()
+            if (code != 0) {
+                logger.warn("sub-extract: ffmpeg exit {} for {} (s:{}): {}", code, file, streamIndex, log.take(300))
+                false
+            } else {
+                Files.exists(target)
+            }
+        } catch (e: Exception) {
+            logger.warn("sub-extract: ffmpeg launch failed for {}: {}", file, e.message)
+            false
+        }
+    }
+
+    /**
+     * Parse ffprobe's `-select_streams s -of json` output into
+     * [SubStream]s. The subtitle-relative index is the position in the
+     * returned list (ffprobe enumerates subtitle streams in file order,
+     * matching ffmpeg's `0:s:N` numbering). Internal for unit testing.
+     */
+    internal fun parseFfprobe(json: String): List<SubStream> {
+        val root = try {
+            Json.parseToJsonElement(json) as? JsonObject
+        } catch (_: Exception) {
+            null
+        } ?: return emptyList()
+        val streams = (root["streams"] as? JsonArray) ?: return emptyList()
+        return streams.mapIndexedNotNull { i, el ->
+            val o = el as? JsonObject ?: return@mapIndexedNotNull null
+            val codec = o["codec_name"]?.jsonPrimitive?.contentOrNull ?: return@mapIndexedNotNull null
+            val tags = o["tags"] as? JsonObject
+            val disp = o["disposition"] as? JsonObject
+            SubStream(
+                index = i,
+                codecName = codec,
+                language = tags?.get("language")?.jsonPrimitive?.contentOrNull,
+                title = tags?.get("title")?.jsonPrimitive?.contentOrNull,
+                default = (disp?.get("default")?.jsonPrimitive?.intOrNull ?: 0) == 1,
+                forced = (disp?.get("forced")?.jsonPrimitive?.intOrNull ?: 0) == 1,
+            )
+        }
+    }
+}
