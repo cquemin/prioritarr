@@ -1,6 +1,7 @@
 package org.yoshiz.app.prioritarr.backend.reconcile
 
 import kotlinx.coroutines.test.runTest
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.createDirectories
@@ -39,12 +40,14 @@ class SubtitleExtractorTest {
         recorder: ExtractRecorder,
         langs: List<String> = listOf("en"),
         maxPerRun: Int = 25,
+        orderedDirs: (suspend () -> List<String>)? = null,
     ) = SubtitleExtractor(
         paths = { listOf(root.toString()) },
         langs = { langs },
         maxPerRun = { maxPerRun },
         probe = { streams },
         extract = recorder.seam,
+        orderedDirs = orderedDirs,
     )
 
     // (a) embedded eng text track + no sidecar → extract with right index & target.
@@ -149,6 +152,148 @@ class SubtitleExtractorTest {
         assertEquals(2, rec.calls.size)
         assertEquals(2, report.extracted)
         assertTrue(report.capHit, "cap-hit flagged so truncation isn't silent")
+    }
+
+    // ---- priority-ordered sweep (orderedDirs seam) ----
+
+    // orderedDirs returns two dirs in a chosen order → the first dir's files
+    // are all extracted before the second dir's, and the shared cap bounds
+    // TOTAL extractions across both dirs.
+    @Test fun ordered_dirs_processed_in_priority_order() = runTest {
+        val root = tempRoot()
+        val p1 = root.resolve("p1")
+        val p5 = root.resolve("p5")
+        touch(p1, "P1.S01E01.mkv")
+        touch(p5, "P5.S01E01.mkv")
+        val streams = listOf(SubStream(index = 0, codecName = "ass", language = "eng"))
+        val rec = ExtractRecorder()
+        // Deliberately supply p1 (high priority) before p5.
+        val report = extractor(
+            root, streams, rec,
+            orderedDirs = { listOf(p1.toString(), p5.toString()) },
+        ).sweep()
+
+        assertEquals(2, rec.calls.size)
+        assertTrue(rec.calls[0].file.toString().contains("P1"), "P1 extracted first")
+        assertTrue(rec.calls[1].file.toString().contains("P5"), "P5 extracted second")
+        assertEquals(2, report.extracted)
+    }
+
+    // The maxPerRun cap still caps TOTAL extractions across all ordered dirs.
+    @Test fun ordered_dirs_cap_bounds_total_across_dirs() = runTest {
+        val root = tempRoot()
+        val a = root.resolve("a")
+        val b = root.resolve("b")
+        touch(a, "A.S01E01.mkv")
+        touch(a, "A.S01E02.mkv")
+        touch(b, "B.S01E01.mkv")
+        val streams = listOf(SubStream(index = 0, codecName = "ass", language = "eng"))
+        val rec = ExtractRecorder()
+        val report = extractor(
+            root, streams, rec, maxPerRun = 2,
+            orderedDirs = { listOf(a.toString(), b.toString()) },
+        ).sweep()
+
+        assertEquals(2, rec.calls.size)
+        assertEquals(2, report.extracted)
+        assertTrue(report.capHit, "cap hit across dirs")
+        // Both extractions come from the first dir (cap spent before dir b).
+        assertTrue(rec.calls.all { it.file.toString().contains("${File.separator}a${File.separator}") })
+    }
+
+    // orderedDirs returning emptyList → fall back to walking paths() (flat).
+    @Test fun ordered_dirs_empty_falls_back_to_flat_walk() = runTest {
+        val root = tempRoot()
+        touch(root, "Flat.S01E01.mkv")
+        val streams = listOf(SubStream(index = 0, codecName = "ass", language = "eng"))
+        val rec = ExtractRecorder()
+        val report = extractor(
+            root, streams, rec,
+            orderedDirs = { emptyList() },
+        ).sweep()
+
+        assertEquals(1, rec.calls.size)
+        assertTrue(Files.exists(root.resolve("Flat.S01E01.en.srt")))
+        assertEquals(1, report.extracted)
+    }
+
+    // Non-existent dirs in the ordered list are skipped gracefully.
+    @Test fun ordered_dirs_skips_missing_dirs() = runTest {
+        val root = tempRoot()
+        val real = root.resolve("real")
+        touch(real, "R.S01E01.mkv")
+        val streams = listOf(SubStream(index = 0, codecName = "ass", language = "eng"))
+        val rec = ExtractRecorder()
+        val report = extractor(
+            root, streams, rec,
+            orderedDirs = { listOf(root.resolve("ghost").toString(), real.toString()) },
+        ).sweep()
+
+        assertEquals(1, rec.calls.size)
+        assertEquals(1, report.extracted)
+    }
+
+    // ---- orderSeriesDirsByPriority (pure ordering core) ----
+
+    @Test fun order_series_p1_before_p5() {
+        val ordered = orderSeriesDirsByPriority(
+            listOf(
+                SeriesDir("/storage/anime/Zeta", priority = 5),
+                SeriesDir("/storage/anime/Alpha", priority = 1),
+                SeriesDir("/storage/anime/Mid", priority = 3),
+            ),
+            subExtractPaths = listOf("/storage/anime"),
+        )
+        assertEquals(
+            listOf("/storage/anime/Alpha", "/storage/anime/Mid", "/storage/anime/Zeta"),
+            ordered,
+        )
+    }
+
+    @Test fun order_series_filters_out_paths_not_under_roots() {
+        val ordered = orderSeriesDirsByPriority(
+            listOf(
+                SeriesDir("/storage/anime/Keep", priority = 2),
+                SeriesDir("/storage/series/Drop", priority = 1),
+                // Prefix-of-a-sibling must NOT match: "/storage/anime2" is not under "/storage/anime".
+                SeriesDir("/storage/anime2/AlsoDrop", priority = 1),
+            ),
+            subExtractPaths = listOf("/storage/anime"),
+        )
+        assertEquals(listOf("/storage/anime/Keep"), ordered)
+    }
+
+    @Test fun order_series_tie_break_by_path_at_equal_priority() {
+        val ordered = orderSeriesDirsByPriority(
+            listOf(
+                SeriesDir("/storage/anime/Charlie", priority = 2),
+                SeriesDir("/storage/anime/Bravo", priority = 2),
+                SeriesDir("/storage/anime/Alpha", priority = 2),
+            ),
+            subExtractPaths = listOf("/storage/anime"),
+        )
+        assertEquals(
+            listOf("/storage/anime/Alpha", "/storage/anime/Bravo", "/storage/anime/Charlie"),
+            ordered,
+        )
+    }
+
+    @Test fun order_series_exact_root_and_trailing_slash_root_match() {
+        val ordered = orderSeriesDirsByPriority(
+            listOf(
+                SeriesDir("/storage/anime", priority = 4),      // exact root match
+                SeriesDir("/storage/anime/Sub", priority = 1),
+            ),
+            subExtractPaths = listOf("/storage/anime/"),         // trailing slash tolerated
+        )
+        assertEquals(listOf("/storage/anime/Sub", "/storage/anime"), ordered)
+    }
+
+    @Test fun order_series_empty_input_empty_output() {
+        assertEquals(
+            emptyList(),
+            orderSeriesDirsByPriority(emptyList(), subExtractPaths = listOf("/storage/anime")),
+        )
     }
 
     // ---- extractForFile: event-driven single-file entry point ----

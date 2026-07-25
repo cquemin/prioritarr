@@ -9,6 +9,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import org.yoshiz.app.prioritarr.backend.app.AppState
 import org.yoshiz.app.prioritarr.backend.app.prioritarrModule
 import org.yoshiz.app.prioritarr.backend.events.EventBus
@@ -306,6 +310,29 @@ fun main() {
         maxPerRun = { liveSettings(db, settings).subExtractMaxPerRun },
         probe = org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo::probe,
         extract = org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo::extract,
+        // Order the sweep by prioritarr priority (P1 first) so actively-watched
+        // shows get sidecars before the per-run cap is spent. Any failure here
+        // returns an empty list → the extractor falls back to the flat walk.
+        orderedDirs = orderedDirs@{
+            runCatching {
+                val s = liveSettings(db, settings)
+                val subExtractPaths = s.subExtractPaths
+                if (subExtractPaths.isEmpty()) return@orderedDirs emptyList<String>()
+                val dirs = sonarr.getAllSeries().mapNotNull { el ->
+                    val obj = el as? JsonObject ?: return@mapNotNull null
+                    val id = obj["id"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+                    val path = obj["path"]?.jsonPrimitive?.contentOrNull
+                        ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                    val priority = priorityService.priorityForSeries(id).priority
+                    org.yoshiz.app.prioritarr.backend.reconcile.SeriesDir(path, priority)
+                }
+                org.yoshiz.app.prioritarr.backend.reconcile.orderSeriesDirsByPriority(dirs, subExtractPaths)
+            }.getOrElse { e ->
+                org.slf4j.LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.Main")
+                    .warn("sub-extract: priority ordering failed, falling back to flat walk: {}", e.message)
+                emptyList()
+            }
+        },
     )
     val watchedArchiver = org.yoshiz.app.prioritarr.backend.reconcile.WatchedArchiver(
         sonarr = sonarr,

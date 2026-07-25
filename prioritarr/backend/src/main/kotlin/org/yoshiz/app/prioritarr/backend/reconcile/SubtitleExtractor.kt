@@ -56,6 +56,16 @@ class SubtitleExtractor(
      * returning true on success.
      */
     private val extract: suspend (file: Path, streamIndex: Int, target: Path) -> Boolean,
+    /**
+     * Optional seam that yields the series directories to sweep, ordered by
+     * prioritarr priority (P1 first). When it returns a NON-EMPTY list the
+     * sweep walks those directories IN THE GIVEN ORDER so actively-watched
+     * shows get sidecars first. When null (default) or when it returns an
+     * empty list, the sweep falls back to the flat filesystem-order walk of
+     * [paths]. Kept impure (Sonarr + PriorityService fetch) in Main.kt so the
+     * ordering core stays a pure, unit-tested function ([orderSeriesDirsByPriority]).
+     */
+    private val orderedDirs: (suspend () -> List<String>)? = null,
 ) {
     private val logger = LoggerFactory.getLogger(SubtitleExtractor::class.java)
 
@@ -63,25 +73,60 @@ class SubtitleExtractor(
         val report = SubExtractReport()
         val cap = maxPerRun().coerceAtLeast(0)
         val targetLangs = langs().map { it.lowercase() }
-        for (root in paths()) {
-            if (report.capHit) break
-            val rootPath = Paths.get(root)
-            if (!Files.isDirectory(rootPath)) {
-                logger.debug("sub-extract: skipping missing path {}", rootPath)
-                continue
-            }
-            val videos = try {
-                walkVideos(rootPath)
+
+        // Priority-ordered pass: if the seam yields dirs, walk them in order so
+        // the highest-priority series get served first. The shared [report] and
+        // [cap] make the per-run cap bound TOTAL extractions across all dirs.
+        val ordered = orderedDirs?.let {
+            try {
+                it()
             } catch (e: Exception) {
-                logger.warn("sub-extract: walk failed for {}: {}", rootPath, e.message)
-                continue
+                logger.warn("sub-extract: ordered-dirs seam failed, falling back to flat walk: {}", e.message)
+                emptyList()
             }
-            for (file in videos) {
+        }.orEmpty()
+
+        if (ordered.isNotEmpty()) {
+            for (dir in ordered) {
                 if (report.capHit) break
-                report.filesScanned++
-                // Accumulate into the shared [report] so the cap counts total
-                // extractions across every file in the sweep, not per-file.
-                extractInto(file, targetLangs, cap, report)
+                val dirPath = Paths.get(dir)
+                if (!Files.isDirectory(dirPath)) {
+                    logger.debug("sub-extract: skipping missing ordered dir {}", dirPath)
+                    continue
+                }
+                val videos = try {
+                    walkVideos(dirPath)
+                } catch (e: Exception) {
+                    logger.warn("sub-extract: walk failed for {}: {}", dirPath, e.message)
+                    continue
+                }
+                for (file in videos) {
+                    if (report.capHit) break
+                    report.filesScanned++
+                    extractInto(file, targetLangs, cap, report)
+                }
+            }
+        } else {
+            for (root in paths()) {
+                if (report.capHit) break
+                val rootPath = Paths.get(root)
+                if (!Files.isDirectory(rootPath)) {
+                    logger.debug("sub-extract: skipping missing path {}", rootPath)
+                    continue
+                }
+                val videos = try {
+                    walkVideos(rootPath)
+                } catch (e: Exception) {
+                    logger.warn("sub-extract: walk failed for {}: {}", rootPath, e.message)
+                    continue
+                }
+                for (file in videos) {
+                    if (report.capHit) break
+                    report.filesScanned++
+                    // Accumulate into the shared [report] so the cap counts total
+                    // extractions across every file in the sweep, not per-file.
+                    extractInto(file, targetLangs, cap, report)
+                }
             }
         }
         logger.info(
@@ -250,6 +295,35 @@ class SubtitleExtractor(
             "fr" to setOf("fr", "fre", "fra", "french"),
         )
     }
+}
+
+/** A series directory paired with its computed prioritarr priority (1..5, 99 = unknown). */
+data class SeriesDir(val path: String, val priority: Int)
+
+/**
+ * Pure ordering core for the priority-first sweep. Given the full set of
+ * Sonarr series dirs (each with its computed priority) and the configured
+ * sub-extract roots, returns the series paths ordered for extraction:
+ *
+ *   1. Keep only series whose [SeriesDir.path] lives under one of
+ *      [subExtractPaths] (prefix match: exact root, or `root + "/"` prefix).
+ *   2. Sort by [SeriesDir.priority] ascending (P1 first), then by path
+ *      ascending as a deterministic tie-break.
+ *
+ * Impure Sonarr/PriorityService fetching stays in Main.kt; this is the
+ * unit-tested decision core.
+ */
+internal fun orderSeriesDirsByPriority(
+    series: List<SeriesDir>,
+    subExtractPaths: List<String>,
+): List<String> {
+    val roots = subExtractPaths.map { it.trimEnd('/') }
+    fun underRoot(path: String): Boolean =
+        roots.any { root -> path == root || path.startsWith("$root/") }
+    return series
+        .filter { underRoot(it.path) }
+        .sortedWith(compareBy({ it.priority }, { it.path }))
+        .map { it.path }
 }
 
 /** One subtitle stream, reduced to the fields selection needs. */
