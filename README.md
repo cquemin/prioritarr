@@ -103,9 +103,16 @@ Torrents paused by prioritarr are tracked (`paused_by_us` flag); user-paused tor
 | **Mapping refresh** | 60 min | Refreshes Sonarr ↔ Plex series mapping (TVDB id / folder path / title fallback). |
 | **Series cache** | 5 min | Local read-model of Sonarr /series for fast UI queries. |
 | **Episode cache** | 60 min | Pulls every monitored episode title into a local table; feeds the global search box. |
+| **Unmonitored reaper** | 60 min | Unmonitors episodes that no longer warrant tracking. |
+| **Watched archiver** | 60 min | Archives fully-watched series so they stop consuming sweep budget. |
+| **Trakt unmonitor** | 60 min | Unmonitors series you've dropped on Trakt. Off by default. |
+| **Trakt token refresh** | 60 min | Proactively refreshes the OAuth token and hot-swaps it into the live client. |
+| **Health monitor** | 5 min | Probes every upstream; feeds the dashboard status banner. |
 | **Tdarr pause (Plex-aware)** | 1 min | Pauses Tdarr's global transcoding while any Plex session is active; resumes when idle. Configure under Connections → Tdarr and enable in Background jobs. Off by default. |
+| **Sonarr watchdog** | 5 min | Detects a wedged Sonarr command queue and escalates app-restart ×3 → container restart via a scoped docker-socket-proxy. `SONARR_WATCHDOG_ENABLED=true`. |
+| **Sub-extract** | 30 min | Turns embedded ASS/SSA tracks into external `.srt` sidecars so Plex soft-serves anime instead of burning subs into a transcode. Walks P1-first, skips files that already have a sidecar. `SUB_EXTRACT_ENABLED=true`. Also fires per-file on Sonarr import. |
 
-Every job is wrapped in a supervisor coroutine — a crash in one doesn't kill the others.
+Every job is wrapped in a supervisor coroutine — a crash in one doesn't kill the others — and is a **singleton**: the scheduler never starts a second run of a job while the first is still in flight, and a job's cadence is measured from when it *finishes*. Long jobs therefore stretch their own interval instead of piling up.
 
 ---
 
@@ -118,6 +125,8 @@ Three pluggable providers, merged by union (a rewatch in any source counts as wa
 - **Trakt** — user-wide watch history via OAuth device-code flow. Falls back to account-wide `/sync/history` when Trakt's per-show endpoint 5xx's.
 
 All three are **optional**. Prioritarr runs fine with any one of them.
+
+**Rate-limit resilience (Trakt).** tvdb→trakt id mappings are persisted in `trakt_id_cache`, so a restart costs zero lookups — a cold cache used to issue one search per series and trip Trakt's limit on a few-hundred-series library. On a 429 a breaker parks *all* Trakt calls until `Retry-After` (60 s if absent), failed id lookups back off for 15 min, and the health banner reports the breaker rather than showing "ok" because one cheap probe slipped through. If some — but not all — providers fail, the priority is still computed from partial history and flagged degraded, which caps its cache TTL at 5 min so the series is re-scored on recovery.
 
 ### Cross-source sync (Plex ⇆ Trakt)
 
@@ -266,7 +275,15 @@ This is meaningful work; happy to scope a design if interest.
 
 ### Env vars
 
-All prefixed `PRIORITARR_`. Required: `SONARR_URL`, `SONARR_API_KEY`, `TAUTULLI_URL`, `TAUTULLI_API_KEY`, `QBIT_URL`, `SAB_URL`, `SAB_API_KEY`. Optional: `API_KEY` (locks `/api/v2/*`), `PLEX_URL` + `PLEX_TOKEN`, `TRAKT_CLIENT_ID` + `TRAKT_ACCESS_TOKEN`, `DRY_RUN`, `LOG_LEVEL`, `UI_ORIGIN`.
+All prefixed `PRIORITARR_`. Required: `SONARR_URL`, `SONARR_API_KEY`, `TAUTULLI_URL`, `TAUTULLI_API_KEY`, `QBIT_URL`, `SAB_URL`, `SAB_API_KEY`.
+
+Optional: `API_KEY` (locks `/api/v2/*`), `CONFIG_PATH` (YAML seed), `PLEX_URL` + `PLEX_TOKEN`, `QBIT_USERNAME` + `QBIT_PASSWORD`, `DRY_RUN`, `LOG_LEVEL`, `UI_ORIGIN`.
+
+- **Trakt** — `TRAKT_CLIENT_ID`, `TRAKT_CLIENT_SECRET`, `TRAKT_ACCESS_TOKEN`, `TRAKT_REFRESH_TOKEN`, `TRAKT_TOKEN_ISSUED_AT`, `TRAKT_TOKEN_EXPIRES_AT`.
+- **Tdarr pause** — `TDARR_URL`, `TDARR_API_KEY`, `TDARR_PAUSE_ENABLED`.
+- **Sonarr watchdog** — `SONARR_WATCHDOG_ENABLED`, `DOCKER_PROXY_URL`, `SONARR_CONTAINER_NAME` (default `sonarr`).
+- **Sub-extract** — `SUB_EXTRACT_ENABLED`, `SUB_EXTRACT_PATHS`, `SUB_EXTRACT_LANGS`, `SUB_EXTRACT_MAX_PER_RUN`. Cadence is YAML/DB-only (see below), not an env var.
+- **Search control** — `CANCEL_BACKFILL_FOR_PRIORITY` (default true).
 
 ### Priority thresholds
 
@@ -312,6 +329,8 @@ intervals:
   p1_fast_cooldown_minutes: 20              # per-episode cooldown for the fast band
   p1_fast_max_per_sweep: 10                 # EpisodeSearch budget per fast-sweep tick
   p1_stall_minutes: 30                      # P1 download stuck threshold in the queue janitor (vs 48h default)
+
+  sub_extract_interval_minutes: 30          # sub-extract cadence (no env var for this one)
 ```
 
 ---
