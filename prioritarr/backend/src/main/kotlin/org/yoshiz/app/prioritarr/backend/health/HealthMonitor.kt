@@ -42,6 +42,14 @@ class HealthMonitor(
     private val db: Database,
     private val settingsProvider: () -> Settings,
     private val http: HttpClient,
+    /**
+     * When Trakt's rate-limit breaker is open, this returns the instant it
+     * clears. The health probe is one cheap call and sails through a limit
+     * that is failing hundreds of real history fetches, so without this
+     * signal the dashboard reports "ok" during an outage that is actively
+     * degrading priority scoring.
+     */
+    private val traktRateLimitedUntil: () -> java.time.Instant? = { null },
 ) {
 
     private val logger = LoggerFactory.getLogger(HealthMonitor::class.java)
@@ -159,6 +167,13 @@ class HealthMonitor(
             ?: return Probe(ProviderStatus.UNKNOWN, "not configured")
         val clientId = s.traktClientId?.takeIf { it.isNotBlank() }
             ?: return Probe(ProviderStatus.UNKNOWN, "client_id missing")
+        // Report the breaker before probing: a 429 that is failing real
+        // workload must not look healthy just because one extra call fits.
+        traktRateLimitedUntil()?.let { until ->
+            if (java.time.Instant.now().isBefore(until)) {
+                return Probe(ProviderStatus.UNREACHABLE, "rate limited until $until")
+            }
+        }
         return runCatching {
             val resp: HttpResponse = http.get("https://api.trakt.tv/users/settings") {
                 header("Authorization", "Bearer $accessToken")

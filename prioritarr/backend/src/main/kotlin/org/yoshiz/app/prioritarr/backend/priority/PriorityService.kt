@@ -64,7 +64,8 @@ class PriorityService(
 
         val result = computePriority(snapshot, thresholdsSource.current())
         val now = Database.nowIsoOffset()
-        val expires = OffsetDateTime.now().plusMinutes(cacheTtlMinutes).format(Database.ISO_OFFSET)
+        val ttl = priorityCacheTtlMinutes(cacheTtlMinutes, snapshot.historyDegraded)
+        val expires = OffsetDateTime.now().plusMinutes(ttl).format(Database.ISO_OFFSET)
         db.upsertPriorityCache(
             seriesId = seriesId,
             priority = result.priority.toLong(),
@@ -211,7 +212,8 @@ class PriorityService(
         // Trakt works: use Trakt's data. Only when every configured
         // provider fails do we degrade to dependency_unreachable.
         val ref = SeriesRef(seriesId = seriesId, title = title, tvdbId = tvdbId.takeIf { it > 0 })
-        val watchEvents = fetchMergedHistory(ref, seriesId) ?: return null
+        val historyOutcome = fetchMergedHistory(ref, seriesId)
+        val watchEvents = historyOutcome.events ?: return null
 
         // Canonicalise + dedup watch events against Sonarr's actual
         // monitored-aired set. Each event maps to *at most one*
@@ -245,6 +247,7 @@ class PriorityService(
             episodeReleaseDate = episodeReleaseDate,
             previousEpisodeReleaseDate = previousEpisodeReleaseDate,
             monitoredMissingEpisodes = missing.size,
+            historyDegraded = historyOutcome.degraded,
         )
     }
 
@@ -259,22 +262,30 @@ class PriorityService(
      * the correct behaviour: without a watch-history source there's no
      * engagement signal at all, so everything is full-backfill.
      */
-    private suspend fun fetchMergedHistory(ref: SeriesRef, seriesId: Long): List<WatchEvent>? {
-        if (watchProviders.isEmpty()) return emptyList()
+    private suspend fun fetchMergedHistory(ref: SeriesRef, seriesId: Long): ProviderFetchOutcome {
+        if (watchProviders.isEmpty()) return ProviderFetchOutcome(emptyList(), degraded = false)
 
         val results = coroutineScope {
             watchProviders.map { p -> async { p.name to p.historyFor(ref) } }.awaitAll()
         }
 
-        val successes = results.mapNotNull { (_, res) -> res.getOrNull() }
-        if (successes.isEmpty()) {
+        val outcome = mergeProviderResults(results)
+        if (outcome.events == null) {
             logger.info(
                 "buildSnapshot: every watch-history provider failed for series {} (providers={})",
                 seriesId,
                 results.joinToString(", ") { (name, res) -> "$name=${if (res.isFailure) "fail" else "ok"}" },
             )
-            return null
+        } else if (outcome.degraded) {
+            // Partial history still produces a usable priority, but it must
+            // not masquerade as a complete one — priorityForSeries caches it
+            // with a short TTL so the series is re-scored on recovery.
+            logger.info(
+                "buildSnapshot: degraded watch history for series {} (providers={})",
+                seriesId,
+                results.joinToString(", ") { (name, res) -> "$name=${if (res.isFailure) "fail" else "ok"}" },
+            )
         }
-        return mergeWatchHistory(successes)
+        return outcome
     }
 }

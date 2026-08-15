@@ -180,6 +180,21 @@ CREATE TABLE IF NOT EXISTS mapping_cache (
     updated_at TEXT NOT NULL
 );
 
+-- Durable tvdb -> trakt show-id map. The mapping never changes, so
+-- persisting it means a restart costs zero Trakt lookups. Previously
+-- this lived only in process memory, and a cold cache issued one
+-- search per monitored series on every start — enough to trip Trakt's
+-- rate limit on a few-hundred-series library and silently degrade
+-- priority scoring until it recovered.
+--
+-- trakt_id NULL is a real answer ("Trakt has no show at this tvdb id"),
+-- distinct from "no row" ("never looked up").
+CREATE TABLE IF NOT EXISTS trakt_id_cache (
+    tvdb_id INTEGER PRIMARY KEY,
+    trakt_id INTEGER,
+    updated_at TEXT NOT NULL
+);
+
 -- Per-upstream health snapshot for the dashboard banner. One row per
 -- provider id (e.g. 'sonarr', 'plex'). Updated every health-monitor
 -- tick. The banner reads this directly — no historical retention.
@@ -267,6 +282,16 @@ DELETE FROM series_cache;
 
 deleteSeriesCacheNotIn:
 DELETE FROM series_cache WHERE id NOT IN ?;
+
+selectTraktIdCache:
+SELECT * FROM trakt_id_cache WHERE tvdb_id = ?;
+
+upsertTraktIdCache:
+INSERT INTO trakt_id_cache (tvdb_id, trakt_id, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(tvdb_id) DO UPDATE SET
+    trakt_id   = excluded.trakt_id,
+    updated_at = excluded.updated_at;
 
 invalidatePriorityCache:
 DELETE FROM series_priority_cache WHERE series_id = ?;

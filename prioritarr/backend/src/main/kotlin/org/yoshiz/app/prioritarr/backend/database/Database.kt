@@ -95,6 +95,22 @@ class Database(dbPath: String) {
     }
 
     // ------------------------------------------------------------------
+    // trakt_id_cache
+    // ------------------------------------------------------------------
+
+    /** Returns the row, or null when this tvdb id has never been resolved. */
+    fun getTraktIdCache(tvdbId: Long): Trakt_id_cache? =
+        q.selectTraktIdCache(tvdbId).executeAsOneOrNull()
+
+    fun upsertTraktIdCache(tvdbId: Long, traktId: Long?) {
+        q.upsertTraktIdCache(
+            tvdb_id = tvdbId,
+            trakt_id = traktId,
+            updated_at = nowIsoOffset(),
+        )
+    }
+
+    // ------------------------------------------------------------------
     // managed_downloads
     // ------------------------------------------------------------------
 

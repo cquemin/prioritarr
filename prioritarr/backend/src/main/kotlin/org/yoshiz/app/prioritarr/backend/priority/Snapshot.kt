@@ -27,6 +27,13 @@ data class SeriesSnapshot(
      * to P5 regardless of how engaged the user is.
      */
     val monitoredMissingEpisodes: Int = 0,
+    /**
+     * True when at least one configured watch provider failed, so the
+     * watch counts above are built on partial history. The priority is
+     * still computed (partial data beats none) but is cached only
+     * briefly — see [priorityCacheTtlMinutes].
+     */
+    val historyDegraded: Boolean = false,
 )
 
 /** Computed priority for a single series. Mirrors PriorityResult in models.py. */

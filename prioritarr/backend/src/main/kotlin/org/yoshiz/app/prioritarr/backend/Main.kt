@@ -271,7 +271,10 @@ fun main() {
     val traktProvider: org.yoshiz.app.prioritarr.backend.priority.WatchHistoryProvider? =
         if (traktClient != null) {
             logger.info("trakt: watch-history provider enabled")
-            org.yoshiz.app.prioritarr.backend.priority.TraktHistoryProvider(traktClient)
+            org.yoshiz.app.prioritarr.backend.priority.TraktHistoryProvider(
+                traktClient,
+                store = org.yoshiz.app.prioritarr.backend.priority.DbTraktIdStore(db),
+            )
         } else {
             logger.info("trakt: not configured, using other providers only")
             null
@@ -414,6 +417,7 @@ fun main() {
         // job cadences below which also read liveSettings(db, settings).
         settingsProvider = { liveSettings(db, settings) },
         http = healthHttp,
+        traktRateLimitedUntil = { traktClient?.rateLimitedUntil() },
     )
 
     // Stateful across ticks (carries the consecutive-idle counter that

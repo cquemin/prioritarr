@@ -11,6 +11,7 @@ import org.yoshiz.app.prioritarr.backend.config.Settings
 import org.yoshiz.app.prioritarr.backend.database.Database
 import java.io.File
 import java.nio.file.Files
+import java.time.Instant
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -29,6 +30,39 @@ class HealthMonitorTest {
     private fun freshDb(): Database = Database(tempDb.absolutePath).also {
         // Reset between tests so test order doesn't matter.
         it.q.deleteAllProviderHealth()
+    }
+
+    /**
+     * The probe is a single cheap call, so it sails through a rate limit
+     * that is failing hundreds of real history fetches. Reporting "ok"
+     * there hides an outage that is actively corrupting priorities.
+     */
+    @Test
+    fun trakt_is_not_ok_while_the_rate_limit_breaker_is_open() = runTest {
+        val db = freshDb()
+        val http = mockedClient { _ -> HttpStatusCode.OK to "{}" }
+        val settings = fullySetSettings()
+        val until = Instant.now().plusSeconds(120)
+        val monitor = HealthMonitor(db, { settings }, http, traktRateLimitedUntil = { until })
+
+        monitor.probeAll()
+
+        val trakt = db.listProviderHealth().single { it.provider == "trakt" }
+        assertEquals("unreachable", trakt.status)
+        assertEquals(true, trakt.detail?.contains("rate limited"))
+    }
+
+    @Test
+    fun trakt_is_ok_once_the_breaker_has_closed() = runTest {
+        val db = freshDb()
+        val http = mockedClient { _ -> HttpStatusCode.OK to "{}" }
+        val settings = fullySetSettings()
+        val monitor = HealthMonitor(db, { settings }, http, traktRateLimitedUntil = { null })
+
+        monitor.probeAll()
+
+        val trakt = db.listProviderHealth().single { it.provider == "trakt" }
+        assertEquals("ok", trakt.status)
     }
 
     private fun mockedClient(handler: (urlString: String) -> Pair<HttpStatusCode, String>): HttpClient {

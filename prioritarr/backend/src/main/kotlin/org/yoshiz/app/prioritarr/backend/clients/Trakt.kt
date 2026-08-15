@@ -21,8 +21,30 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import org.slf4j.LoggerFactory
+import java.time.Duration
 import java.time.Instant
 import java.time.format.DateTimeFormatter
+
+/**
+ * Trakt answered 429. [retryAfterSeconds] carries the `Retry-After` header
+ * when Trakt sends one, so callers can park until the window clears instead
+ * of hammering a server that is explicitly saying stop.
+ *
+ * Exists as a distinct type because Trakt returns 429 with a `text/plain`
+ * body: Ktor's ContentNegotiation would otherwise fail to deserialize it
+ * into JsonArray and surface a NoTransformationFoundException, which is
+ * indistinguishable from a genuine parse bug.
+ */
+class TraktRateLimitedException(
+    val retryAfterSeconds: Long?,
+) : Exception("trakt rate limited" + (retryAfterSeconds?.let { " (retry after ${it}s)" } ?: ""))
+
+/**
+ * Cooldown applied when Trakt returns 429 without a `Retry-After` header.
+ * Trakt's window is 5 minutes; 60s is a deliberately conservative probe
+ * interval so we recover promptly once the window actually clears.
+ */
+const val TRAKT_DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS: Long = 60
 
 /**
  * Thin wrapper around the Trakt.tv v2 API. Endpoints prioritarr uses:
@@ -53,6 +75,8 @@ class TraktClient(
      * which lets the original 401 propagate.
      */
     private val onRefreshNeeded: (suspend () -> String?)? = null,
+    /** Clock seam — overridden in tests to advance the rate-limit window. */
+    private val now: () -> Instant = { Instant.now() },
 ) {
     private val logger = LoggerFactory.getLogger(TraktClient::class.java)
 
@@ -61,6 +85,14 @@ class TraktClient(
     // call re-reads `accessToken` at header-build time.
     @Volatile
     private var accessToken: String = initialAccessToken
+
+    /**
+     * When non-null and in the future, Trakt has 429'd us and every call
+     * short-circuits until this passes. Shared across endpoints on purpose:
+     * the rate limit is per-account, not per-route.
+     */
+    @Volatile
+    private var rateLimitedUntil: Instant? = null
 
     /**
      * Hot-swap the access token in the live client (called by the
@@ -72,11 +104,19 @@ class TraktClient(
     }
 
     /**
+     * Instant the rate-limit breaker clears, or null when closed. Lets the
+     * health monitor report a 429 outage that a single cheap probe call
+     * would otherwise slip past.
+     */
+    fun rateLimitedUntil(): Instant? = rateLimitedUntil?.takeIf { now().isBefore(it) }
+
+    /**
      * Wrap a Trakt API call with one-shot 401 retry. The retry only
      * fires if [onRefreshNeeded] is wired AND the refresh callback
      * actually returns a new token. Anything else propagates.
      */
     private suspend fun <T> withAuth(block: suspend () -> T): T = try {
+        throwIfParked()
         block()
     } catch (e: io.ktor.client.plugins.ResponseException) {
         if (e.response.status.value == 401 && onRefreshNeeded != null) {
@@ -95,7 +135,11 @@ class TraktClient(
      */
     suspend fun searchShowByTvdb(tvdbId: Long): Long? = withAuth {
         val url = "$baseUrl/search/tvdb/$tvdbId?type=show"
-        val results: JsonArray = http.get(url) { applyHeaders() }.body()
+        // Status first: a 429 body is text/plain and would blow up
+        // ContentNegotiation before any status check could fire.
+        val resp: HttpResponse = http.get(url) { applyHeaders() }
+        resp.throwIfRateLimited()
+        val results: JsonArray = resp.body()
         results.firstOrNull()
             ?.jsonObject?.get("show")
             ?.jsonObject?.get("ids")
@@ -132,6 +176,7 @@ class TraktClient(
         // throws a SerializationException before any try/catch on HTTP status
         // can fire. Taking HttpResponse first lets us branch on .status.
         val perShowResp: HttpResponse = http.get(perShowUrl) { applyHeaders() }
+        perShowResp.throwIfRateLimited()
         if (perShowResp.status.value < 500) {
             return@withAuth perShowResp.body<JsonArray>()
         }
@@ -203,6 +248,35 @@ class TraktClient(
             contentType(ContentType.Application.Json)
             setBody(payload)
         }.body()
+    }
+
+    /**
+     * Turn a 429 into [TraktRateLimitedException] and open the breaker.
+     * Carries `Retry-After` when Trakt sends one.
+     */
+    private fun HttpResponse.throwIfRateLimited() {
+        if (status.value != 429) return
+        val retryAfter = headers["Retry-After"]?.trim()?.toLongOrNull()
+        rateLimitedUntil = now().plusSeconds(retryAfter ?: TRAKT_DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
+        logger.warn(
+            "trakt rate limited (429); parking all trakt calls until {}",
+            rateLimitedUntil,
+        )
+        throw TraktRateLimitedException(retryAfter)
+    }
+
+    /**
+     * Fail fast while the breaker is open. Without this, every caller keeps
+     * issuing requests at a server that has already said stop — which is how
+     * a cold-cache priority refresh (hundreds of series) sustains a 429 storm.
+     */
+    private fun throwIfParked() {
+        val until = rateLimitedUntil ?: return
+        val instant = now()
+        if (instant.isBefore(until)) {
+            throw TraktRateLimitedException(Duration.between(instant, until).seconds.coerceAtLeast(1))
+        }
+        rateLimitedUntil = null
     }
 
     private fun io.ktor.client.request.HttpRequestBuilder.applyHeaders() {
