@@ -116,6 +116,19 @@ class Scheduler(
      */
     private val nextDue: ConcurrentHashMap<String, Instant> = ConcurrentHashMap()
 
+    /**
+     * Job ids with a run currently in flight. A job is added synchronously in
+     * [launchJob] (before the coroutine is dispatched, so a tick can never
+     * slip in between) and removed when the run settles.
+     *
+     * Without this, `nextDue` was only pushed forward once a run *finished*,
+     * so any job outliving one tick stayed due and was relaunched every
+     * single tick. On 2026-08-14 sub-extract — a >30min ffprobe walk on a
+     * 30min cadence — accumulated ~30 concurrent sweeps and took the stack
+     * down. A job is a singleton: one run at a time, always.
+     */
+    private val running: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     init {
         val now = Instant.now()
         for (job in jobs) {
@@ -151,6 +164,14 @@ class Scheduler(
         for (job in jobs.sortedBy { it.id }) {
             val due = nextDue[job.id] ?: continue
             if (due.isAfter(now)) continue  // not yet
+            // Already in flight from an earlier tick — leave nextDue alone;
+            // the run's `finally` reschedules it from its completion instant.
+            // Checked before the HEAVY cap so a long-running heavy job does
+            // not also eat this tick's heavy slot.
+            if (job.id in running) {
+                logger.debug("scheduler: {} still running, not relaunching", job.id)
+                continue
+            }
             // Prerequisites — live re-read each tick, e.g. trakt
             // unmonitor's prerequisite is `traktUnmonitor.enabled`.
             val ready = try { job.prerequisites() } catch (e: Exception) {
@@ -177,7 +198,7 @@ class Scheduler(
                 continue
             }
             if (job.weight == JobWeight.HEAVY) heavyLaunched++
-            launchJob(scope, job, now)
+            launchJob(scope, job)
         }
     }
 
@@ -186,7 +207,11 @@ class Scheduler(
         nextDue[job.id] = now.plus(Duration.ofMinutes(mins))
     }
 
-    private fun launchJob(scope: CoroutineScope, job: JobDefinition, scheduledFor: Instant) {
+    private fun launchJob(scope: CoroutineScope, job: JobDefinition) {
+        // Claim the slot synchronously — scope.launch only *dispatches*, so
+        // marking it inside the coroutine would leave a window in which the
+        // next tick sees the job as idle and starts a duplicate.
+        if (!running.add(job.id)) return
         scope.launch {
             val started = Instant.now()
             try {
@@ -204,7 +229,11 @@ class Scheduler(
                 outcomeWriter(job.id, started, finished, JobStatus.ERROR.wire, null, msg)
                 logger.warn("scheduler: {} failed: {}", job.id, e.message)
             } finally {
-                rescheduleAfter(job, scheduledFor)
+                // Cadence runs from completion, not from launch: a job whose
+                // runtime approaches its cadence would otherwise be due again
+                // the instant it finished and run back-to-back with no gap.
+                rescheduleAfter(job, Instant.now())
+                running.remove(job.id)
             }
         }
     }
