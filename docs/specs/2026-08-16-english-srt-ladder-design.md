@@ -36,14 +36,31 @@ rows; zero mentions in Bazarr's log. It is enabled, reachable
 (`whisper:9000` answers 200 from the Bazarr container), and
 demonstrably functional. It is simply never reached.
 
-**G2 — Bazarr's adaptive searching starves it.** `adaptive_searching:
-true`, `adaptive_searching_delay: 3w`, `adaptive_searching_delta: 1w`.
-Repeatedly-failing items back off to weekly and then monthly retries;
-the log is saturated with `Search is throttled by adaptive search`. An
-explicit manual search on SDBH E03 returned HTTP 204 and then did
-nothing — no attempt, no log line, no subtitle. Whisper sits **last**
-in the provider chain, so when the search never runs, Whisper never
-gets a turn. G2 is the direct cause of G1.
+**G2 — Whisper is switched off at the master switch, and is
+unreachable per-episode regardless.** `use_whisper_fallback` is the
+master flag and it is `false`; `use_whisper_fallback_series: true` is
+ANDed against it, so it never takes effect. All three Bazarr code paths
+are closed:
+
+| Path | Expression | Result |
+|---|---|---|
+| `subtitles/wanted/series.py:58` (scheduled sweep) | `fallback_allowed=settings.general.use_whisper_fallback` | false |
+| `subtitles/mass_download/series.py:68` (whole-series) | `use_whisper_fallback and use_whisper_fallback_series` | false |
+| `episode_download_specific_subtitles` (per-episode manual) | never passes it → `generate_subtitles(..., fallback_allowed=False)` | **false, hardcoded** |
+
+The third row is decisive: **even with the master switch on, Bazarr's
+per-episode manual endpoint can never invoke Whisper.** No setting
+exposes it. Delegating the AI rung to Bazarr is therefore not viable
+for a per-episode ladder, which is why R3 calls `whisper:9000`
+directly.
+
+**Adaptive searching is NOT implicated.** `is_search_active` is called
+only from `subtitles/wanted/`, i.e. the scheduled sweep. The manual
+per-episode path used by R2 has no adaptive check, so
+`adaptive_searching` stays **enabled** and unchanged. (An earlier
+reading of this blamed adaptive search: a manual PATCH returned 204 and
+produced nothing. That was async behaviour — `episode_download_specific_subtitles`
+lines 189–190 enqueue a job and return immediately — not a throttle.)
 
 **G3 — `jimaku` delivers nothing.** Enabled, 0 results across 4,000
 rows. The intended anime-fansub fast path is inert; animetosho carries
@@ -177,16 +194,23 @@ Instantiate the dead `BazarrClient` in `Main.kt` and call:
 PATCH /api/episodes/subtitles?seriesid=&episodeid=&language=en&forced=false&hi=false → 204
 ```
 
-The 204 means *queued*, not *found* — Bazarr searches asynchronously.
-The rung triggers, then polls the episode's subtitle list (or watches
-for the sidecar) with a bounded wait of ~3 minutes, and on timeout
-records "no result this attempt" rather than blocking the sweep.
+The 204 means *queued*, not *found* — the handler enqueues a job and
+returns immediately. The rung triggers, then polls the episode's
+subtitle list (or watches for the sidecar) with a bounded wait of ~3
+minutes, and on timeout records "no result this attempt" rather than
+blocking the sweep.
 
-**Required config change (not code):** set `adaptive_searching: false`
-in `docker/bazarr/config/config.yaml`. With prioritarr owning backoff
-via `subtitle_ladder_state`, Bazarr's adaptive layer is redundant *and*
-actively blocks R2 for the entire backlog — verified empirically. Left
-on, this rung is a permanent no-op.
+**No Bazarr config change is required.** This path
+(`episode_download_specific_subtitles`) carries no adaptive-search
+check, so `adaptive_searching` stays enabled and continues to protect
+Bazarr's own scheduled sweep. The two backoff mechanisms are
+complementary, not competing: Bazarr paces its sweep, prioritarr paces
+its own triggers via `subtitle_ladder_state`.
+
+It also **cannot** invoke Whisper — `fallback_allowed` defaults to
+`False` and this path never sets it. That is a feature here: R2 stays
+cheap, network-only, and predictable, with no risk of silently
+consuming CPU.
 
 ### R3 — Whisper (expensive, gated)
 
@@ -228,8 +252,9 @@ CREATE TABLE IF NOT EXISTS subtitle_ladder_state (
 );
 ```
 
-This is what replaces Bazarr's adaptive search: per-episode, inspectable,
-and resumable across restarts.
+This paces prioritarr's own R2/R3 triggers. It does not replace Bazarr's
+adaptive search, which stays enabled and continues to govern Bazarr's
+scheduled sweep on a separate code path.
 
 ## Gating
 
@@ -311,9 +336,21 @@ Sequenced so each step is independently verifiable:
 1. Ship with `sub_ladder_enabled=false`.
 2. Land the `matchesLang` and `hasSidecar` fixes alone — cheap, and
    immediately recovers untagged-English files like SDBH S06E01/E02.
-3. Enable R1 + R2 with Whisper off; set Bazarr `adaptive_searching:
-   false` at the same time. Watch the backlog drain.
+3. Enable R1 + R2 with Whisper off. No Bazarr configuration changes.
+   Watch the backlog drain.
 4. Enable R3 for P1/P2 once R2's yield has plateaued.
+
+Bazarr settings are left exactly as they are — `adaptive_searching`
+stays on, and `use_whisper_fallback` stays off, since prioritarr owns
+the Whisper rung directly and Bazarr's whisperai provider would only
+duplicate it.
+
+**Residual risk.** The manual per-episode path has no adaptive guard,
+so for R2 the only pacing is prioritarr's own: the per-sweep cap, the
+two gates, and `subtitle_ladder_state` backoff. A bug in that backoff
+would mean provider hammering, with no Bazarr safety net on this
+specific path. The cap is the primary guardrail and should be
+conservative on first enable.
 
 ## References
 
