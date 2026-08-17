@@ -18,6 +18,7 @@
 - An existing `.en.srt` is never overwritten; re-check existence immediately before the atomic move.
 - Whisper is **globally serialised** — one episode at a time, never concurrent.
 - Temp files use **unique** names, never the deterministic `base.lang.srt.tmp` (it already races).
+- **All timestamps written to or compared against the DB use `Database.ISO_OFFSET`** (or `Database.nowIsoOffset()`), never `OffsetDateTime.toString()` / `Instant.toString()`. `next_retry_at` is compared as a string in SQL; the JDK prints `Z` for zero offset while the codebase pins `+00:00`, and `'Z'` sorts above `'+'`, so a mismatched row never comes due.
 - Run tests with `.\gradlew.bat :backend:test --tests "<pattern>"` from `D:\git\prioritarr\prioritarr`.
 - Backend source root: `prioritarr/backend/src/main/kotlin/org/yoshiz/app/prioritarr/backend/`
 - Test root: `prioritarr/backend/src/test/kotlin/org/yoshiz/app/prioritarr/backend/`
@@ -1675,8 +1676,20 @@ class SubtitleLadder(
         return outcome
     }
 
+    /**
+     * Timestamps MUST be formatted with [Database.ISO_OFFSET], never
+     * `OffsetDateTime.toString()`.
+     *
+     * `next_retry_at` is compared lexicographically in SQL
+     * (`next_retry_at <= ?`), so the written format has to match what
+     * every other writer and reader uses. The JDK prints `Z` for a zero
+     * offset while `ISO_OFFSET` pins it to `+00:00`, and `'Z'` (0x5A)
+     * sorts ABOVE `'+'` (0x2B) — a `Z`-formatted row would never compare
+     * as due, and the episode would silently never be retried again.
+     * `Database.ISO_OFFSET` exists precisely to avoid this.
+     */
     private fun isoPlus(d: java.time.Duration): String =
-        OffsetDateTime.ofInstant(Instant.now().plus(d), ZoneOffset.UTC).toString()
+        OffsetDateTime.now(ZoneOffset.UTC).plus(d).format(Database.ISO_OFFSET)
 
     private fun siblingNames(dir: Path): Set<String> = try {
         Files.list(dir).use { s -> s.map { it.fileName.toString() }.toList().toSet() }
