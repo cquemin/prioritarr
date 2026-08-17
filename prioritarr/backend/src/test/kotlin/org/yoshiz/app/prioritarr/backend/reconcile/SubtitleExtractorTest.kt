@@ -568,6 +568,36 @@ class SubtitleExtractorTest {
         )
     }
 
+    // extractOne's tmp path is now UUID-named (never the deterministic
+    // "<base>.<lang2>.srt.tmp", which already races between concurrent
+    // runs). Assert no .tmp survives an embedded-track extraction, mirroring
+    // the leak check added for the ASS-sidecar rung above.
+    @Test
+    fun embedded_track_extraction_leaves_no_tmp_files() = runBlocking {
+        val dir = java.nio.file.Files.createTempDirectory("sub-embedded-notmp")
+        java.nio.file.Files.writeString(dir.resolve("Ep.mkv"), "x")
+
+        val extractor = SubtitleExtractor(
+            paths = { listOf(dir.toString()) },
+            langs = { listOf("en") },
+            maxPerRun = { 10 },
+            probe = { listOf(SubStream(index = 0, codecName = "ass", language = "eng")) },
+            extract = { _, _, target ->
+                java.nio.file.Files.writeString(target, "1\n00:00:01,000 --> 00:00:02,000\nhi\n")
+                true
+            },
+        )
+
+        val report = extractor.sweep()
+
+        assertEquals(1, report.extracted)
+        assertTrue(java.nio.file.Files.exists(dir.resolve("Ep.en.srt")))
+        assertTrue(
+            java.nio.file.Files.list(dir).use { s -> s.noneMatch { it.fileName.toString().endsWith(".tmp") } },
+            "temp files must not be left behind",
+        )
+    }
+
     private companion object {
         const val SAMPLE_SRT =
             "1\n00:00:01,000 --> 00:00:02,000\n<font color=\"#fff\">Hello</font> <i>world</i>\n"

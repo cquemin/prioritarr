@@ -232,7 +232,10 @@ class SubtitleExtractor(
 
     private suspend fun extractOne(file: Path, lang2: String, stream: SubStream, report: SubExtractReport) {
         val target = sidecarTarget(file, lang2)
-        val tmp = file.parent.resolve("${baseName(file)}.$lang2.srt.tmp")
+        // Unique name, not the deterministic "<base>.<lang2>.srt.tmp": two
+        // concurrent runs (or a leftover from a crashed prior run) touching
+        // the same file/lang would otherwise race on the same tmp path.
+        val tmp = file.parent.resolve("${baseName(file)}.$lang2.srt.${java.util.UUID.randomUUID()}.tmp")
         val ok = try {
             extract(file, stream.index, tmp)
         } catch (e: Exception) {
