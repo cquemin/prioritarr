@@ -15,6 +15,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.PosixFilePermissions
+import java.util.concurrent.TimeUnit
 import kotlin.streams.toList
 
 /**
@@ -56,6 +57,12 @@ class SubtitleExtractor(
      * returning true on success.
      */
     private val extract: suspend (file: Path, streamIndex: Int, target: Path) -> Boolean,
+    /**
+     * ffmpeg seam converting a standalone subtitle FILE (not an embedded
+     * stream) to SRT. Used when a `.ass` sidecar exists but no `.srt` —
+     * free, and Plex can only soft-serve the SRT.
+     */
+    private val convertSidecar: suspend (src: Path, target: Path) -> Boolean = { _, _ -> false },
     /**
      * Optional seam that yields the series directories to sweep, ordered by
      * prioritarr priority (P1 first). When it returns a NON-EMPTY list the
@@ -170,10 +177,34 @@ class SubtitleExtractor(
         cap: Int,
         report: SubExtractReport,
     ) {
+        val base = baseName(file)
         // Languages still lacking a sidecar for this file.
         val pending = targetLangs.filter { !hasSidecar(file, it) }
         report.skippedHasSidecar += (targetLangs.size - pending.size)
         if (pending.isEmpty()) return
+
+        for (lang2 in pending) {
+            if (report.extracted >= cap) {
+                report.capHit = true
+                return
+            }
+            // Free upgrade: a standalone .ass sidecar converts to .srt with no
+            // decode of the video at all. Try it before touching ffprobe.
+            for (cand in listOf("$base.$lang2.ass", "$base.ass")) {
+                val src = file.parent?.resolve(cand) ?: continue
+                if (!Files.exists(src)) continue
+                val target = sidecarTarget(file, lang2)
+                val tmp = file.parent.resolve("${baseName(file)}.$lang2.srt.${java.util.UUID.randomUUID()}.tmp")
+                if (convertSidecar(src, tmp)) {
+                    if (!Files.exists(target)) {
+                        atomicMove(tmp, target)
+                        report.extracted++
+                        return
+                    }
+                }
+                deleteQuiet(tmp)
+            }
+        }
 
         val streams = try {
             probe(file)
@@ -237,29 +268,44 @@ class SubtitleExtractor(
         }
 
     /**
-     * True if any known sidecar spelling for [lang2] already exists next
-     * to [file] — including the language-less `<base>.srt`. When true we
-     * never touch that language (Bazarr/Whisper already covered it).
+     * Is the strict bar already met for [lang2]?
+     *
+     * Only an exact `<base>.<lang2>.srt` counts. `.hi` / `.forced` /
+     * bare `.srt` deliberately do NOT: a hearing-impaired or
+     * signs-only sidecar is not the clean dialogue track we want Plex
+     * to soft-serve, and treating one as coverage would permanently
+     * block the free extraction that could produce the real thing.
+     *
+     * Narrower than it used to be — that is the point. We still never
+     * overwrite the file named here, so Bazarr's downloads remain safe.
      */
     private fun hasSidecar(file: Path, lang2: String): Boolean {
         val dir = file.parent ?: return false
-        val base = baseName(file)
-        val candidates = listOf(
-            "$base.$lang2.srt",
-            "$base.$lang2.hi.srt",
-            "$base.$lang2.forced.srt",
-            "$base.srt",
-        )
-        return candidates.any { Files.exists(dir.resolve(it)) }
+        return Files.exists(dir.resolve("${baseName(file)}.$lang2.srt"))
     }
 
     private fun sidecarTarget(file: Path, lang2: String): Path =
         file.parent.resolve("${baseName(file)}.$lang2.srt")
 
+    /**
+     * Does this stream carry [lang2]?
+     *
+     * The language tag wins whenever it is present — a tagged `pol`
+     * track titled "English fansub" is Polish, and treating it as
+     * English is exactly the bug that produced Polish subtitles on
+     * Super Dragon Ball Heroes S06E03.
+     *
+     * Only when the tag is absent do we fall back to the track title.
+     * Some muxes set no language at all and label the track "English";
+     * without this fallback those files are invisible to the extractor
+     * and fall through every rung of the ladder.
+     */
     private fun matchesLang(s: SubStream, lang2: String): Boolean {
-        val lang = s.language?.lowercase()?.trim() ?: return false
         val aliases = LANG_ALIASES[lang2] ?: setOf(lang2)
-        return lang in aliases
+        val lang = s.language?.lowercase()?.trim()
+        if (!lang.isNullOrEmpty() && lang != "und") return lang in aliases
+        val title = s.title?.lowercase()?.trim() ?: return false
+        return aliases.any { alias -> title == alias || title.contains(alias) }
     }
 
     private fun atomicMove(from: Path, to: Path) {
@@ -447,6 +493,22 @@ object FfmpegSubtitleIo {
             }
         } catch (e: Exception) {
             logger.warn("sub-extract: ffmpeg launch failed for {}: {}", file, e.message)
+            false
+        }
+    }
+
+    /**
+     * Convert a standalone subtitle file to SRT. `-f srt` is mandatory:
+     * the temp target ends `.tmp`, so ffmpeg cannot infer the format and
+     * fails with "Unable to choose an output format".
+     */
+    suspend fun convertSubtitleFile(src: Path, target: Path): Boolean = withContext(Dispatchers.IO) {
+        val cmd = listOf("ffmpeg", "-v", "error", "-y", "-i", src.toString(), "-f", "srt", target.toString())
+        try {
+            val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
+            if (!p.waitFor(5, TimeUnit.MINUTES)) { p.destroyForcibly(); return@withContext false }
+            p.exitValue() == 0
+        } catch (_: Exception) {
             false
         }
     }

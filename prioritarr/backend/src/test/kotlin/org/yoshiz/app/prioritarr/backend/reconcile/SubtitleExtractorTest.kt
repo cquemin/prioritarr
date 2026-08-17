@@ -1,5 +1,6 @@
 package org.yoshiz.app.prioritarr.backend.reconcile
 
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import java.io.File
 import java.nio.file.Files
@@ -82,8 +83,11 @@ class SubtitleExtractorTest {
         assertEquals("already here", Files.readString(root.resolve("Show.S01E02.en.srt")))
     }
 
-    // (b') the language-less <base>.srt also blocks extraction.
-    @Test fun plain_srt_sidecar_blocks_all_langs() = runTest {
+    // (b') the language-less <base>.srt is NOT the strict bar (only an exact
+    // <base>.<lang2>.srt counts) — it must no longer block extraction. See
+    // hasSidecar's narrowing: a variant/uncertain-language sidecar must still
+    // permit the free rung, same rationale as the .en.hi.srt case below.
+    @Test fun plain_srt_sidecar_no_longer_blocks_extraction() = runTest {
         val root = tempRoot()
         touch(root, "Show.S01E03.mkv")
         touch(root, "Show.S01E03.srt", "plain")
@@ -91,8 +95,14 @@ class SubtitleExtractorTest {
         val rec = ExtractRecorder()
         val report = extractor(root, streams, rec, langs = listOf("en", "fr")).sweep()
 
-        assertEquals(0, rec.calls.size)
-        assertEquals(2, report.skippedHasSidecar) // both langs blocked
+        // en has a matching embedded track and no exact Show.S01E03.en.srt → extracted.
+        assertEquals(1, rec.calls.size)
+        assertEquals(1, report.extracted)
+        assertEquals(0, report.skippedHasSidecar)
+        // fr has no matching embedded track → skipped for lack of a text track, not sidecar coverage.
+        assertEquals(1, report.skippedNoTextTrack)
+        // The pre-existing bare .srt is left untouched.
+        assertEquals("plain", Files.readString(root.resolve("Show.S01E03.srt")))
     }
 
     // (c) only image-codec subs → skipped, extract never called.
@@ -429,6 +439,133 @@ class SubtitleExtractorTest {
         assertTrue(FfmpegSubtitleIo.parseFfprobe("{}").isEmpty())
         assertTrue(FfmpegSubtitleIo.parseFfprobe("not json").isEmpty())
         assertTrue(FfmpegSubtitleIo.parseFfprobe("""{"streams":[]}""").isEmpty())
+    }
+
+    @Test
+    fun untagged_track_titled_english_is_extracted() = runBlocking {
+        val dir = java.nio.file.Files.createTempDirectory("sub-ladder-untagged")
+        val video = dir.resolve("Show - S06E01 - TBA HDTV-1080p.mkv")
+        java.nio.file.Files.writeString(video, "x")
+
+        var extractedIndex: Int? = null
+        val extractor = SubtitleExtractor(
+            paths = { listOf(dir.toString()) },
+            langs = { listOf("en") },
+            maxPerRun = { 10 },
+            // No language tag at all — only a title. This is what the
+            // Super Dragon Ball Heroes S06E01/E02 muxes look like.
+            probe = { listOf(SubStream(index = 0, codecName = "ass", language = null, title = "English")) },
+            extract = { _, idx, target ->
+                extractedIndex = idx
+                java.nio.file.Files.writeString(target, "1\n00:00:01,000 --> 00:00:02,000\nhi\n")
+                true
+            },
+        )
+
+        val report = extractor.sweep()
+
+        assertEquals(1, report.extracted, "untagged English track must be extracted")
+        assertEquals(0, extractedIndex)
+        assertTrue(java.nio.file.Files.exists(dir.resolve("Show - S06E01 - TBA HDTV-1080p.en.srt")))
+    }
+
+    @Test
+    fun language_tag_wins_over_a_misleading_title() = runBlocking {
+        val dir = java.nio.file.Files.createTempDirectory("sub-ladder-tagwins")
+        val video = dir.resolve("Show - S06E03 - Polish HDTV-1080p.mkv")
+        java.nio.file.Files.writeString(video, "x")
+
+        val extractor = SubtitleExtractor(
+            paths = { listOf(dir.toString()) },
+            langs = { listOf("en") },
+            maxPerRun = { 10 },
+            // Tagged Polish. The title must not rescue it — this is the
+            // SDBH S06E03 "Grupa Mirai" case that started this work.
+            probe = { listOf(SubStream(index = 0, codecName = "ass", language = "pol", title = "English fansub")) },
+            extract = { _, _, _ -> error("must not extract a tagged non-English track") },
+        )
+
+        val report = extractor.sweep()
+
+        assertEquals(0, report.extracted)
+    }
+
+    @Test
+    fun hi_variant_no_longer_blocks_extraction() = runBlocking {
+        val dir = java.nio.file.Files.createTempDirectory("sub-strict-bar")
+        val video = dir.resolve("Show - S06E06 - Ep WEBDL-1080p.mkv")
+        java.nio.file.Files.writeString(video, "x")
+        // Bazarr previously landed a hearing-impaired sidecar. That is
+        // NOT the strict bar, so a free extraction must still run.
+        java.nio.file.Files.writeString(dir.resolve("Show - S06E06 - Ep WEBDL-1080p.en.hi.srt"), "1\n")
+
+        val extractor = SubtitleExtractor(
+            paths = { listOf(dir.toString()) },
+            langs = { listOf("en") },
+            maxPerRun = { 10 },
+            probe = { listOf(SubStream(index = 0, codecName = "ass", language = "eng")) },
+            extract = { _, _, target ->
+                java.nio.file.Files.writeString(target, "1\n00:00:01,000 --> 00:00:02,000\nhi\n")
+                true
+            },
+        )
+
+        val report = extractor.sweep()
+
+        assertEquals(1, report.extracted, ".en.hi.srt must not count as satisfied")
+        assertTrue(java.nio.file.Files.exists(dir.resolve("Show - S06E06 - Ep WEBDL-1080p.en.srt")))
+    }
+
+    @Test
+    fun exact_en_srt_still_blocks_extraction() = runBlocking {
+        val dir = java.nio.file.Files.createTempDirectory("sub-strict-bar-sat")
+        java.nio.file.Files.writeString(dir.resolve("Ep.mkv"), "x")
+        java.nio.file.Files.writeString(dir.resolve("Ep.en.srt"), "1\n")
+
+        val extractor = SubtitleExtractor(
+            paths = { listOf(dir.toString()) },
+            langs = { listOf("en") },
+            maxPerRun = { 10 },
+            probe = { listOf(SubStream(index = 0, codecName = "ass", language = "eng")) },
+            extract = { _, _, _ -> error("must never clobber an existing .en.srt") },
+        )
+
+        assertEquals(0, extractor.sweep().extracted)
+    }
+
+    @Test
+    fun standalone_ass_sidecar_is_converted_to_srt() = runBlocking {
+        val dir = java.nio.file.Files.createTempDirectory("sub-ass-convert")
+        java.nio.file.Files.writeString(dir.resolve("Ep.mkv"), "x")
+        java.nio.file.Files.writeString(dir.resolve("Ep.en.ass"), "[Script Info]\n")
+
+        var convertedFrom: String? = null
+        val extractor = SubtitleExtractor(
+            paths = { listOf(dir.toString()) },
+            langs = { listOf("en") },
+            maxPerRun = { 10 },
+            // No embedded subtitle streams at all.
+            probe = { emptyList() },
+            extract = { _, _, _ -> error("no embedded track to extract") },
+            convertSidecar = { src, target ->
+                convertedFrom = src.fileName.toString()
+                // The seam writes to a unique tmp path; the extractor
+                // atomically renames it to the final .en.srt.
+                java.nio.file.Files.writeString(target, "1\n00:00:01,000 --> 00:00:02,000\nhi\n")
+                true
+            },
+        )
+
+        val report = extractor.sweep()
+
+        assertEquals(1, report.extracted)
+        assertEquals("Ep.en.ass", convertedFrom, "must convert from the .ass sidecar")
+        // The observable contract: a clean .en.srt on disk, no .tmp left behind.
+        assertTrue(java.nio.file.Files.exists(dir.resolve("Ep.en.srt")))
+        assertTrue(
+            java.nio.file.Files.list(dir).use { s -> s.noneMatch { it.fileName.toString().endsWith(".tmp") } },
+            "temp files must not be left behind",
+        )
     }
 
     private companion object {
