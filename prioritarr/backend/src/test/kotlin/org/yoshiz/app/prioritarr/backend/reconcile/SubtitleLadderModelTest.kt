@@ -149,4 +149,38 @@ class SubtitleLadderModelTest {
         assertEquals(true, consumesAttempt(LadderOutcome.NO_SOURCE))
         assertEquals(true, consumesAttempt(LadderOutcome.UNREADABLE))
     }
+
+    @Test
+    fun plex_streaming_closes_the_gate() {
+        val g = decideLadderGate(plexSessions = 1, congested = false, idleTicks = 5, resumeAfterIdleTicks = 3)
+        assertEquals(false, g.open)
+        assertEquals(0, g.idleTicks, "a live session resets the idle counter")
+    }
+
+    @Test
+    fun plex_probe_error_means_busy_not_idle() {
+        // Deliberately unlike decideTdarrPause, which treats an error as 0
+        // sessions. For a CPU-bound rung a false "idle" during a stream is
+        // the expensive mistake, so null fails CLOSED.
+        val g = decideLadderGate(plexSessions = null, congested = false, idleTicks = 99, resumeAfterIdleTicks = 3)
+        assertEquals(false, g.open)
+        assertEquals(0, g.idleTicks)
+    }
+
+    @Test
+    fun congestion_closes_the_gate_even_when_plex_is_idle() {
+        val g = decideLadderGate(plexSessions = 0, congested = true, idleTicks = 9, resumeAfterIdleTicks = 3)
+        assertEquals(false, g.open)
+    }
+
+    @Test
+    fun gate_opens_only_after_enough_idle_ticks() {
+        // Plex reports 0 momentarily mid-playback; debounce before acting.
+        val t1 = decideLadderGate(0, congested = false, idleTicks = 0, resumeAfterIdleTicks = 3)
+        assertEquals(false, t1.open); assertEquals(1, t1.idleTicks)
+        val t2 = decideLadderGate(0, congested = false, idleTicks = t1.idleTicks, resumeAfterIdleTicks = 3)
+        assertEquals(false, t2.open); assertEquals(2, t2.idleTicks)
+        val t3 = decideLadderGate(0, congested = false, idleTicks = t2.idleTicks, resumeAfterIdleTicks = 3)
+        assertEquals(true, t3.open); assertEquals(3, t3.idleTicks)
+    }
 }

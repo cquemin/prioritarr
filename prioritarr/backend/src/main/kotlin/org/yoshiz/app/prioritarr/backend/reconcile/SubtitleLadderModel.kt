@@ -120,3 +120,38 @@ fun consumesAttempt(outcome: LadderOutcome): Boolean = when (outcome) {
     LadderOutcome.NO_SOURCE, LadderOutcome.UNREADABLE -> true
     LadderOutcome.UPSTREAM_DOWN, LadderOutcome.SATISFIED, LadderOutcome.BLOCKED_VARIANT -> false
 }
+
+/** Result of one gate evaluation. [idleTicks] is carried into the next tick. */
+data class LadderGate(
+    val open: Boolean,
+    val reason: String,
+    val idleTicks: Int,
+)
+
+/**
+ * Decide whether the ladder may do work this tick.
+ *
+ * @param plexSessions active Plex sessions, or **null when the probe
+ *   failed**. Null fails CLOSED — unlike [decideTdarrPause], which maps
+ *   an error to 0. Running Whisper during a live stream because a probe
+ *   blipped is far more costly than skipping one sweep.
+ * @param congested true when Sonarr has P1/P2 searches in flight.
+ * @param idleTicks consecutive idle polls so far, carried by the caller.
+ * @param resumeAfterIdleTicks idle polls required before opening.
+ */
+fun decideLadderGate(
+    plexSessions: Int?,
+    congested: Boolean,
+    idleTicks: Int,
+    resumeAfterIdleTicks: Int,
+): LadderGate {
+    if (plexSessions == null) return LadderGate(false, "plex probe failed (failing closed)", 0)
+    if (plexSessions > 0) return LadderGate(false, "plex streaming ($plexSessions)", 0)
+    if (congested) return LadderGate(false, "sonarr search queue congested", idleTicks)
+    val newIdle = minOf(idleTicks + 1, resumeAfterIdleTicks)
+    return if (newIdle >= resumeAfterIdleTicks) {
+        LadderGate(true, "idle", newIdle)
+    } else {
+        LadderGate(false, "debouncing plex idle ($newIdle/$resumeAfterIdleTicks)", newIdle)
+    }
+}
