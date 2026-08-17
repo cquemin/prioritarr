@@ -111,6 +111,35 @@ class Database(dbPath: String) {
     }
 
     // ------------------------------------------------------------------
+    // subtitle_ladder_state
+    // ------------------------------------------------------------------
+
+    fun getLadderState(episodeId: Long): Subtitle_ladder_state? =
+        q.selectLadderState(episodeId).executeAsOneOrNull()
+
+    fun upsertLadderState(
+        episodeId: Long,
+        lastRung: String,
+        outcome: String,
+        attempts: Long,
+        nextRetryAt: String?,
+    ) {
+        val now = nowIsoOffset()
+        q.upsertLadderState(
+            episode_id = episodeId,
+            last_rung = lastRung,
+            outcome = outcome,
+            attempts = attempts,
+            last_attempt_at = now,
+            next_retry_at = nextRetryAt,
+            updated_at = now,
+        )
+    }
+
+    fun ladderEpisodesDue(now: String, limit: Long): List<Subtitle_ladder_state> =
+        q.ladderEpisodesDue(now, limit).executeAsList()
+
+    // ------------------------------------------------------------------
     // managed_downloads
     // ------------------------------------------------------------------
 

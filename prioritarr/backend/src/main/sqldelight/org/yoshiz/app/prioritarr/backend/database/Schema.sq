@@ -195,6 +195,26 @@ CREATE TABLE IF NOT EXISTS trakt_id_cache (
     updated_at TEXT NOT NULL
 );
 
+-- Per-episode position in the English-SRT ladder. This is prioritarr's
+-- own pacing for the rungs it drives; it does NOT replace Bazarr's
+-- adaptive search, which still governs Bazarr's scheduled sweep on a
+-- separate code path.
+--
+-- next_retry_at NULL means "due now" (never attempted, or an attempt
+-- that did not schedule a retry).
+CREATE TABLE IF NOT EXISTS subtitle_ladder_state (
+    episode_id      INTEGER PRIMARY KEY,
+    last_rung       TEXT NOT NULL,
+    outcome         TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_attempt_at TEXT,
+    next_retry_at   TEXT,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_subtitle_ladder_next_retry
+    ON subtitle_ladder_state(next_retry_at);
+
 -- Per-upstream health snapshot for the dashboard banner. One row per
 -- provider id (e.g. 'sonarr', 'plex'). Updated every health-monitor
 -- tick. The banner reads this directly — no historical retention.
@@ -292,6 +312,30 @@ VALUES (?, ?, ?)
 ON CONFLICT(tvdb_id) DO UPDATE SET
     trakt_id   = excluded.trakt_id,
     updated_at = excluded.updated_at;
+
+-- ------------------------------------------------------------------
+-- subtitle_ladder_state
+-- ------------------------------------------------------------------
+
+selectLadderState:
+SELECT * FROM subtitle_ladder_state WHERE episode_id = ?;
+
+upsertLadderState:
+INSERT INTO subtitle_ladder_state (episode_id, last_rung, outcome, attempts, last_attempt_at, next_retry_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(episode_id) DO UPDATE SET
+    last_rung       = excluded.last_rung,
+    outcome         = excluded.outcome,
+    attempts        = excluded.attempts,
+    last_attempt_at = excluded.last_attempt_at,
+    next_retry_at   = excluded.next_retry_at,
+    updated_at      = excluded.updated_at;
+
+ladderEpisodesDue:
+SELECT * FROM subtitle_ladder_state
+WHERE next_retry_at IS NULL OR next_retry_at <= ?
+ORDER BY next_retry_at IS NOT NULL, next_retry_at
+LIMIT ?;
 
 invalidatePriorityCache:
 DELETE FROM series_priority_cache WHERE series_id = ?;
