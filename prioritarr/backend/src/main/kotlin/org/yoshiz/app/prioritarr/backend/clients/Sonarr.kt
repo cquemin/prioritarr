@@ -40,15 +40,19 @@ open class SonarrClient(
         get("/api/v3/series/$seriesId") as JsonObject
 
     /**
-     * `includeEpisodeFile=true` so `episodeFile.path` is populated —
-     * required by the sub-ladder candidate builder to link a Sonarr
-     * episode row back to the file on disk. Every other existing caller
-     * only reads episode metadata, so widening this is safe.
+     * [includeEpisodeFile] defaults to false: it adds a per-episode file
+     * join on Sonarr's side, which is the wrong tradeoff for the
+     * library-wide callers (episode-cache refresh, priority snapshots)
+     * that hit this on an hourly/frequent cadence. Only the sub-ladder
+     * candidate builder needs `episodeFile.path` (to link a Sonarr
+     * episode row back to the file on disk for Bazarr/Whisper), so only
+     * it passes `true`.
      */
-    suspend fun getEpisodes(seriesId: Long): JsonArray =
+    suspend fun getEpisodes(seriesId: Long, includeEpisodeFile: Boolean = false): JsonArray =
         get(
             "/api/v3/episode",
-            mapOf("seriesId" to seriesId.toString(), "includeEpisodeFile" to "true"),
+            mapOf("seriesId" to seriesId.toString()) +
+                if (includeEpisodeFile) mapOf("includeEpisodeFile" to "true") else emptyMap(),
         ).jsonArray
 
     open suspend fun getWantedMissing(pageSize: Int = 1000): JsonArray =

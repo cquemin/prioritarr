@@ -52,6 +52,41 @@ class BazarrClientTest {
         return http to calls
     }
 
+    /**
+     * Bazarr's real accept response for a subtitle-search trigger is 204
+     * with NO body — this is the case that matters and, before this fix,
+     * was never exercised: `clientCapturing()` already responds this way,
+     * but no test asserted on the *return value*, so a
+     * `.body<JsonElement?>()` read that turned every successful trigger
+     * into a false negative went uncaught.
+     */
+    @Test
+    fun `triggerEpisodeSearch reports success on Bazarr's 204-no-body accept response`() = runTest {
+        val (http, _) = clientCapturing()
+        val client = BazarrClient("http://bazarr:6767/bazarr", "k", http)
+
+        val result = client.triggerEpisodeSearch(sonarrSeriesId = 1, sonarrEpisodeId = 2, language = "en")
+
+        assertTrue(result, "204 with empty body must read as success, not failure")
+    }
+
+    @Test
+    fun `triggerEpisodeSearch reports failure on a non-2xx status`() = runTest {
+        val engine = MockEngine {
+            respond(
+                content = ByteReadChannel(""),
+                status = HttpStatusCode.Unauthorized,
+                headers = headersOf("Content-Type", ContentType.Application.Json.toString()),
+            )
+        }
+        val http = HttpClient(engine) { install(ContentNegotiation) { json() } }
+        val client = BazarrClient("http://bazarr:6767/bazarr", "wrong-key", http)
+
+        val result = client.triggerEpisodeSearch(sonarrSeriesId = 1, sonarrEpisodeId = 2, language = "en")
+
+        assertEquals(false, result, "a 401 must read as failure")
+    }
+
     @Test
     fun `triggerEpisodeSearch issues PATCH with seriesid episodeid language and X-API-KEY header`() = runTest {
         val (http, calls) = clientCapturing()

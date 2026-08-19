@@ -106,6 +106,18 @@ data class Intervals(
      * gates are the only pacing on provider traffic.
      */
     val subLadderMaxPerSweep: Int = 5,
+    /**
+     * Series SCANNED (i.e. `getEpisodes` calls) per sweep, independent of
+     * how many episodes turn out to be due. This is the real fan-out
+     * bound: with everything satisfied and nothing due, [subLadderMaxPerSweep]
+     * alone never triggers because `out` never fills, so without this cap
+     * every series gets an episode-file fan-out call every sweep — the
+     * exact pattern that starved Sonarr's SQLite in the 2026-08-14
+     * incident. A rotating cursor advances through the priority-sorted
+     * library sweep over sweep, so scanning stays bounded while every
+     * series still gets covered eventually.
+     */
+    val subLadderMaxSeriesPerSweep: Int = 10,
 )
 
 data class CacheConfig(val priorityTtlMinutes: Int = 60)
@@ -442,6 +454,7 @@ data class EditableSettings(
     // baseline (env/YAML).
     val subLadderIntervalMinutes: Int? = null,
     val subLadderMaxPerSweep: Int? = null,
+    val subLadderMaxSeriesPerSweep: Int? = null,
 )
 
 /** Apply [override] on top of [base], returning a new [Settings]. */
@@ -510,6 +523,7 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
         subExtractIntervalMinutes = override.subExtractIntervalMinutes ?: base.intervals.subExtractIntervalMinutes,
         subLadderIntervalMinutes = override.subLadderIntervalMinutes ?: base.intervals.subLadderIntervalMinutes,
         subLadderMaxPerSweep = override.subLadderMaxPerSweep ?: base.intervals.subLadderMaxPerSweep,
+        subLadderMaxSeriesPerSweep = override.subLadderMaxSeriesPerSweep ?: base.intervals.subLadderMaxSeriesPerSweep,
     ),
     orphanReaperIntervalMinutes = override.orphanReaperIntervalMinutes ?: base.orphanReaperIntervalMinutes,
     orphanReaperPaths = override.orphanReaperPaths ?: base.orphanReaperPaths,
@@ -598,6 +612,7 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 subExtractIntervalMinutes = o.num("sub_extract_interval_minutes") { it.toInt() } ?: intervals.subExtractIntervalMinutes,
                 subLadderIntervalMinutes = o.num("sub_ladder_interval_minutes") { it.toInt() } ?: intervals.subLadderIntervalMinutes,
                 subLadderMaxPerSweep = o.num("sub_ladder_max_per_sweep") { it.toInt() } ?: intervals.subLadderMaxPerSweep,
+                subLadderMaxSeriesPerSweep = o.num("sub_ladder_max_series_per_sweep") { it.toInt() } ?: intervals.subLadderMaxSeriesPerSweep,
             )
         }
         (root["cache"] as? Map<*, *>)?.let { o ->

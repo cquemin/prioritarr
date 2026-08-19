@@ -188,9 +188,18 @@ class SubtitleExtractor(
                 report.capHit = true
                 return
             }
-            // Free upgrade: a standalone .ass sidecar converts to .srt with no
-            // decode of the video at all. Try it before touching ffprobe.
-            for (cand in listOf("$base.$lang2.ass", "$base.ass")) {
+            // Free upgrade: a standalone, language-tagged .ass sidecar converts
+            // to .srt with no decode of the video at all. Try it before
+            // touching ffprobe.
+            //
+            // Deliberately NOT falling back to a bare "$base.ass" (untagged)
+            // candidate here: with no language marker there is no way to
+            // know what language that .ass actually is, and mislabeling it
+            // as [lang2] would relabel e.g. a Japanese .ass as an English
+            // .srt — the exact class of bug (wrong-language subtitles
+            // silently served as English) this whole ladder feature exists
+            // to eliminate.
+            for (cand in listOf("$base.$lang2.ass")) {
                 val src = file.parent?.resolve(cand) ?: continue
                 if (!Files.exists(src)) continue
                 val target = sidecarTarget(file, lang2)
