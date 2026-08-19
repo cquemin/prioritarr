@@ -80,6 +80,17 @@ enum class LadderOutcome {
  * [bazarrAlreadyTried] is carried in `subtitle_ladder_state`: without it
  * an episode would ping Bazarr forever and never reach Whisper.
  *
+ * [r1AlreadyTried] is the same guard one rung lower. R1 is picked purely
+ * from "an embedded English text track exists", which is a property of
+ * the file and therefore never changes: an episode whose extraction
+ * always fails (broken track, ffmpeg error, or an extraction that only
+ * produced a French sidecar) would otherwise cycle
+ * R1 -> NO_SOURCE -> backoff -> R1 forever and never reach Bazarr or
+ * Whisper. The caller derives it from the persisted rung, comparing on
+ * ORDER rather than equality: an episode currently sitting on R2/R3/R4
+ * has demonstrably already had its R1 turn, and equality alone would let
+ * it fall back to R1 on the next sweep and oscillate R1 <-> R2 forever.
+ *
  * The variant rule is the expensive-work guard. 724 files in this
  * library hold a usable `.en.hi.srt` or bare `.srt`; sending them to
  * Whisper would burn roughly 120 hours of CPU producing output worse
@@ -92,10 +103,12 @@ fun nextRung(
     whisperMaxPriority: Int,
     whisperEnabled: Boolean,
     bazarrAlreadyTried: Boolean = false,
+    r1AlreadyTried: Boolean = false,
 ): Rung {
     if (sidecar == SidecarState.SATISFIED) return Rung.R0_SATISFIED
-    // R1 is free, so it runs even when a variant is present.
-    if (hasEmbeddedEnglishText) return Rung.R1_EMBEDDED
+    // R1 is free, so it runs even when a variant is present — but only
+    // once: see [r1AlreadyTried].
+    if (hasEmbeddedEnglishText && !r1AlreadyTried) return Rung.R1_EMBEDDED
     if (sidecar == SidecarState.VARIANT_ONLY) return Rung.R4_EXHAUSTED
     if (!bazarrAlreadyTried) return Rung.R2_BAZARR
     if (whisperEnabled && priority <= whisperMaxPriority) return Rung.R3_WHISPER
@@ -109,6 +122,38 @@ fun backoffFor(attempts: Int): Duration = when {
     attempts == 3 -> Duration.ofDays(7)
     else -> Duration.ofDays(28)
 }
+
+/**
+ * Consecutive [LadderOutcome.UPSTREAM_DOWN]s after which an episode stops
+ * being retried on the flat 1-hour outage cadence and falls onto the
+ * normal [backoffFor] curve (which also starts consuming attempts).
+ *
+ * 5 because the outage retry is hourly: five consecutive failures means
+ * the upstream has been unreachable for at least ~5 hours. Every restart
+ * or redeploy of Bazarr/Whisper on this box completes in seconds to
+ * minutes, so past that point the failure is no longer plausibly
+ * transient — it is a misconfiguration (the motivating case: `whisperUrl`
+ * pointing at a container that does not exist, where every retry pays a
+ * full ffmpeg audio decode, gets connection-refused, and reports a green
+ * job with zero subtitles produced, forever).
+ *
+ * Not lower: a genuinely transient outage must still not consume the
+ * retry budget, which is the whole point of [consumesAttempt]. Five
+ * hourly retries is far more headroom than any real outage here needs.
+ * Not higher: past ~5 hours the churn is pure waste — CPU, disk reads,
+ * and a permanently growing pool of "due" episodes that crowds out real
+ * work.
+ */
+const val UPSTREAM_DOWN_ESCALATE_AFTER: Int = 5
+
+/**
+ * Has this episode seen enough consecutive [LadderOutcome.UPSTREAM_DOWN]s
+ * that the outage should stop being treated as transient?
+ *
+ * [streak] counts CONSECUTIVE outage outcomes: any other outcome resets
+ * it to zero, so a real blip never accumulates towards escalation.
+ */
+fun upstreamDownExhausted(streak: Long): Boolean = streak >= UPSTREAM_DOWN_ESCALATE_AFTER
 
 /**
  * Should this outcome push the episode further down the backoff curve?
@@ -135,7 +180,10 @@ data class LadderGate(
  *   failed**. Null fails CLOSED — unlike [decideTdarrPause], which maps
  *   an error to 0. Running Whisper during a live stream because a probe
  *   blipped is far more costly than skipping one sweep.
- * @param congested true when Sonarr has P1/P2 searches in flight.
+ * @param congested true when Sonarr's search queue is congested, i.e.
+ *   `SearchQueueControl.isCongested()` — the count of ALL in-flight
+ *   search commands (of every type, not just P1/P2) is at or above
+ *   `searchCongestionThreshold`.
  * @param idleTicks consecutive idle polls so far, carried by the caller.
  * @param resumeAfterIdleTicks idle polls required before opening.
  */

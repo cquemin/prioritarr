@@ -317,7 +317,18 @@ class SubtitleExtractor(
         val lang = s.language?.lowercase()?.trim()
         if (!lang.isNullOrEmpty() && lang != "und") return lang in aliases
         val title = s.title?.lowercase()?.trim() ?: return false
-        return aliases.any { alias -> title == alias || title.contains(alias) }
+        // Exact title match against any alias is always safe.
+        if (title in aliases) return true
+        // Substring matching is allowed ONLY for the long, unambiguous
+        // spellings ("eng"/"english", "fre"/"fra"/"french") so that
+        // "English (Full)" still matches. The 2-letter alias must never
+        // substring-match: "en" is inside "Legendas" (Portuguese) and
+        // "Slovenian", and a false positive there writes a foreign track
+        // as <base>.en.srt, which the ladder then treats as SATISFIED
+        // forever while Plex serves it as English - precisely the
+        // wrong-language-subtitle bug this whole feature exists to
+        // eliminate.
+        return aliases.any { alias -> alias.length > 2 && title.contains(alias) }
     }
 
     private fun atomicMove(from: Path, to: Path) {
@@ -354,6 +365,17 @@ class SubtitleExtractor(
         )
     }
 }
+
+/**
+ * ffprobe could not read the file at all (non-zero exit, or the process
+ * failed to launch).
+ *
+ * Deliberately NOT the same as "no subtitle streams": the ladder maps a
+ * probe failure to [LadderOutcome.UNREADABLE] and its long backoff,
+ * while an empty stream list is a legitimate answer that sends the
+ * episode on to Bazarr/Whisper.
+ */
+class FfmpegProbeException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 /** A series directory paired with its computed prioritarr priority (1..5, 99 = unknown). */
 data class SeriesDir(val path: String, val priority: Int)
@@ -453,7 +475,17 @@ private val ASS_OVERRIDE_REGEX = Regex("""\{\\[^}]*}""")
 object FfmpegSubtitleIo {
     private val logger = LoggerFactory.getLogger(FfmpegSubtitleIo::class.java)
 
-    /** List the subtitle streams of [file] via ffprobe (JSON). */
+    /**
+     * List the subtitle streams of [file] via ffprobe (JSON).
+     *
+     * THROWS [FfmpegProbeException] when ffprobe itself fails, rather
+     * than returning an empty list. An empty list is a real, meaningful
+     * answer ("this file has no subtitle streams"), and conflating the
+     * two made [LadderOutcome.UNREADABLE] unreachable in production: a
+     * corrupt file probed as "no embedded track", climbed to Whisper,
+     * failed there, and was filed as UPSTREAM_DOWN with a 1-hour retry
+     * instead of UNREADABLE with its long backoff.
+     */
     suspend fun probe(file: Path): List<SubStream> = withContext(Dispatchers.IO) {
         val cmd = listOf(
             "ffprobe", "-v", "error",
@@ -465,17 +497,18 @@ object FfmpegSubtitleIo {
         try {
             val proc = ProcessBuilder(cmd).redirectErrorStream(false).start()
             val out = proc.inputStream.bufferedReader().readText()
-            proc.errorStream.bufferedReader().readText() // drain stderr
+            val err = proc.errorStream.bufferedReader().readText() // drain stderr
             val code = proc.waitFor()
             if (code != 0) {
-                logger.warn("sub-extract: ffprobe exit {} for {}", code, file)
-                emptyList()
-            } else {
-                parseFfprobe(out)
+                logger.warn("sub-extract: ffprobe exit {} for {}: {}", code, file, err.take(300))
+                throw FfmpegProbeException("ffprobe exit $code for $file")
             }
+            parseFfprobe(out)
+        } catch (e: FfmpegProbeException) {
+            throw e
         } catch (e: Exception) {
             logger.warn("sub-extract: ffprobe launch failed for {}: {}", file, e.message)
-            emptyList()
+            throw FfmpegProbeException("ffprobe launch failed for $file: ${e.message}", e)
         }
     }
 
@@ -517,7 +550,14 @@ object FfmpegSubtitleIo {
     suspend fun convertSubtitleFile(src: Path, target: Path): Boolean = withContext(Dispatchers.IO) {
         val cmd = listOf("ffmpeg", "-v", "error", "-y", "-i", src.toString(), "-f", "srt", target.toString())
         try {
-            val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
+            // DISCARD rather than merge-and-never-read: nothing consumes
+            // the merged stream here, so a chatty failure would fill the
+            // pipe buffer and hang until the 5-minute timeout. Same shape
+            // of bug as FfmpegAudioIo.extractWav had.
+            val p = ProcessBuilder(cmd)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
             if (!p.waitFor(5, TimeUnit.MINUTES)) { p.destroyForcibly(); return@withContext false }
             p.exitValue() == 0
         } catch (_: Exception) {

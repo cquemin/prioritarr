@@ -468,10 +468,24 @@ fun Application.prioritarrModule(state: AppState) {
  * handler and the StatusPages catch-all above) rather than
  * `call.respond(...)` + ContentNegotiation.
  *
+ * @param enabled live read of `subLadderEnabled`. False responds 503
+ *   and runs nothing: the feature ships disabled, and that has to hold
+ *   for the HTTP surface too, or an api-key holder can start a
+ *   multi-minute Whisper run (gate deliberately bypassed) on a feature
+ *   the operator has switched off.
  * @param runLadderFor returns the ladder outcome's name, or null when
  *   the episode is unknown to Sonarr (or has no file yet to act on).
  */
-fun Application.subtitleLadderRoutes(runLadderFor: suspend (Long) -> String?) {
+fun Application.subtitleLadderRoutes(
+    enabled: () -> Boolean,
+    runLadderFor: suspend (Long) -> String?,
+) {
+    // Single-flight: only R3 is serialised inside the ladder, so N
+    // concurrent POSTs would otherwise spawn N concurrent ffprobe/ffmpeg
+    // processes before ever reaching the whisper mutex. Rejecting (rather
+    // than queueing) is deliberate - a queued request would just stack
+    // minutes of CPU work behind the one already running.
+    val inFlight = java.util.concurrent.atomic.AtomicBoolean(false)
     routing {
         // Same auth wrapper as every other /api/v2/* route (see the
         // authenticate("api_key") { route("/api/v2") { v2Routes(state) } }
@@ -484,6 +498,14 @@ fun Application.subtitleLadderRoutes(runLadderFor: suspend (Long) -> String?) {
         authenticate("api_key") {
             route("/api/v2") {
                 post("/subtitles/ladder/{episodeId}") {
+                    if (!enabled()) {
+                        call.respondText(
+                            """{"error":"sub-ladder is disabled"}""",
+                            ContentType.Application.Json,
+                            HttpStatusCode.ServiceUnavailable,
+                        )
+                        return@post
+                    }
                     val id = call.parameters["episodeId"]?.toLongOrNull()
                     if (id == null) {
                         call.respondText(
@@ -493,7 +515,19 @@ fun Application.subtitleLadderRoutes(runLadderFor: suspend (Long) -> String?) {
                         )
                         return@post
                     }
-                    val outcome = runLadderFor(id)
+                    if (!inFlight.compareAndSet(false, true)) {
+                        call.respondText(
+                            """{"error":"a ladder run is already in progress"}""",
+                            ContentType.Application.Json,
+                            HttpStatusCode.TooManyRequests,
+                        )
+                        return@post
+                    }
+                    val outcome = try {
+                        runLadderFor(id)
+                    } finally {
+                        inFlight.set(false)
+                    }
                     if (outcome == null) {
                         call.respondText(
                             """{"error":"episode not found"}""",

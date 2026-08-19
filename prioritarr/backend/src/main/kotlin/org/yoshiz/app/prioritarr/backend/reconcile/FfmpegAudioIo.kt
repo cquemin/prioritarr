@@ -27,7 +27,15 @@ object FfmpegAudioIo {
             "-f", "wav", target.toString(),
         )
         try {
-            val p = ProcessBuilder(cmd).redirectErrorStream(true).start()
+            // DISCARD both streams instead of merging them into an
+            // inputStream nobody reads: a chatty ffmpeg failure fills the
+            // ~64K pipe buffer, ffmpeg blocks on write, and this waits out
+            // the full 30-minute timeout WHILE HOLDING the global whisper
+            // slot - blocking every other Whisper run on the box.
+            val p = ProcessBuilder(cmd)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
             val finished = p.waitFor(30, TimeUnit.MINUTES)
             if (!finished) {
                 p.destroyForcibly()

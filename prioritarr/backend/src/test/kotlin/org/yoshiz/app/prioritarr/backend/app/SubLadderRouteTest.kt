@@ -7,6 +7,9 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.install
 import io.ktor.server.auth.Authentication
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -30,6 +33,7 @@ class SubLadderRouteTest {
                 apiKey("api_key") { expectedKey = "secret" }
             }
             subtitleLadderRoutes(
+                enabled = { true },
                 runLadderFor = { episodeId -> ranFor = episodeId; "SATISFIED" },
             )
         }
@@ -49,7 +53,7 @@ class SubLadderRouteTest {
             install(Authentication) {
                 apiKey("api_key") { expectedKey = "secret" }
             }
-            subtitleLadderRoutes(runLadderFor = { null })
+            subtitleLadderRoutes(enabled = { true }, runLadderFor = { null })
         }
 
         val resp = client.post("/api/v2/subtitles/ladder/999") {
@@ -65,7 +69,7 @@ class SubLadderRouteTest {
             install(Authentication) {
                 apiKey("api_key") { expectedKey = "secret" }
             }
-            subtitleLadderRoutes(runLadderFor = { "SATISFIED" })
+            subtitleLadderRoutes(enabled = { true }, runLadderFor = { "SATISFIED" })
         }
 
         val resp = client.post("/api/v2/subtitles/ladder/not-a-number") {
@@ -81,11 +85,68 @@ class SubLadderRouteTest {
             install(Authentication) {
                 apiKey("api_key") { expectedKey = "secret" }
             }
-            subtitleLadderRoutes(runLadderFor = { "SATISFIED" })
+            subtitleLadderRoutes(enabled = { true }, runLadderFor = { "SATISFIED" })
         }
 
         val resp = client.post("/api/v2/subtitles/ladder/25749")
 
         assertEquals(HttpStatusCode.Unauthorized, resp.status)
+    }
+
+    @Test
+    fun disabled_feature_is_503_and_runs_nothing() = testApplication {
+        // "Ships disabled" has to hold for the HTTP surface too: this route
+        // bypasses the Plex/congestion gate by design, so while the feature
+        // is off it must not be able to start a Whisper run at all.
+        application {
+            install(Authentication) {
+                apiKey("api_key") { expectedKey = "secret" }
+            }
+            subtitleLadderRoutes(
+                enabled = { false },
+                runLadderFor = { error("must not run while the ladder is disabled") },
+            )
+        }
+
+        val resp = client.post("/api/v2/subtitles/ladder/25749") {
+            header("X-Api-Key", "secret")
+        }
+
+        assertEquals(HttpStatusCode.ServiceUnavailable, resp.status)
+    }
+
+    @Test
+    fun a_second_concurrent_run_is_rejected_not_stacked() = testApplication {
+        // Only R3 is serialised inside the ladder, so N concurrent POSTs
+        // would otherwise spawn N concurrent ffprobe/ffmpeg processes on a
+        // box that also serves live Plex transcodes.
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val concurrent = java.util.concurrent.atomic.AtomicInteger(0)
+        application {
+            install(Authentication) {
+                apiKey("api_key") { expectedKey = "secret" }
+            }
+            subtitleLadderRoutes(enabled = { true }) {
+                concurrent.incrementAndGet()
+                entered.complete(Unit)
+                release.await()
+                "SATISFIED"
+            }
+        }
+
+        coroutineScope {
+            val first = async {
+                client.post("/api/v2/subtitles/ladder/1") { header("X-Api-Key", "secret") }
+            }
+            entered.await()
+
+            val second = client.post("/api/v2/subtitles/ladder/2") { header("X-Api-Key", "secret") }
+            assertEquals(HttpStatusCode.TooManyRequests, second.status)
+
+            release.complete(Unit)
+            assertEquals(HttpStatusCode.OK, first.await().status)
+        }
+        assertEquals(1, concurrent.get(), "the second request must not have started a run")
     }
 }

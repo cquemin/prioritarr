@@ -521,7 +521,18 @@ fun main() {
                         (s.language.isNullOrBlank() && s.title?.lowercase()?.contains("english") == true))
             }
         },
-        extractEmbedded = { path -> subtitleExtractor.extractForFile(path).extracted > 0 },
+        extractEmbedded = { path ->
+            subtitleExtractor.extractForFile(path)
+            // Deliberately NOT `report.extracted > 0`: that counts sidecars
+            // written in ANY configured language (subExtractLangs is
+            // ["en","fr"]), so an English failure alongside a French success
+            // would be recorded SATISFIED with no .en.srt on disk at all -
+            // and then not looked at again for 7 days. The ladder's entire
+            // contract is the English file, so assert exactly that file.
+            val name = path.fileName.toString()
+            val stem = name.substringBeforeLast('.', name)
+            path.parent?.resolve("$stem.en.srt")?.let { java.nio.file.Files.exists(it) } == true
+        },
         triggerBazarr = { seriesId, episodeId ->
             bazarrClient.triggerEpisodeSearch(seriesId, episodeId, "en")
         },
@@ -543,11 +554,13 @@ fun main() {
         resumeAfterIdleTicks = { 3 },
         loadState = { id ->
             db.getLadderState(id)?.let {
-                org.yoshiz.app.prioritarr.backend.reconcile.LadderState(it.last_rung, it.attempts)
+                org.yoshiz.app.prioritarr.backend.reconcile.LadderState(
+                    it.last_rung, it.attempts, it.upstream_down_streak,
+                )
             }
         },
-        saveState = { id, rung, outcome, attempts, next ->
-            db.upsertLadderState(id, rung, outcome, attempts, next)
+        saveState = { id, rung, outcome, attempts, next, upstreamDowns ->
+            db.upsertLadderState(id, rung, outcome, attempts, next, upstreamDowns)
         },
     )
 
@@ -766,13 +779,28 @@ fun main() {
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
                 id = JobId.SUB_LADDER,
                 cadenceMinutes = { liveSettings(db, settings).intervals.subLadderIntervalMinutes.toLong() },
-                // Require a real (non-blank) Bazarr API key, not just the
-                // enabled flag — bazarrApiKey defaults to "" when unset, and
-                // enabling without a key would otherwise fire the Bazarr
-                // rung every sweep, get 401s forever, and never notice.
+                // Every one of these is required for the job to do anything
+                // at all, so the job reports "prerequisites not met" instead
+                // of running green and silently producing nothing:
+                //
+                //  - bazarrApiKey: defaults to "" when unset; enabling
+                //    without a key fires the Bazarr rung every sweep, gets
+                //    401s forever, and never notices.
+                //  - subExtractPaths: buildLadderCandidates returns an empty
+                //    list when the root list is empty, so the ladder would
+                //    tick forever with considered=0. (SUB_EXTRACT already
+                //    checks its paths the same way.)
+                //  - plexUrl/plexToken: plexClient is only built when BOTH
+                //    are set, so without them activeSessionCountOrNull() is
+                //    null, the gate fails closed on every single tick by
+                //    design, and the feature is permanently inert.
                 prerequisites = {
                     val s = liveSettings(db, settings)
-                    s.subLadderEnabled && !s.bazarrApiKey.isNullOrBlank()
+                    s.subLadderEnabled &&
+                        !s.bazarrApiKey.isNullOrBlank() &&
+                        s.subExtractPaths.isNotEmpty() &&
+                        !s.plexUrl.isNullOrBlank() &&
+                        !s.plexToken.isNullOrBlank()
                 },
                 // LIGHT for the same reason sub-extract is: the single HEAVY
                 // slot per tick is permanently held by the refresh-* jobs.
@@ -781,9 +809,17 @@ fun main() {
                 run = {
                     val r = subtitleLadder.sweep()
                     org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(
+                        // skippedGate + the gate reason are part of the
+                        // summary on purpose: a gate that is closed on every
+                        // tick (Plex unreachable, or a stream that never
+                        // ends) otherwise looks exactly like "nothing was
+                        // due", and the only trace was a DEBUG log line.
                         summary = "considered=${r.considered} satisfied=${r.satisfied} " +
                             "bazarr=${r.bazarrTriggered} whisper=${r.whispered} " +
-                            "noSource=${r.noSource} upstreamDown=${r.upstreamDown}",
+                            "noSource=${r.noSource} upstreamDown=${r.upstreamDown} " +
+                            "skippedGate=${r.skippedGate}" +
+                            (r.gateReason?.let { " gate=$it" } ?: "") +
+                            (if (r.gateAborted) " (batch aborted mid-sweep)" else ""),
                         noop = r.considered == 0,
                     )
                 },
@@ -885,7 +921,13 @@ fun main() {
 
     embeddedServer(Netty, port = 8000, host = "0.0.0.0") {
         prioritarrModule(state)
-        subtitleLadderRoutes { episodeId ->
+        subtitleLadderRoutes(
+            // "Ships disabled" has to hold for the HTTP surface too: this
+            // route deliberately bypasses the Plex/congestion gate, so while
+            // the feature is off an api-key holder could otherwise start a
+            // multi-minute Whisper run on a box serving live transcodes.
+            enabled = { liveSettings(db, settings).subLadderEnabled },
+        ) { episodeId ->
             resolveLadderCandidateById(sonarr, db, episodeId)?.let { subtitleLadder.runOne(it).name }
         }
     }.start(wait = true)
@@ -930,17 +972,14 @@ private suspend fun resolveLadderCandidateById(
 }
 
 /**
- * Enumerate ladder candidates in prioritarr priority order (P1 first).
+ * Enumerate ladder candidates in prioritarr priority order (P1 first),
+ * with the series-level scan itself bounded by [seriesCursor] —
+ * independent of the `subLadderMaxPerSweep` episode budget.
  *
  * Sonarr is the source of episode identity because Bazarr's search
  * endpoint needs `seriesid` + `episodeid`, and matching on the
  * episodeFile path is the only robust link from a file on disk back to
  * an episode row.
- */
-/**
- * Enumerate ladder candidates in prioritarr priority order (P1 first),
- * with the series-level scan itself bounded by [seriesCursor] —
- * independent of the `subLadderMaxPerSweep` episode budget.
  *
  * Priority comes from [Database.getPriorityCache] ONLY — never
  * `PriorityService.priorityForSeries`, which *computes* (and on a cold
@@ -961,7 +1000,7 @@ private suspend fun resolveLadderCandidateById(
  * priority-sorted list sweep over sweep so the whole library still gets
  * covered eventually.
  */
-private suspend fun buildLadderCandidates(
+internal suspend fun buildLadderCandidates(
     sonarr: SonarrClient,
     db: Database,
     s: org.yoshiz.app.prioritarr.backend.config.Settings,

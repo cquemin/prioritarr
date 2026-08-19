@@ -469,6 +469,53 @@ class SubtitleExtractorTest {
         assertTrue(java.nio.file.Files.exists(dir.resolve("Show - S06E01 - TBA HDTV-1080p.en.srt")))
     }
 
+    /**
+     * Untagged tracks fall back to the TITLE, and the 2-letter alias "en"
+     * used to be substring-matched against it. "Legendas" (Portuguese) and
+     * "Slovenian" both contain "en", so both were written out as
+     * <base>.en.srt — a foreign subtitle that Plex then serves as English
+     * and that the ladder records as SATISFIED forever. sub-extract is
+     * enabled in production, so this one was already shipping.
+     */
+    @Test
+    fun untagged_titles_that_merely_contain_en_are_not_english() = runBlocking {
+        for (title in listOf("Legendas", "Slovenian", "Legendas Completas", "SLOVENIAN")) {
+            val dir = java.nio.file.Files.createTempDirectory("sub-lang-neg")
+            java.nio.file.Files.writeString(dir.resolve("Ep.mkv"), "x")
+            val extractor = SubtitleExtractor(
+                paths = { listOf(dir.toString()) },
+                langs = { listOf("en") },
+                maxPerRun = { 10 },
+                probe = { listOf(SubStream(index = 0, codecName = "ass", language = null, title = title)) },
+                extract = { _, _, _ -> error("must not extract a non-English track titled '$title'") },
+            )
+
+            assertEquals(0, extractor.sweep().extracted, "title '$title' must not match English")
+            assertFalse(java.nio.file.Files.exists(dir.resolve("Ep.en.srt")), "wrote a sidecar for '$title'")
+        }
+    }
+
+    @Test
+    fun untagged_english_titles_still_match() = runBlocking {
+        for (title in listOf("English", "eng", "English (Full)", "Full English Dialogue", "ENGLISH")) {
+            val dir = java.nio.file.Files.createTempDirectory("sub-lang-pos")
+            java.nio.file.Files.writeString(dir.resolve("Ep.mkv"), "x")
+            val extractor = SubtitleExtractor(
+                paths = { listOf(dir.toString()) },
+                langs = { listOf("en") },
+                maxPerRun = { 10 },
+                probe = { listOf(SubStream(index = 0, codecName = "ass", language = null, title = title)) },
+                extract = { _, _, target ->
+                    java.nio.file.Files.writeString(target, "1\n00:00:01,000 --> 00:00:02,000\nhi\n")
+                    true
+                },
+            )
+
+            assertEquals(1, extractor.sweep().extracted, "title '$title' must match English")
+            assertTrue(java.nio.file.Files.exists(dir.resolve("Ep.en.srt")), "no sidecar for '$title'")
+        }
+    }
+
     @Test
     fun language_tag_wins_over_a_misleading_title() = runBlocking {
         val dir = java.nio.file.Files.createTempDirectory("sub-ladder-tagwins")

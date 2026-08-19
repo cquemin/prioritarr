@@ -209,7 +209,12 @@ CREATE TABLE IF NOT EXISTS subtitle_ladder_state (
     attempts        INTEGER NOT NULL DEFAULT 0,
     last_attempt_at TEXT,
     next_retry_at   TEXT,
-    updated_at      TEXT NOT NULL
+    updated_at      TEXT NOT NULL,
+    -- Consecutive UPSTREAM_DOWN outcomes; reset to 0 by any other
+    -- outcome. An outage deliberately does not consume a retry attempt,
+    -- so without this counter an unreachable Bazarr/Whisper is retried
+    -- hourly forever (see UPSTREAM_DOWN_ESCALATE_AFTER).
+    upstream_down_streak INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_subtitle_ladder_next_retry
@@ -321,15 +326,16 @@ selectLadderState:
 SELECT * FROM subtitle_ladder_state WHERE episode_id = ?;
 
 upsertLadderState:
-INSERT INTO subtitle_ladder_state (episode_id, last_rung, outcome, attempts, last_attempt_at, next_retry_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
+INSERT INTO subtitle_ladder_state (episode_id, last_rung, outcome, attempts, last_attempt_at, next_retry_at, updated_at, upstream_down_streak)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(episode_id) DO UPDATE SET
-    last_rung       = excluded.last_rung,
-    outcome         = excluded.outcome,
-    attempts        = excluded.attempts,
-    last_attempt_at = excluded.last_attempt_at,
-    next_retry_at   = excluded.next_retry_at,
-    updated_at      = excluded.updated_at;
+    last_rung            = excluded.last_rung,
+    outcome              = excluded.outcome,
+    attempts             = excluded.attempts,
+    last_attempt_at      = excluded.last_attempt_at,
+    next_retry_at        = excluded.next_retry_at,
+    updated_at           = excluded.updated_at,
+    upstream_down_streak = excluded.upstream_down_streak;
 
 ladderEpisodesDue:
 SELECT * FROM subtitle_ladder_state

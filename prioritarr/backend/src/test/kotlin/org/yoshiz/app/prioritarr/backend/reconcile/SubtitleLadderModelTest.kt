@@ -174,6 +174,44 @@ class SubtitleLadderModelTest {
     }
 
     @Test
+    fun r1_is_offered_only_until_it_has_had_its_turn() {
+        // The embedded-track probe is a property of the FILE, so it never
+        // stops being true. Without the flag, an episode whose extraction
+        // always fails picks R1 on every sweep forever.
+        assertEquals(
+            Rung.R1_EMBEDDED,
+            nextRung(SidecarState.NONE, true, 1, 2, true, r1AlreadyTried = false),
+        )
+        assertEquals(
+            Rung.R2_BAZARR,
+            nextRung(SidecarState.NONE, true, 1, 2, true, r1AlreadyTried = true),
+        )
+        // ...and it must not stall at R2 either.
+        assertEquals(
+            Rung.R3_WHISPER,
+            nextRung(SidecarState.NONE, true, 1, 2, true, bazarrAlreadyTried = true, r1AlreadyTried = true),
+        )
+    }
+
+    @Test
+    fun a_variant_with_an_already_tried_r1_is_exhausted_not_whispered() {
+        // The free rung is spent; the variant guard still blocks the
+        // expensive ones (724 files in this library are in this state).
+        assertEquals(
+            Rung.R4_EXHAUSTED,
+            nextRung(SidecarState.VARIANT_ONLY, true, 1, 2, true, r1AlreadyTried = true),
+        )
+    }
+
+    @Test
+    fun outage_escalation_needs_a_sustained_streak() {
+        assertEquals(false, upstreamDownExhausted(0))
+        assertEquals(false, upstreamDownExhausted((UPSTREAM_DOWN_ESCALATE_AFTER - 1).toLong()))
+        assertEquals(true, upstreamDownExhausted(UPSTREAM_DOWN_ESCALATE_AFTER.toLong()))
+        assertEquals(true, upstreamDownExhausted(UPSTREAM_DOWN_ESCALATE_AFTER + 10L))
+    }
+
+    @Test
     fun gate_opens_only_after_enough_idle_ticks() {
         // Plex reports 0 momentarily mid-playback; debounce before acting.
         val t1 = decideLadderGate(0, congested = false, idleTicks = 0, resumeAfterIdleTicks = 3)

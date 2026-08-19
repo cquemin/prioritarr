@@ -50,6 +50,15 @@ class Database(dbPath: String) {
      */
     private fun ensureLegacyColumns() {
         try {
+            driver.execute(
+                null,
+                "ALTER TABLE subtitle_ladder_state ADD COLUMN upstream_down_streak INTEGER NOT NULL DEFAULT 0",
+                0,
+            )
+        } catch (e: Exception) {
+            if (e.message?.contains("duplicate column", ignoreCase = true) != true) throw e
+        }
+        try {
             driver.execute(null, "ALTER TABLE managed_downloads ADD COLUMN season_number INTEGER", 0)
         } catch (e: Exception) {
             // SQLite emits "duplicate column name" for the second run.
@@ -123,6 +132,7 @@ class Database(dbPath: String) {
         outcome: String,
         attempts: Long,
         nextRetryAt: String?,
+        upstreamDownStreak: Long = 0,
     ) {
         val now = nowIsoOffset()
         q.upsertLadderState(
@@ -133,6 +143,7 @@ class Database(dbPath: String) {
             last_attempt_at = now,
             next_retry_at = nextRetryAt,
             updated_at = now,
+            upstream_down_streak = upstreamDownStreak,
         )
     }
 
