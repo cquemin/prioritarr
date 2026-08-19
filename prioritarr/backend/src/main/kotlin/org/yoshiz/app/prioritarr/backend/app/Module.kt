@@ -453,41 +453,61 @@ fun Application.prioritarrModule(state: AppState) {
  * response after only a Bazarr trigger is expected, not a bug; Bazarr
  * resolves asynchronously and the result shows up on a later call.
  *
- * Uses [io.ktor.server.response.respondText] with hand-built JSON,
- * matching this file's existing style (see the openapi.json handler
- * and the StatusPages catch-all above) rather than routing through
- * `call.respond(...)` + ContentNegotiation — this keeps the route
- * usable from a bare `testApplication` with no plugins installed, the
- * same way those other handlers are.
+ * Requires the `api_key` auth provider ([Authentication] + the
+ * `apiKey` extension) to already be installed on the [Application] —
+ * same requirement as every other v2-prefixed route below. This is
+ * NOT optional here: an unauthenticated caller could trigger a
+ * Whisper `task=translate` run (minutes of saturated CPU) for an
+ * arbitrary episode id, on a box that also serves live Plex
+ * transcodes, and this route deliberately bypasses the Plex/
+ * congestion gate that normally keeps the ladder off the CPU during
+ * playback.
+ *
+ * Responds via [io.ktor.server.response.respondText] with hand-built
+ * JSON, matching this file's existing style (see the openapi.json
+ * handler and the StatusPages catch-all above) rather than
+ * `call.respond(...)` + ContentNegotiation.
  *
  * @param runLadderFor returns the ladder outcome's name, or null when
  *   the episode is unknown to Sonarr (or has no file yet to act on).
  */
 fun Application.subtitleLadderRoutes(runLadderFor: suspend (Long) -> String?) {
     routing {
-        post("/api/v2/subtitles/ladder/{episodeId}") {
-            val id = call.parameters["episodeId"]?.toLongOrNull()
-            if (id == null) {
-                call.respondText(
-                    """{"error":"episodeId must be numeric"}""",
-                    ContentType.Application.Json,
-                    HttpStatusCode.BadRequest,
-                )
-                return@post
-            }
-            val outcome = runLadderFor(id)
-            if (outcome == null) {
-                call.respondText(
-                    """{"error":"episode not found"}""",
-                    ContentType.Application.Json,
-                    HttpStatusCode.NotFound,
-                )
-            } else {
-                call.respondText(
-                    """{"outcome":"$outcome"}""",
-                    ContentType.Application.Json,
-                    HttpStatusCode.OK,
-                )
+        // Same auth wrapper as every other /api/v2/* route (see the
+        // authenticate("api_key") { route("/api/v2") { v2Routes(state) } }
+        // block above): this endpoint triggers a Whisper task=translate
+        // run on a caller-supplied episode id, which is real CPU cost and
+        // deliberately bypasses the Plex/congestion gate (a manual request
+        // means "now"). Leaving it unauthenticated would make it a trivial
+        // CPU-exhaustion vector against the same box serving live Plex
+        // transcodes.
+        authenticate("api_key") {
+            route("/api/v2") {
+                post("/subtitles/ladder/{episodeId}") {
+                    val id = call.parameters["episodeId"]?.toLongOrNull()
+                    if (id == null) {
+                        call.respondText(
+                            """{"error":"episodeId must be numeric"}""",
+                            ContentType.Application.Json,
+                            HttpStatusCode.BadRequest,
+                        )
+                        return@post
+                    }
+                    val outcome = runLadderFor(id)
+                    if (outcome == null) {
+                        call.respondText(
+                            """{"error":"episode not found"}""",
+                            ContentType.Application.Json,
+                            HttpStatusCode.NotFound,
+                        )
+                    } else {
+                        call.respondText(
+                            """{"outcome":"$outcome"}""",
+                            ContentType.Application.Json,
+                            HttpStatusCode.OK,
+                        )
+                    }
+                }
             }
         }
     }
