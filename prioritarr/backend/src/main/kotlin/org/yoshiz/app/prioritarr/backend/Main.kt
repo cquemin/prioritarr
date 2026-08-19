@@ -313,6 +313,10 @@ fun main() {
         maxPerRun = { liveSettings(db, settings).subExtractMaxPerRun },
         probe = org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo::probe,
         extract = org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo::extract,
+        // Without this, convertSidecar falls back to its default { _, _ -> false }
+        // and the ASS-sidecar→SRT conversion rung is completely inert in
+        // production — it was built but never wired until now.
+        convertSidecar = org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo::convertSubtitleFile,
         // Order the sweep by prioritarr priority (P1 first) so actively-watched
         // shows get sidecars before the per-run cap is spent. Any failure here
         // returns an empty list → the extractor falls back to the flat walk.
@@ -475,6 +479,59 @@ fun main() {
         cancelCommand = { id -> sonarr.cancelCommand(id) },
         threshold = { liveSettings(db, settings).intervals.searchCongestionThreshold },
         dryRun = { liveSettings(db, settings).dryRun },
+    )
+
+    // English-SRT ladder (Task 8 wiring). Ships disabled via
+    // subLadderEnabled; see JobId.SUB_LADDER registration below.
+    // BazarrClient has existed but was never constructed anywhere until now.
+    // Constructor order is (baseUrl, apiKey, http) — see clients/Bazarr.kt:25.
+    val bazarrClient = org.yoshiz.app.prioritarr.backend.clients.BazarrClient(
+        baseUrl = settings.bazarrUrl,
+        apiKey = settings.bazarrApiKey ?: "",
+        http = healthHttp,
+    )
+    val whisperClient = org.yoshiz.app.prioritarr.backend.clients.WhisperClient(
+        http = healthHttp,
+        baseUrl = settings.whisperUrl,
+    )
+
+    val subtitleLadder = org.yoshiz.app.prioritarr.backend.reconcile.SubtitleLadder(
+        candidates = { buildLadderCandidates(sonarr, priorityService, db, liveSettings(db, settings)) },
+        hasEmbeddedEnglishText = { path ->
+            org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo.probe(path).any { s ->
+                s.codecName.lowercase() in org.yoshiz.app.prioritarr.backend.reconcile.SubtitleExtractor.TEXT_CODECS &&
+                    (s.language?.lowercase()?.trim().let { it == "en" || it == "eng" || it == "english" } ||
+                        (s.language.isNullOrBlank() && s.title?.lowercase()?.contains("english") == true))
+            }
+        },
+        extractEmbedded = { path -> subtitleExtractor.extractForFile(path).extracted > 0 },
+        triggerBazarr = { seriesId, episodeId ->
+            bazarrClient.triggerEpisodeSearch(seriesId, episodeId, "en") != null
+        },
+        whisperTranslate = { path, lang ->
+            val tmpWav = java.nio.file.Files.createTempFile("sub-ladder-", ".wav")
+            try {
+                if (org.yoshiz.app.prioritarr.backend.reconcile.FfmpegAudioIo.extractWav(path, tmpWav)) {
+                    whisperClient.translateToSrt(tmpWav, lang)
+                } else null
+            } finally {
+                java.nio.file.Files.deleteIfExists(tmpWav)
+            }
+        },
+        plexSessions = { plexClient?.activeSessionCountOrNull() },
+        congested = { searchQueueControl.isCongested() },
+        maxPerSweep = { liveSettings(db, settings).intervals.subLadderMaxPerSweep },
+        whisperEnabled = { liveSettings(db, settings).subLadderWhisperEnabled },
+        whisperMaxPriority = { liveSettings(db, settings).subLadderWhisperMaxPriority },
+        resumeAfterIdleTicks = { 3 },
+        loadState = { id ->
+            db.getLadderState(id)?.let {
+                org.yoshiz.app.prioritarr.backend.reconcile.LadderState(it.last_rung, it.attempts)
+            }
+        },
+        saveState = { id, rung, outcome, attempts, next ->
+            db.upsertLadderState(id, rung, outcome, attempts, next)
+        },
     )
 
     val scheduler = org.yoshiz.app.prioritarr.backend.scheduler.Scheduler(
@@ -690,6 +747,24 @@ fun main() {
                 },
             ))
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.SUB_LADDER,
+                cadenceMinutes = { liveSettings(db, settings).intervals.subLadderIntervalMinutes.toLong() },
+                prerequisites = { liveSettings(db, settings).subLadderEnabled },
+                // LIGHT for the same reason sub-extract is: the single HEAVY
+                // slot per tick is permanently held by the refresh-* jobs.
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                firstRunDelayMinutes = 3,
+                run = {
+                    val r = subtitleLadder.sweep()
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(
+                        summary = "considered=${r.considered} satisfied=${r.satisfied} " +
+                            "bazarr=${r.bazarrTriggered} whisper=${r.whispered} " +
+                            "noSource=${r.noSource} upstreamDown=${r.upstreamDown}",
+                        noop = r.considered == 0,
+                    )
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
                 id = JobId.BACKFILL_SWEEP,
                 cadenceMinutes = { liveSettings(db, settings).intervals.backfillSweepHours.toLong() * 60L },
                 prerequisites = { state.prioritiesPrimed.get() },
@@ -787,4 +862,59 @@ fun main() {
     embeddedServer(Netty, port = 8000, host = "0.0.0.0") {
         prioritarrModule(state)
     }.start(wait = true)
+}
+
+/**
+ * Enumerate ladder candidates in prioritarr priority order (P1 first).
+ *
+ * Sonarr is the source of episode identity because Bazarr's search
+ * endpoint needs `seriesid` + `episodeid`, and matching on the
+ * episodeFile path is the only robust link from a file on disk back to
+ * an episode row.
+ */
+private suspend fun buildLadderCandidates(
+    sonarr: SonarrClient,
+    priorityService: PriorityService,
+    db: Database,
+    s: org.yoshiz.app.prioritarr.backend.config.Settings,
+): List<org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate> {
+    val roots = s.subExtractPaths.map { it.trimEnd('/') }
+    if (roots.isEmpty()) return emptyList()
+
+    val out = mutableListOf<org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate>()
+    val series = sonarr.getAllSeries().mapNotNull { el ->
+        val o = el as? JsonObject ?: return@mapNotNull null
+        val id = o["id"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+        val path = o["path"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+        if (roots.none { path == it || path.startsWith("$it/") }) return@mapNotNull null
+        Triple(id, path, priorityService.priorityForSeries(id).priority)
+    }.sortedBy { it.third }
+
+    val budget = s.intervals.subLadderMaxPerSweep.coerceAtLeast(0)
+    for ((seriesId, _, priority) in series) {
+        // Stop as soon as we have a full sweep's worth. Series are already
+        // priority-ordered, so the highest-priority work is found first, and
+        // we avoid a per-series Sonarr call for all ~300 series on every
+        // sweep — that fan-out is what starved Sonarr's SQLite in the
+        // 2026-08-14 incident, and the episode-cache job already pays it hourly.
+        if (out.size >= budget) break
+        for (el in sonarr.getEpisodes(seriesId)) {
+            val o = el as? JsonObject ?: continue
+            if (o["hasFile"]?.jsonPrimitive?.contentOrNull != "true") continue
+            val epId = o["id"]?.jsonPrimitive?.longOrNull ?: continue
+            val filePath = (o["episodeFile"] as? JsonObject)
+                ?.get("path")?.jsonPrimitive?.contentOrNull ?: continue
+            val due = db.getLadderState(epId)?.next_retry_at
+            if (due != null && due > Database.nowIsoOffset()) continue
+            if (out.size >= budget) break
+            out += org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate(
+                videoPath = java.nio.file.Paths.get(filePath),
+                seriesId = seriesId,
+                episodeId = epId,
+                priority = priority,
+                audioLang = "ja",
+            )
+        }
+    }
+    return out
 }

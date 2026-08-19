@@ -39,8 +39,17 @@ open class SonarrClient(
     suspend fun getSeries(seriesId: Long): JsonObject =
         get("/api/v3/series/$seriesId") as JsonObject
 
+    /**
+     * `includeEpisodeFile=true` so `episodeFile.path` is populated —
+     * required by the sub-ladder candidate builder to link a Sonarr
+     * episode row back to the file on disk. Every other existing caller
+     * only reads episode metadata, so widening this is safe.
+     */
     suspend fun getEpisodes(seriesId: Long): JsonArray =
-        get("/api/v3/episode", mapOf("seriesId" to seriesId.toString())).jsonArray
+        get(
+            "/api/v3/episode",
+            mapOf("seriesId" to seriesId.toString(), "includeEpisodeFile" to "true"),
+        ).jsonArray
 
     open suspend fun getWantedMissing(pageSize: Int = 1000): JsonArray =
         ((get("/api/v3/wanted/missing", mapOf("pageSize" to pageSize.toString())) as JsonObject)
