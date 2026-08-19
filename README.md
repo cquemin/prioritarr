@@ -111,7 +111,7 @@ Torrents paused by prioritarr are tracked (`paused_by_us` flag); user-paused tor
 | **Tdarr pause (Plex-aware)** | 1 min | Pauses Tdarr's global transcoding while any Plex session is active; resumes when idle. Configure under Connections → Tdarr and enable in Background jobs. Off by default. |
 | **Sonarr watchdog** | 5 min | Detects a wedged Sonarr command queue and escalates app-restart ×3 → container restart via a scoped docker-socket-proxy. `SONARR_WATCHDOG_ENABLED=true`. |
 | **Sub-extract** | 30 min | Turns embedded ASS/SSA tracks into external `.srt` sidecars so Plex soft-serves anime instead of burning subs into a transcode. Walks P1-first, skips files that already have a sidecar. `SUB_EXTRACT_ENABLED=true`. Also fires per-file on Sonarr import. |
-| **Sub-ladder** | 30 min | Guarantees every anime episode a plain `.en.srt`. Climbs: embedded extract → Bazarr provider search → Whisper JP→EN. Priority-ordered; pauses while Plex is streaming or Sonarr has P1/P2 searches in flight. Requires `SUB_LADDER_ENABLED=true` and non-blank `PRIORITARR_BAZARR_API_KEY`. |
+| **Sub-ladder** | 30 min | Guarantees every anime episode a plain `.en.srt`. Climbs: embedded extract → Bazarr provider search → Whisper JP→EN. Priority-ordered; pauses while Plex is streaming or Sonarr's search queue is congested. Requires `SUB_LADDER_ENABLED=true` and non-blank `PRIORITARR_BAZARR_API_KEY`. |
 
 Every job is wrapped in a supervisor coroutine — a crash in one doesn't kill the others — and is a **singleton**: the scheduler never starts a second run of a job while the first is still in flight, and a job's cadence is measured from when it *finishes*. Long jobs therefore stretch their own interval instead of piling up.
 
@@ -298,7 +298,7 @@ Optional: `API_KEY` (locks `/api/v2/*`), `CONFIG_PATH` (YAML seed), `PLEX_URL` +
 - **Tdarr pause** — `TDARR_URL`, `TDARR_API_KEY`, `TDARR_PAUSE_ENABLED`.
 - **Sonarr watchdog** — `SONARR_WATCHDOG_ENABLED`, `DOCKER_PROXY_URL`, `SONARR_CONTAINER_NAME` (default `sonarr`).
 - **Sub-extract** — `SUB_EXTRACT_ENABLED`, `SUB_EXTRACT_PATHS`, `SUB_EXTRACT_LANGS`, `SUB_EXTRACT_MAX_PER_RUN`. Cadence is YAML/DB-only (see below), not an env var.
-- **Sub-ladder** — `SUB_LADDER_ENABLED`, `SUB_LADDER_WHISPER_ENABLED`, `SUB_LADDER_WHISPER_MAX_PRIORITY` (default 2 = P1/P2), `SUB_LADDER_MAX_SERIES_PER_SWEEP`. Cadence and per-sweep cap are YAML/DB-only: `sub_ladder_interval_minutes`, `sub_ladder_max_per_sweep`, `sub_ladder_max_series_per_sweep`.
+- **Sub-ladder** — `SUB_LADDER_ENABLED`, `SUB_LADDER_WHISPER_ENABLED`, `SUB_LADDER_WHISPER_MAX_PRIORITY` (default 2 = P1/P2). Cadence and per-sweep caps are YAML/DB-only: `sub_ladder_interval_minutes`, `sub_ladder_max_per_sweep`, `sub_ladder_max_series_per_sweep`.
 - **Search control** — `CANCEL_BACKFILL_FOR_PRIORITY` (default true).
 
 ### Priority thresholds
