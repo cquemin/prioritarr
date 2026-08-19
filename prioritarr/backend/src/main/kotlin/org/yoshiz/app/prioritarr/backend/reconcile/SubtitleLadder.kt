@@ -1,5 +1,6 @@
 package org.yoshiz.app.prioritarr.backend.reconcile
 
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 import org.yoshiz.app.prioritarr.backend.database.Database
@@ -27,17 +28,17 @@ data class LadderState(val lastRung: String, val attempts: Long)
 /**
  * Per-sweep aggregate surfaced in the job summary.
  *
- * The rung counters are [AtomicInteger] because [SubtitleLadder.runOne]
- * increments them, and runOne is also called directly by the on-demand
- * endpoint (outside any sweep) — where [SubtitleLadder.lastReport] is
- * null and the increments are simply skipped.
+ * Plain [Int]s: every counter is only ever mutated from within the single
+ * call to [SubtitleLadder.sweep] that owns this instance (passed explicitly
+ * into [SubtitleLadder.runOne] as a parameter, never as shared mutable
+ * state), so there is nothing concurrent here to defend against.
  */
 data class LadderReport(
     var considered: Int = 0,
     var satisfied: Int = 0,
-    val extracted: AtomicInteger = AtomicInteger(0),
-    val bazarrTriggered: AtomicInteger = AtomicInteger(0),
-    val whispered: AtomicInteger = AtomicInteger(0),
+    var extracted: Int = 0,
+    var bazarrTriggered: Int = 0,
+    var whispered: Int = 0,
     var noSource: Int = 0,
     var upstreamDown: Int = 0,
     var skippedGate: Int = 0,
@@ -75,19 +76,10 @@ class SubtitleLadder(
     private val idleTicks = AtomicInteger(0)
 
     /** Global Whisper mutex — one transcription at a time, process-wide. */
-    private val whisperSlot = kotlinx.coroutines.sync.Mutex()
-
-    /**
-     * The in-flight sweep's report, so [runOne] can attribute rung
-     * counters. Null when runOne is called directly by the on-demand
-     * endpoint.
-     */
-    @Volatile
-    private var lastReport: LadderReport? = null
+    private val whisperSlot = Mutex()
 
     suspend fun sweep(): LadderReport {
         val report = LadderReport()
-        lastReport = report
 
         val gate = decideLadderGate(
             plexSessions = try { plexSessions() } catch (_: Exception) { null },
@@ -99,27 +91,32 @@ class SubtitleLadder(
         if (!gate.open) {
             report.skippedGate = 1
             logger.debug("sub-ladder: standing down — {}", gate.reason)
-            lastReport = null
             return report
         }
 
         val batch = candidates().take(maxPerSweep().coerceAtLeast(0))
         for (c in batch) {
             report.considered++
-            when (runOne(c)) {
-                LadderOutcome.SATISFIED -> report.satisfied++
-                LadderOutcome.NO_SOURCE -> report.noSource++
-                LadderOutcome.UPSTREAM_DOWN -> report.upstreamDown++
-                LadderOutcome.UNREADABLE -> report.noSource++
-                LadderOutcome.BLOCKED_VARIANT -> {}
+            try {
+                when (runOne(c, report)) {
+                    LadderOutcome.SATISFIED -> report.satisfied++
+                    LadderOutcome.NO_SOURCE -> report.noSource++
+                    LadderOutcome.UPSTREAM_DOWN -> report.upstreamDown++
+                    LadderOutcome.UNREADABLE -> report.noSource++
+                    LadderOutcome.BLOCKED_VARIANT -> {}
+                }
+            } catch (e: Exception) {
+                // One candidate's DB hiccup (SQLite BUSY is realistic on
+                // this box) must not abort the rest of the batch.
+                logger.warn("sub-ladder: candidate {} failed unexpectedly: {}", c.episodeId, e.message)
+                report.noSource++
             }
         }
         logger.info(
             "sub-ladder: considered={} satisfied={} extracted={} bazarr={} whisper={} noSource={} upstreamDown={}",
-            report.considered, report.satisfied, report.extracted.get(),
-            report.bazarrTriggered.get(), report.whispered.get(), report.noSource, report.upstreamDown,
+            report.considered, report.satisfied, report.extracted,
+            report.bazarrTriggered, report.whispered, report.noSource, report.upstreamDown,
         )
-        lastReport = null
         return report
     }
 
@@ -130,23 +127,33 @@ class SubtitleLadder(
      * the result only exists on a later sweep. Persisting `lastRung` is
      * what lets the next pass know Bazarr has already had its turn and
      * move on to Whisper.
+     *
+     * [report], when supplied by [sweep], is where rung counters get
+     * attributed. It is passed as a plain parameter rather than kept as
+     * shared mutable state, so concurrent on-demand calls (outside any
+     * sweep) and overlapping sweeps can never misattribute each other's
+     * counters.
      */
-    suspend fun runOne(candidate: LadderCandidate): LadderOutcome {
+    suspend fun runOne(candidate: LadderCandidate, report: LadderReport? = null): LadderOutcome {
+        // Loaded once up front (rather than again inside record()) since
+        // both the bazarrAlreadyTried check and every record() call need
+        // it: one DB read per candidate instead of two.
+        val prior = loadState(candidate.episodeId)
+
         val file = candidate.videoPath
-        val dir = file.parent ?: return record(candidate, Rung.R4_EXHAUSTED, LadderOutcome.UNREADABLE)
+        val dir = file.parent ?: return record(candidate, Rung.R4_EXHAUSTED, LadderOutcome.UNREADABLE, prior)
         val base = baseNameOf(file)
         val sidecar = classifySidecars(siblingNames(dir), base)
 
         if (sidecar == SidecarState.SATISFIED) {
-            return record(candidate, Rung.R0_SATISFIED, LadderOutcome.SATISFIED)
+            return record(candidate, Rung.R0_SATISFIED, LadderOutcome.SATISFIED, prior)
         }
 
-        val prior = loadState(candidate.episodeId)
         val embedded = try {
             hasEmbeddedEnglishText(file)
         } catch (e: Exception) {
             logger.warn("sub-ladder: probe failed for {}: {}", file, e.message)
-            return record(candidate, Rung.R1_EMBEDDED, LadderOutcome.UNREADABLE)
+            return record(candidate, Rung.R1_EMBEDDED, LadderOutcome.UNREADABLE, prior)
         }
 
         val rung = nextRung(
@@ -159,22 +166,22 @@ class SubtitleLadder(
         )
 
         return when (rung) {
-            Rung.R0_SATISFIED -> record(candidate, rung, LadderOutcome.SATISFIED)
+            Rung.R0_SATISFIED -> record(candidate, rung, LadderOutcome.SATISFIED, prior)
 
             Rung.R1_EMBEDDED -> {
                 val ok = try { extractEmbedded(file) } catch (_: Exception) { false }
-                if (ok) lastReport?.extracted?.incrementAndGet()
-                record(candidate, rung, if (ok) LadderOutcome.SATISFIED else LadderOutcome.NO_SOURCE)
+                if (ok) report?.let { it.extracted++ }
+                record(candidate, rung, if (ok) LadderOutcome.SATISFIED else LadderOutcome.NO_SOURCE, prior)
             }
 
             Rung.R2_BAZARR -> {
                 val ok = try {
                     triggerBazarr(candidate.seriesId, candidate.episodeId)
                 } catch (_: Exception) { false }
-                if (ok) lastReport?.bazarrTriggered?.incrementAndGet()
+                if (ok) report?.let { it.bazarrTriggered++ }
                 // Bazarr searches asynchronously: a successful trigger only
                 // means "queued". The result, if any, is seen next sweep.
-                record(candidate, rung, if (ok) LadderOutcome.NO_SOURCE else LadderOutcome.UPSTREAM_DOWN)
+                record(candidate, rung, if (ok) LadderOutcome.NO_SOURCE else LadderOutcome.UPSTREAM_DOWN, prior)
             }
 
             Rung.R3_WHISPER -> whisperSlot.withLock {
@@ -185,13 +192,13 @@ class SubtitleLadder(
                     null
                 }
                 if (srt.isNullOrBlank()) {
-                    record(candidate, rung, LadderOutcome.UPSTREAM_DOWN)
+                    record(candidate, rung, LadderOutcome.UPSTREAM_DOWN, prior)
                 } else {
-                    lastReport?.whispered?.incrementAndGet()
+                    report?.let { it.whispered++ }
                     // Either we wrote it, or Bazarr beat us to it mid-run.
                     // Both mean the episode now has its .en.srt.
                     writeSidecarIfAbsent(dir, base, srt)
-                    record(candidate, rung, LadderOutcome.SATISFIED)
+                    record(candidate, rung, LadderOutcome.SATISFIED, prior)
                 }
             }
 
@@ -199,7 +206,7 @@ class SubtitleLadder(
                 val outcome =
                     if (sidecar == SidecarState.VARIANT_ONLY) LadderOutcome.BLOCKED_VARIANT
                     else LadderOutcome.NO_SOURCE
-                record(candidate, rung, outcome)
+                record(candidate, rung, outcome, prior)
             }
         }
     }
@@ -236,13 +243,22 @@ class SubtitleLadder(
         }
     }
 
-    private fun record(c: LadderCandidate, rung: Rung, outcome: LadderOutcome): LadderOutcome {
-        val prior = loadState(c.episodeId)?.attempts ?: 0L
-        val attempts = if (consumesAttempt(outcome)) prior + 1 else prior
+    private fun record(c: LadderCandidate, rung: Rung, outcome: LadderOutcome, prior: LadderState?): LadderOutcome {
+        val priorAttempts = prior?.attempts ?: 0L
+        val attempts = if (consumesAttempt(outcome)) priorAttempts + 1 else priorAttempts
         val nextRetryAt = when (outcome) {
-            LadderOutcome.SATISFIED -> null
+            // NOT null: null means "due now" (ladderEpisodesDue selects
+            // next_retry_at IS NULL OR next_retry_at <= ?), so a satisfied
+            // episode would be re-selected, and re-confirmed, on every
+            // single sweep, burning the whole per-sweep budget on episodes
+            // that already have nothing to do. A week gives cheap
+            // self-healing if the sidecar is later deleted or replaced.
+            LadderOutcome.SATISFIED -> isoPlus(java.time.Duration.ofDays(7))
             // Retry an outage soon; it is our fault, not the file's.
             LadderOutcome.UPSTREAM_DOWN -> isoPlus(java.time.Duration.ofHours(1))
+            // A variant sidecar blocks R2/R3 until someone resolves it by
+            // hand; 28d is not a real retry cadence, just a cap on how
+            // often we re-verify the variant is still there.
             LadderOutcome.BLOCKED_VARIANT -> isoPlus(java.time.Duration.ofDays(28))
             else -> isoPlus(backoffFor(attempts.toInt()))
         }
