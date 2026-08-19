@@ -4,7 +4,7 @@
 
 **Goal:** Guarantee every anime episode ends with an external `.en.srt` sidecar, via an ordered fallback ladder that climbs from free local extraction to Whisper transcription-translation.
 
-**Architecture:** One new `sub-ladder` scheduler job owns an explicit per-episode state machine with four rungs (R0 satisfied check → R1 embedded extract → R2 Bazarr provider search → R3 Whisper). The decision core is pure functions; all I/O (ffprobe, ffmpeg, Bazarr, Whisper, Plex, Sonarr) is seam-injected so it unit-tests without those services. Backfill yields to live Plex playback and in-flight P1/P2 Sonarr searches.
+**Architecture:** One new `sub-ladder` scheduler job owns an explicit per-episode state machine with four rungs (R0 satisfied check → R1 embedded extract → R2 Bazarr provider search → R3 Whisper). The decision core is pure functions; all I/O (ffprobe, ffmpeg, Bazarr, Whisper, Plex, Sonarr) is seam-injected so it unit-tests without those services. Backfill yields to live Plex playback and to a congested Sonarr search queue.
 
 **Tech Stack:** Kotlin, Ktor client, SQLDelight, kotlin.test, Gradle.
 
@@ -767,7 +767,8 @@ data class LadderGate(
  *   failed**. Null fails CLOSED — unlike [decideTdarrPause], which maps
  *   an error to 0. Running Whisper during a live stream because a probe
  *   blipped is far more costly than skipping one sweep.
- * @param congested true when Sonarr has P1/P2 searches in flight.
+ * @param congested true when Sonarr's search queue is congested. All search
+ *   command types count toward searchCongestionThreshold, not just P1/P2.
  * @param idleTicks consecutive idle polls so far, carried by the caller.
  * @param resumeAfterIdleTicks idle polls required before opening.
  */
@@ -2142,7 +2143,7 @@ git commit -m "feat(sub-ladder): on-demand single-episode trigger endpoint"
 Insert after the **Sub-extract** row:
 
 ```markdown
-| **Sub-ladder** | 30 min | Guarantees every anime episode a plain `.en.srt`. Climbs: embedded extract → Bazarr provider search → Whisper JP→EN. Priority-ordered; pauses while Plex is streaming or Sonarr has P1/P2 searches in flight. `SUB_LADDER_ENABLED=true`. |
+| **Sub-ladder** | 30 min | Guarantees every anime episode a plain `.en.srt`. Climbs: embedded extract → Bazarr provider search → Whisper JP→EN. Priority-ordered; pauses while Plex is streaming or Sonarr's search queue is congested. `SUB_LADDER_ENABLED=true`. |
 ```
 
 - [ ] **Step 2: Document the env vars**

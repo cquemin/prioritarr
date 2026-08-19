@@ -130,7 +130,7 @@ per-episode state machine.
 sub-ladder job (LIGHT, singleton, every N min)
   │
   ├─ gate: Plex idle?        ── PlexClient.sessionCount() + idle-tick debounce
-  ├─ gate: search congested? ── SearchQueueControl.isCongested()  (P1/P2 in flight)
+  ├─ gate: search congested? ── SearchQueueControl.isCongested()  (queue busy)
   │     └─ either gate closed → JobOutcome(noop), no state change
   │
   └─ take next N episodes, priority order (P1→P5), skipping those in backoff
@@ -230,7 +230,7 @@ when untagged so Whisper detects it. Output is written via tmp +
 
 Whisper is CPU-bound, so this rung is **globally serialised**: one
 episode at a time, never concurrent. The gates keep it off the CPU
-during playback and P1/P2 searches.
+during playback and while Sonarr's search queue is congested.
 
 ### R4 — Exhausted
 
@@ -264,7 +264,7 @@ Both gates already exist and are reused rather than rebuilt:
   the idle-tick debounce pattern from `decideTdarrPause`, which already
   handles Plex momentarily reporting 0 mid-playback.
 - **Search congestion** — `SearchQueueControl.isCongested()`, already
-  reading Sonarr's command queue to detect P1/P2 searches in flight.
+  reading Sonarr's command queue to detect search-queue congestion.
 
 **Gates fail closed.** This is a deliberate departure: `SearchQueueControl`
 fails safe as *not congested*, and `decideTdarrPause` treats a probe
