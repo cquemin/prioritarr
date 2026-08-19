@@ -1956,7 +1956,14 @@ private suspend fun buildLadderCandidates(
         Triple(id, path, priorityService.priorityForSeries(id).priority)
     }.sortedBy { it.third }
 
+    val budget = s.intervals.subLadderMaxPerSweep.coerceAtLeast(0)
     for ((seriesId, _, priority) in series) {
+        // Stop as soon as we have a full sweep's worth. Series are already
+        // priority-ordered, so the highest-priority work is found first, and
+        // we avoid a per-series Sonarr call for all ~300 series on every
+        // sweep — that fan-out is what starved Sonarr's SQLite in the
+        // 2026-08-14 incident, and the episode-cache job already pays it hourly.
+        if (out.size >= budget) break
         for (el in sonarr.getEpisodes(seriesId)) {
             val o = el as? JsonObject ?: continue
             if (o["hasFile"]?.jsonPrimitive?.contentOrNull != "true") continue
@@ -1965,6 +1972,7 @@ private suspend fun buildLadderCandidates(
                 ?.get("path")?.jsonPrimitive?.contentOrNull ?: continue
             val due = db.getLadderState(epId)?.next_retry_at
             if (due != null && due > Database.nowIsoOffset()) continue
+            if (out.size >= budget) break
             out += LadderCandidate(
                 videoPath = java.nio.file.Paths.get(filePath),
                 seriesId = seriesId,
