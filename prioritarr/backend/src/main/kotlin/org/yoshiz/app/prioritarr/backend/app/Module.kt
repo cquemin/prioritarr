@@ -443,6 +443,57 @@ fun Application.prioritarrModule(state: AppState) {
 }
 
 /**
+ * On-demand ladder trigger — "do this one episode now". Bypasses the
+ * priority gate and the backoff schedule entirely (both live inside
+ * [org.yoshiz.app.prioritarr.backend.reconcile.SubtitleLadder.sweep],
+ * which this route never calls); it still runs the requested episode
+ * through [org.yoshiz.app.prioritarr.backend.reconcile.SubtitleLadder.runOne],
+ * so the never-clobber sidecar guarantee and the global Whisper mutex
+ * both still apply. One call climbs exactly one rung — a `NO_SOURCE`
+ * response after only a Bazarr trigger is expected, not a bug; Bazarr
+ * resolves asynchronously and the result shows up on a later call.
+ *
+ * Uses [io.ktor.server.response.respondText] with hand-built JSON,
+ * matching this file's existing style (see the openapi.json handler
+ * and the StatusPages catch-all above) rather than routing through
+ * `call.respond(...)` + ContentNegotiation — this keeps the route
+ * usable from a bare `testApplication` with no plugins installed, the
+ * same way those other handlers are.
+ *
+ * @param runLadderFor returns the ladder outcome's name, or null when
+ *   the episode is unknown to Sonarr (or has no file yet to act on).
+ */
+fun Application.subtitleLadderRoutes(runLadderFor: suspend (Long) -> String?) {
+    routing {
+        post("/api/v2/subtitles/ladder/{episodeId}") {
+            val id = call.parameters["episodeId"]?.toLongOrNull()
+            if (id == null) {
+                call.respondText(
+                    """{"error":"episodeId must be numeric"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest,
+                )
+                return@post
+            }
+            val outcome = runLadderFor(id)
+            if (outcome == null) {
+                call.respondText(
+                    """{"error":"episode not found"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.NotFound,
+                )
+            } else {
+                call.respondText(
+                    """{"outcome":"$outcome"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.OK,
+                )
+            }
+        }
+    }
+}
+
+/**
  * TCP-only probe client with 2s connect+read timeouts. Used by /ready
  * to avoid inheriting the 120s timeouts of the main Sonarr/Tautulli
  * clients. Only the fact that /some-url responds is interesting, not

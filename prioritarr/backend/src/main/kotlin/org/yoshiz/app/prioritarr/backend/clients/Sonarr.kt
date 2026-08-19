@@ -55,6 +55,28 @@ open class SonarrClient(
                 if (includeEpisodeFile) mapOf("includeEpisodeFile" to "true") else emptyMap(),
         ).jsonArray
 
+    /**
+     * Fetch a single episode by id, optionally with the joined
+     * `episodeFile` object the same way [getEpisodes]'s
+     * `includeEpisodeFile` does for the list endpoint. Used by the
+     * on-demand sub-ladder trigger to resolve an arbitrary requested
+     * episode directly, rather than filtering [getEpisodes]'s bounded
+     * per-sweep window (which usually won't contain it).
+     *
+     * Returns null on a 404 — Sonarr doesn't know this episode id.
+     * Any other failure (network, 5xx) propagates so the caller can
+     * tell "not found" apart from "Sonarr is unreachable".
+     */
+    open suspend fun getEpisodeById(episodeId: Long, includeEpisodeFile: Boolean = false): JsonObject? =
+        try {
+            get(
+                "/api/v3/episode/$episodeId",
+                if (includeEpisodeFile) mapOf("includeEpisodeFile" to "true") else emptyMap(),
+            ) as JsonObject
+        } catch (e: io.ktor.client.plugins.ClientRequestException) {
+            if (e.response.status == io.ktor.http.HttpStatusCode.NotFound) null else throw e
+        }
+
     open suspend fun getWantedMissing(pageSize: Int = 1000): JsonArray =
         ((get("/api/v3/wanted/missing", mapOf("pageSize" to pageSize.toString())) as JsonObject)
             ["records"] as JsonArray)

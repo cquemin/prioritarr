@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import org.yoshiz.app.prioritarr.backend.app.AppState
 import org.yoshiz.app.prioritarr.backend.app.prioritarrModule
+import org.yoshiz.app.prioritarr.backend.app.subtitleLadderRoutes
 import org.yoshiz.app.prioritarr.backend.events.EventBus
 import org.yoshiz.app.prioritarr.backend.clients.QBitClient
 import org.yoshiz.app.prioritarr.backend.clients.SABClient
@@ -884,7 +885,48 @@ fun main() {
 
     embeddedServer(Netty, port = 8000, host = "0.0.0.0") {
         prioritarrModule(state)
+        subtitleLadderRoutes { episodeId ->
+            resolveLadderCandidateById(sonarr, db, episodeId)?.let { subtitleLadder.runOne(it).name }
+        }
     }.start(wait = true)
+}
+
+/**
+ * Resolve a single [org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate]
+ * for the on-demand trigger by reading Sonarr directly for that one
+ * episode id.
+ *
+ * Deliberately does NOT filter [buildLadderCandidates]'s output:
+ * that function now scans only a bounded rotating window of series
+ * per sweep (see its KDoc — capped by `subLadderMaxSeriesPerSweep` to
+ * avoid the 2026-08-14 Sonarr-SQLite-starvation incident), so most
+ * calls would not find an arbitrary requested episode in it at all.
+ * An explicit "do this one now" request has to resolve regardless of
+ * where the rotating window currently sits.
+ *
+ * Returns null when Sonarr doesn't know the episode id, or the
+ * episode has no file yet — there is nothing on disk for the ladder
+ * to act on either way, and the route surfaces both as 404.
+ */
+private suspend fun resolveLadderCandidateById(
+    sonarr: SonarrClient,
+    db: Database,
+    episodeId: Long,
+): org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate? {
+    val episode = sonarr.getEpisodeById(episodeId, includeEpisodeFile = true) ?: return null
+    if (episode["hasFile"]?.jsonPrimitive?.contentOrNull != "true") return null
+    val seriesId = episode["seriesId"]?.jsonPrimitive?.longOrNull ?: return null
+    val filePath = (episode["episodeFile"] as? JsonObject)
+        ?.get("path")?.jsonPrimitive?.contentOrNull ?: return null
+    val priority = db.getPriorityCache(seriesId)?.priority?.toInt() ?: 5
+
+    return org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate(
+        videoPath = java.nio.file.Paths.get(filePath),
+        seriesId = seriesId,
+        episodeId = episodeId,
+        priority = priority,
+        audioLang = "ja",
+    )
 }
 
 /**
