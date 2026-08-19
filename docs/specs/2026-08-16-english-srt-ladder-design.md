@@ -352,6 +352,49 @@ would mean provider hammering, with no Bazarr safety net on this
 specific path. The cap is the primary guardrail and should be
 conservative on first enable.
 
+## Post-merge follow-ups
+
+Known and consciously deferred at merge (2026-08-19). None blocks the
+staged rollout; all were surfaced by the final whole-branch review and
+its re-review, and are recorded here because the SDD scratch workspace
+is not committed.
+
+**Worth doing before the Whisper rung is enabled:**
+
+- `plexClient` is constructed from startup `settings`, while the
+  SUB_LADDER prerequisite reads `liveSettings`. Plex configured only via
+  the DB override therefore passes the prerequisite while the gate keeps
+  failing closed. No longer silent — it surfaces as
+  `skippedGate=1 gate=plex probe failed` in the job summary — but the
+  mismatch should be closed.
+- The `upstream_down_streak` escalation only fires when **both**
+  upstreams are down. A whisper-only outage alternates R2 (`NO_SOURCE`,
+  consumes an attempt) with R3 (`UPSTREAM_DOWN`, resets the streak), so
+  the counter never reaches its threshold. Churn is still bounded — one
+  ffmpeg decode per backoff window, capped at 28 days — but by the
+  attempts curve rather than by the counter that was added for it.
+
+**Lower priority:**
+
+- `extractOne`'s `atomicMove` has no pre-move existence check, unlike the
+  ASS branch and `writeSidecarIfAbsent`. `sub-extract` and `sub-ladder`
+  share one extractor instance on the same 30-minute cadence, so a
+  sidecar Bazarr lands between the `hasSidecar` check and the move can be
+  clobbered — contradicting the class KDoc's "never destructive".
+- `Database.ladderEpisodesDue` and `idx_subtitle_ladder_next_retry` are
+  dead in production: the real due-filter is the per-episode
+  `getLadderState` read in `buildLadderCandidates`. Use the accessor or
+  delete it, along with the "NULL means due now" comments that point at
+  it.
+- `audioLang` is hardcoded `"ja"` in both candidate builders. A
+  non-Japanese show under the anime root gets garbage Whisper output
+  written and marked satisfied.
+- `getPriorityCache` issues one SQLite read per series (~300 per sweep);
+  a bulk read would do.
+- No test covers the congestion/debounce carryover in `decideLadderGate`
+  (a congested close preserves `idleTicks`, so the gate can open one tick
+  after congestion clears).
+
 ## References
 
 - Prior spec (Phase 2c never implemented):
