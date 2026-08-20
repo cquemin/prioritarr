@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import org.yoshiz.app.prioritarr.backend.app.AppState
 import org.yoshiz.app.prioritarr.backend.app.prioritarrModule
+import org.yoshiz.app.prioritarr.backend.app.subtitleLadderRoutes
 import org.yoshiz.app.prioritarr.backend.events.EventBus
 import org.yoshiz.app.prioritarr.backend.clients.QBitClient
 import org.yoshiz.app.prioritarr.backend.clients.SABClient
@@ -200,6 +201,13 @@ fun main() {
     // hung upstream can't stall a scheduler tick the way a 120s default
     // probe would. Closing handled via AppState.httpClients ownership.
     val healthHttp = defaultJsonClient(timeoutMs = 10_000)
+    // Whisper needs its own client with a long timeout: a task=translate
+    // pass over a 20+ minute episode takes minutes, not seconds. Reusing
+    // healthHttp's 10s timeout would make every real call fail with a
+    // timeout -> null -> UPSTREAM_DOWN, so the sub-ladder Whisper rung
+    // would never actually produce a subtitle. 3600s matches Bazarr's own
+    // whisper-provider timeout for the same workload.
+    val whisperHttp = defaultJsonClient(timeoutMs = 3_600_000)
 
     val sonarr = SonarrClient(settings.sonarrUrl, settings.sonarrApiKey, sonarrHttp)
     val tautulli = TautulliClient(settings.tautulliUrl, settings.tautulliApiKey, tautulliHttp)
@@ -313,6 +321,10 @@ fun main() {
         maxPerRun = { liveSettings(db, settings).subExtractMaxPerRun },
         probe = org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo::probe,
         extract = org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo::extract,
+        // Without this, convertSidecar falls back to its default { _, _ -> false }
+        // and the ASS-sidecar→SRT conversion rung is completely inert in
+        // production — it was built but never wired until now.
+        convertSidecar = org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo::convertSubtitleFile,
         // Order the sweep by prioritarr priority (P1 first) so actively-watched
         // shows get sidecars before the per-run cap is spent. Any failure here
         // returns an empty list → the extractor falls back to the flat walk.
@@ -376,7 +388,7 @@ fun main() {
         tdarr = tdarrClient,
         plex = plexClient,
         eventBus = EventBus(),
-        httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp, healthHttp, tdarrHttp),
+        httpClients = listOf(sonarrHttp, tautulliHttp, plexHttp, qbitHttp, sabHttp, traktHttp, healthHttp, tdarrHttp, whisperHttp),
     )
 
     // Heartbeat coroutine — enough to make /health flip to 200 after startup.
@@ -475,6 +487,81 @@ fun main() {
         cancelCommand = { id -> sonarr.cancelCommand(id) },
         threshold = { liveSettings(db, settings).intervals.searchCongestionThreshold },
         dryRun = { liveSettings(db, settings).dryRun },
+    )
+
+    // English-SRT ladder (Task 8 wiring). Ships disabled via
+    // subLadderEnabled; see JobId.SUB_LADDER registration below.
+    // BazarrClient has existed but was never constructed anywhere until now.
+    // Constructor order is (baseUrl, apiKey, http) — see clients/Bazarr.kt:25.
+    val bazarrClient = org.yoshiz.app.prioritarr.backend.clients.BazarrClient(
+        baseUrl = settings.bazarrUrl,
+        apiKey = settings.bazarrApiKey ?: "",
+        http = healthHttp,
+    )
+    // whisperHttp (long timeout — see its declaration above) was built
+    // earlier alongside healthHttp so it's available to AppState.httpClients.
+    val whisperClient = org.yoshiz.app.prioritarr.backend.clients.WhisperClient(
+        http = whisperHttp,
+        baseUrl = settings.whisperUrl,
+    )
+
+    // Rotating cursor into the priority-sorted series list, shared across
+    // sweeps so the per-sweep series scan advances through the library
+    // instead of rescanning the same top-N every time. In-memory only —
+    // losing it on restart just restarts the rotation from P1, which is
+    // harmless (see buildLadderCandidates KDoc).
+    val subLadderSeriesCursor = java.util.concurrent.atomic.AtomicInteger(0)
+
+    val subtitleLadder = org.yoshiz.app.prioritarr.backend.reconcile.SubtitleLadder(
+        candidates = { buildLadderCandidates(sonarr, db, liveSettings(db, settings), subLadderSeriesCursor) },
+        hasEmbeddedEnglishText = { path ->
+            org.yoshiz.app.prioritarr.backend.reconcile.FfmpegSubtitleIo.probe(path).any { s ->
+                s.codecName.lowercase() in org.yoshiz.app.prioritarr.backend.reconcile.SubtitleExtractor.TEXT_CODECS &&
+                    (s.language?.lowercase()?.trim().let { it == "en" || it == "eng" || it == "english" } ||
+                        (s.language.isNullOrBlank() && s.title?.lowercase()?.contains("english") == true))
+            }
+        },
+        extractEmbedded = { path ->
+            subtitleExtractor.extractForFile(path)
+            // Deliberately NOT `report.extracted > 0`: that counts sidecars
+            // written in ANY configured language (subExtractLangs is
+            // ["en","fr"]), so an English failure alongside a French success
+            // would be recorded SATISFIED with no .en.srt on disk at all -
+            // and then not looked at again for 7 days. The ladder's entire
+            // contract is the English file, so assert exactly that file.
+            val name = path.fileName.toString()
+            val stem = name.substringBeforeLast('.', name)
+            path.parent?.resolve("$stem.en.srt")?.let { java.nio.file.Files.exists(it) } == true
+        },
+        triggerBazarr = { seriesId, episodeId ->
+            bazarrClient.triggerEpisodeSearch(seriesId, episodeId, "en")
+        },
+        whisperTranslate = { path, lang ->
+            val tmpWav = java.nio.file.Files.createTempFile("sub-ladder-", ".wav")
+            try {
+                if (org.yoshiz.app.prioritarr.backend.reconcile.FfmpegAudioIo.extractWav(path, tmpWav)) {
+                    whisperClient.translateToSrt(tmpWav, lang)
+                } else null
+            } finally {
+                java.nio.file.Files.deleteIfExists(tmpWav)
+            }
+        },
+        plexSessions = { plexClient?.activeSessionCountOrNull() },
+        congested = { searchQueueControl.isCongested() },
+        maxPerSweep = { liveSettings(db, settings).intervals.subLadderMaxPerSweep },
+        whisperEnabled = { liveSettings(db, settings).subLadderWhisperEnabled },
+        whisperMaxPriority = { liveSettings(db, settings).subLadderWhisperMaxPriority },
+        resumeAfterIdleTicks = { 3 },
+        loadState = { id ->
+            db.getLadderState(id)?.let {
+                org.yoshiz.app.prioritarr.backend.reconcile.LadderState(
+                    it.last_rung, it.attempts, it.upstream_down_streak,
+                )
+            }
+        },
+        saveState = { id, rung, outcome, attempts, next, upstreamDowns ->
+            db.upsertLadderState(id, rung, outcome, attempts, next, upstreamDowns)
+        },
     )
 
     val scheduler = org.yoshiz.app.prioritarr.backend.scheduler.Scheduler(
@@ -690,6 +777,54 @@ fun main() {
                 },
             ))
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.SUB_LADDER,
+                cadenceMinutes = { liveSettings(db, settings).intervals.subLadderIntervalMinutes.toLong() },
+                // Every one of these is required for the job to do anything
+                // at all, so the job reports "prerequisites not met" instead
+                // of running green and silently producing nothing:
+                //
+                //  - bazarrApiKey: defaults to "" when unset; enabling
+                //    without a key fires the Bazarr rung every sweep, gets
+                //    401s forever, and never notices.
+                //  - subExtractPaths: buildLadderCandidates returns an empty
+                //    list when the root list is empty, so the ladder would
+                //    tick forever with considered=0. (SUB_EXTRACT already
+                //    checks its paths the same way.)
+                //  - plexUrl/plexToken: plexClient is only built when BOTH
+                //    are set, so without them activeSessionCountOrNull() is
+                //    null, the gate fails closed on every single tick by
+                //    design, and the feature is permanently inert.
+                prerequisites = {
+                    val s = liveSettings(db, settings)
+                    s.subLadderEnabled &&
+                        !s.bazarrApiKey.isNullOrBlank() &&
+                        s.subExtractPaths.isNotEmpty() &&
+                        !s.plexUrl.isNullOrBlank() &&
+                        !s.plexToken.isNullOrBlank()
+                },
+                // LIGHT for the same reason sub-extract is: the single HEAVY
+                // slot per tick is permanently held by the refresh-* jobs.
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                firstRunDelayMinutes = 3,
+                run = {
+                    val r = subtitleLadder.sweep()
+                    org.yoshiz.app.prioritarr.backend.scheduler.JobOutcome(
+                        // skippedGate + the gate reason are part of the
+                        // summary on purpose: a gate that is closed on every
+                        // tick (Plex unreachable, or a stream that never
+                        // ends) otherwise looks exactly like "nothing was
+                        // due", and the only trace was a DEBUG log line.
+                        summary = "considered=${r.considered} satisfied=${r.satisfied} " +
+                            "bazarr=${r.bazarrTriggered} whisper=${r.whispered} " +
+                            "noSource=${r.noSource} upstreamDown=${r.upstreamDown} " +
+                            "skippedGate=${r.skippedGate}" +
+                            (r.gateReason?.let { " gate=$it" } ?: "") +
+                            (if (r.gateAborted) " (batch aborted mid-sweep)" else ""),
+                        noop = r.considered == 0,
+                    )
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
                 id = JobId.BACKFILL_SWEEP,
                 cadenceMinutes = { liveSettings(db, settings).intervals.backfillSweepHours.toLong() * 60L },
                 prerequisites = { state.prioritiesPrimed.get() },
@@ -786,5 +921,137 @@ fun main() {
 
     embeddedServer(Netty, port = 8000, host = "0.0.0.0") {
         prioritarrModule(state)
+        subtitleLadderRoutes(
+            // "Ships disabled" has to hold for the HTTP surface too: this
+            // route deliberately bypasses the Plex/congestion gate, so while
+            // the feature is off an api-key holder could otherwise start a
+            // multi-minute Whisper run on a box serving live transcodes.
+            enabled = { liveSettings(db, settings).subLadderEnabled },
+        ) { episodeId ->
+            resolveLadderCandidateById(sonarr, db, episodeId)?.let { subtitleLadder.runOne(it).name }
+        }
     }.start(wait = true)
+}
+
+/**
+ * Resolve a single [org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate]
+ * for the on-demand trigger by reading Sonarr directly for that one
+ * episode id.
+ *
+ * Deliberately does NOT filter [buildLadderCandidates]'s output:
+ * that function now scans only a bounded rotating window of series
+ * per sweep (see its KDoc — capped by `subLadderMaxSeriesPerSweep` to
+ * avoid the 2026-08-14 Sonarr-SQLite-starvation incident), so most
+ * calls would not find an arbitrary requested episode in it at all.
+ * An explicit "do this one now" request has to resolve regardless of
+ * where the rotating window currently sits.
+ *
+ * Returns null when Sonarr doesn't know the episode id, or the
+ * episode has no file yet — there is nothing on disk for the ladder
+ * to act on either way, and the route surfaces both as 404.
+ */
+private suspend fun resolveLadderCandidateById(
+    sonarr: SonarrClient,
+    db: Database,
+    episodeId: Long,
+): org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate? {
+    val episode = sonarr.getEpisodeById(episodeId, includeEpisodeFile = true) ?: return null
+    if (episode["hasFile"]?.jsonPrimitive?.contentOrNull != "true") return null
+    val seriesId = episode["seriesId"]?.jsonPrimitive?.longOrNull ?: return null
+    val filePath = (episode["episodeFile"] as? JsonObject)
+        ?.get("path")?.jsonPrimitive?.contentOrNull ?: return null
+    val priority = db.getPriorityCache(seriesId)?.priority?.toInt() ?: 5
+
+    return org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate(
+        videoPath = java.nio.file.Paths.get(filePath),
+        seriesId = seriesId,
+        episodeId = episodeId,
+        priority = priority,
+        audioLang = "ja",
+    )
+}
+
+/**
+ * Enumerate ladder candidates in prioritarr priority order (P1 first),
+ * with the series-level scan itself bounded by [seriesCursor] —
+ * independent of the `subLadderMaxPerSweep` episode budget.
+ *
+ * Sonarr is the source of episode identity because Bazarr's search
+ * endpoint needs `seriesid` + `episodeid`, and matching on the
+ * episodeFile path is the only robust link from a file on disk back to
+ * an episode row.
+ *
+ * Priority comes from [Database.getPriorityCache] ONLY — never
+ * `PriorityService.priorityForSeries`, which *computes* (and on a cold
+ * cache, fans out per-series to Sonarr/Tautulli/Trakt) rather than just
+ * reads. A series with no cached row sorts last (falls back to
+ * priority 5, the same P3-adjacent default `PriorityService` itself
+ * uses on a dependency failure); the `refresh-priorities` job warms the
+ * cache on its own schedule.
+ *
+ * Bounding on series count (not just the episode budget) matters
+ * because the episode budget alone doesn't bound anything in steady
+ * state: once the library is caught up (every episode satisfied,
+ * `next_retry_at` days out), `out` never fills, so a series-unbounded
+ * loop would call `getEpisodes(includeEpisodeFile=true)` for every
+ * series, every sweep — the exact fan-out that starved Sonarr's SQLite
+ * in the 2026-08-14 incident. [seriesCursor] caps the scan at
+ * `subLadderMaxSeriesPerSweep` series regardless, rotating through the
+ * priority-sorted list sweep over sweep so the whole library still gets
+ * covered eventually.
+ */
+internal suspend fun buildLadderCandidates(
+    sonarr: SonarrClient,
+    db: Database,
+    s: org.yoshiz.app.prioritarr.backend.config.Settings,
+    seriesCursor: java.util.concurrent.atomic.AtomicInteger,
+): List<org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate> {
+    val roots = s.subExtractPaths.map { it.trimEnd('/') }
+    if (roots.isEmpty()) return emptyList()
+
+    val allSeries = sonarr.getAllSeries().mapNotNull { el ->
+        val o = el as? JsonObject ?: return@mapNotNull null
+        val id = o["id"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+        val path = o["path"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+        if (roots.none { path == it || path.startsWith("$it/") }) return@mapNotNull null
+        val cachedPriority = db.getPriorityCache(id)?.priority?.toInt() ?: 5
+        Triple(id, path, cachedPriority)
+    }.sortedBy { it.third }
+    val size = allSeries.size
+    if (size == 0) return emptyList()
+
+    val maxSeries = s.intervals.subLadderMaxSeriesPerSweep.coerceAtLeast(0).coerceAtMost(size)
+    if (maxSeries == 0) return emptyList()
+
+    // Rotating window: this sweep scans [start, start+maxSeries), the next
+    // sweep continues where this one left off, wrapping around at [size].
+    // getAndAccumulate keeps the stored cursor small (always < size at the
+    // time it was written) so it never grows unbounded across restarts.
+    val rawStart = seriesCursor.getAndAccumulate(maxSeries) { cur, add -> (cur + add) % size }
+    val start = rawStart % size
+    val window = (0 until maxSeries).map { allSeries[(start + it) % size] }
+
+    val out = mutableListOf<org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate>()
+    val episodeBudget = s.intervals.subLadderMaxPerSweep.coerceAtLeast(0)
+    for ((seriesId, _, priority) in window) {
+        if (out.size >= episodeBudget) break
+        for (el in sonarr.getEpisodes(seriesId, includeEpisodeFile = true)) {
+            val o = el as? JsonObject ?: continue
+            if (o["hasFile"]?.jsonPrimitive?.contentOrNull != "true") continue
+            val epId = o["id"]?.jsonPrimitive?.longOrNull ?: continue
+            val filePath = (o["episodeFile"] as? JsonObject)
+                ?.get("path")?.jsonPrimitive?.contentOrNull ?: continue
+            val due = db.getLadderState(epId)?.next_retry_at
+            if (due != null && due > Database.nowIsoOffset()) continue
+            if (out.size >= episodeBudget) break
+            out += org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate(
+                videoPath = java.nio.file.Paths.get(filePath),
+                seriesId = seriesId,
+                episodeId = epId,
+                priority = priority,
+                audioLang = "ja",
+            )
+        }
+    }
+    return out
 }

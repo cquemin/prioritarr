@@ -9,3 +9,6 @@ build/
 state.db
 .claude/
 .trakttmp/
+
+# Subagent-driven-development scratch (ledgers, briefs, review packages)
+.superpowers/

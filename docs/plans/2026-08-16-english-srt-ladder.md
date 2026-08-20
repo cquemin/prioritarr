@@ -4,7 +4,7 @@
 
 **Goal:** Guarantee every anime episode ends with an external `.en.srt` sidecar, via an ordered fallback ladder that climbs from free local extraction to Whisper transcription-translation.
 
-**Architecture:** One new `sub-ladder` scheduler job owns an explicit per-episode state machine with four rungs (R0 satisfied check → R1 embedded extract → R2 Bazarr provider search → R3 Whisper). The decision core is pure functions; all I/O (ffprobe, ffmpeg, Bazarr, Whisper, Plex, Sonarr) is seam-injected so it unit-tests without those services. Backfill yields to live Plex playback and in-flight P1/P2 Sonarr searches.
+**Architecture:** One new `sub-ladder` scheduler job owns an explicit per-episode state machine with four rungs (R0 satisfied check → R1 embedded extract → R2 Bazarr provider search → R3 Whisper). The decision core is pure functions; all I/O (ffprobe, ffmpeg, Bazarr, Whisper, Plex, Sonarr) is seam-injected so it unit-tests without those services. Backfill yields to live Plex playback and to a congested Sonarr search queue.
 
 **Tech Stack:** Kotlin, Ktor client, SQLDelight, kotlin.test, Gradle.
 
@@ -18,6 +18,7 @@
 - An existing `.en.srt` is never overwritten; re-check existence immediately before the atomic move.
 - Whisper is **globally serialised** — one episode at a time, never concurrent.
 - Temp files use **unique** names, never the deterministic `base.lang.srt.tmp` (it already races).
+- **All timestamps written to or compared against the DB use `Database.ISO_OFFSET`** (or `Database.nowIsoOffset()`), never `OffsetDateTime.toString()` / `Instant.toString()`. `next_retry_at` is compared as a string in SQL; the JDK prints `Z` for zero offset while the codebase pins `+00:00`, and `'Z'` sorts above `'+'`, so a mismatched row never comes due.
 - Run tests with `.\gradlew.bat :backend:test --tests "<pattern>"` from `D:\git\prioritarr\prioritarr`.
 - Backend source root: `prioritarr/backend/src/main/kotlin/org/yoshiz/app/prioritarr/backend/`
 - Test root: `prioritarr/backend/src/test/kotlin/org/yoshiz/app/prioritarr/backend/`
@@ -766,7 +767,8 @@ data class LadderGate(
  *   failed**. Null fails CLOSED — unlike [decideTdarrPause], which maps
  *   an error to 0. Running Whisper during a live stream because a probe
  *   blipped is far more costly than skipping one sweep.
- * @param congested true when Sonarr has P1/P2 searches in flight.
+ * @param congested true when Sonarr's search queue is congested. All search
+ *   command types count toward searchCongestionThreshold, not just P1/P2.
  * @param idleTicks consecutive idle polls so far, carried by the caller.
  * @param resumeAfterIdleTicks idle polls required before opening.
  */
@@ -1675,8 +1677,20 @@ class SubtitleLadder(
         return outcome
     }
 
+    /**
+     * Timestamps MUST be formatted with [Database.ISO_OFFSET], never
+     * `OffsetDateTime.toString()`.
+     *
+     * `next_retry_at` is compared lexicographically in SQL
+     * (`next_retry_at <= ?`), so the written format has to match what
+     * every other writer and reader uses. The JDK prints `Z` for a zero
+     * offset while `ISO_OFFSET` pins it to `+00:00`, and `'Z'` (0x5A)
+     * sorts ABOVE `'+'` (0x2B) — a `Z`-formatted row would never compare
+     * as due, and the episode would silently never be retried again.
+     * `Database.ISO_OFFSET` exists precisely to avoid this.
+     */
     private fun isoPlus(d: java.time.Duration): String =
-        OffsetDateTime.ofInstant(Instant.now().plus(d), ZoneOffset.UTC).toString()
+        OffsetDateTime.now(ZoneOffset.UTC).plus(d).format(Database.ISO_OFFSET)
 
     private fun siblingNames(dir: Path): Set<String> = try {
         Files.list(dir).use { s -> s.map { it.fileName.toString() }.toList().toSet() }
@@ -1943,7 +1957,14 @@ private suspend fun buildLadderCandidates(
         Triple(id, path, priorityService.priorityForSeries(id).priority)
     }.sortedBy { it.third }
 
+    val budget = s.intervals.subLadderMaxPerSweep.coerceAtLeast(0)
     for ((seriesId, _, priority) in series) {
+        // Stop as soon as we have a full sweep's worth. Series are already
+        // priority-ordered, so the highest-priority work is found first, and
+        // we avoid a per-series Sonarr call for all ~300 series on every
+        // sweep — that fan-out is what starved Sonarr's SQLite in the
+        // 2026-08-14 incident, and the episode-cache job already pays it hourly.
+        if (out.size >= budget) break
         for (el in sonarr.getEpisodes(seriesId)) {
             val o = el as? JsonObject ?: continue
             if (o["hasFile"]?.jsonPrimitive?.contentOrNull != "true") continue
@@ -1952,6 +1973,7 @@ private suspend fun buildLadderCandidates(
                 ?.get("path")?.jsonPrimitive?.contentOrNull ?: continue
             val due = db.getLadderState(epId)?.next_retry_at
             if (due != null && due > Database.nowIsoOffset()) continue
+            if (out.size >= budget) break
             out += LadderCandidate(
                 videoPath = java.nio.file.Paths.get(filePath),
                 seriesId = seriesId,
@@ -2121,7 +2143,7 @@ git commit -m "feat(sub-ladder): on-demand single-episode trigger endpoint"
 Insert after the **Sub-extract** row:
 
 ```markdown
-| **Sub-ladder** | 30 min | Guarantees every anime episode a plain `.en.srt`. Climbs: embedded extract → Bazarr provider search → Whisper JP→EN. Priority-ordered; pauses while Plex is streaming or Sonarr has P1/P2 searches in flight. `SUB_LADDER_ENABLED=true`. |
+| **Sub-ladder** | 30 min | Guarantees every anime episode a plain `.en.srt`. Climbs: embedded extract → Bazarr provider search → Whisper JP→EN. Priority-ordered; pauses while Plex is streaming or Sonarr's search queue is congested. `SUB_LADDER_ENABLED=true`. |
 ```
 
 - [ ] **Step 2: Document the env vars**

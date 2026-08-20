@@ -255,6 +255,22 @@ export const JOBS: ReadonlyArray<JobMeta> = [
     ],
   },
   {
+    id: 'sub-ladder',
+    name: 'English-SRT ladder',
+    icon: <Captions size={18} />,
+    trigger: 'auto',
+    short: 'Walk episodes up the ladder — embedded text, Bazarr, Whisper — until each has a plain external English .srt.',
+    description:
+      'For a bounded, priority-ordered slice of the library each sweep, checks whether an episode already has an external English subtitle; if not, tries (in order) an embedded English text track, an ASS-sidecar conversion, a Bazarr provider search, and — if still missing and Whisper is enabled — a Whisper transcription of the audio. State per episode (last rung reached, attempts, backoff) is persisted so a sweep never repeats work that already failed and is on cooldown.',
+    why:
+      'Guarantees every anime episode an external English .srt so Plex can soft-serve a subtitle track instead of burning one in via a CPU transcode — the same motivation as the subtitle extractor, for the episodes that rung can’t satisfy on its own (no usable embedded track). Ships disabled: enabling requires a working Bazarr API key (env/YAML only, not a UI toggle — this feature is new enough that flipping it on should be a deliberate deploy-time decision) and, for the Whisper rung specifically, a reachable Whisper service.',
+    cadence: { key: 'intervals.subLadderIntervalMinutes', unit: 'minutes', min: 5 },
+    settings: [
+      { key: 'subLadderMaxPerSweep', label: 'Max episodes per sweep', type: 'number', min: 1, step: 1, hint: 'Episode budget per sweep — the only pacing on Bazarr/Whisper provider traffic.' },
+      { key: 'subLadderMaxSeriesPerSweep', label: 'Max series scanned per sweep', type: 'number', min: 1, step: 1, hint: 'Bounds how many series get a Sonarr episode-file lookup per sweep, independent of how much is due; a rotating cursor advances through the library sweep over sweep.' },
+    ],
+  },
+  {
     id: 'backfill-sweep',
     name: 'Backfill sweep',
     icon: <FileSearch size={18} />,

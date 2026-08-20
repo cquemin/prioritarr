@@ -98,6 +98,26 @@ data class Intervals(
     val searchCongestionThreshold: Int = 3,
     /** Cadence of the embedded-subtitle → SRT-sidecar extraction sweep. */
     val subExtractIntervalMinutes: Int = 30,
+    /** Cadence of the English-SRT ladder sweep. */
+    val subLadderIntervalMinutes: Int = 30,
+    /**
+     * Episodes touched per sweep. Deliberately low: the Bazarr endpoint
+     * this drives has no adaptive-search guard, so this cap plus the
+     * gates are the only pacing on provider traffic.
+     */
+    val subLadderMaxPerSweep: Int = 5,
+    /**
+     * Series SCANNED (i.e. `getEpisodes` calls) per sweep, independent of
+     * how many episodes turn out to be due. This is the real fan-out
+     * bound: with everything satisfied and nothing due, [subLadderMaxPerSweep]
+     * alone never triggers because `out` never fills, so without this cap
+     * every series gets an episode-file fan-out call every sweep — the
+     * exact pattern that starved Sonarr's SQLite in the 2026-08-14
+     * incident. A rotating cursor advances through the priority-sorted
+     * library sweep over sweep, so scanning stays bounded while every
+     * series still gets covered eventually.
+     */
+    val subLadderMaxSeriesPerSweep: Int = 10,
 )
 
 data class CacheConfig(val priorityTtlMinutes: Int = 60)
@@ -243,6 +263,16 @@ data class Settings(
     val tdarrUrl: String? = null,
     val tdarrApiKey: String? = null,
     val tdarrPauseEnabled: Boolean = false,
+
+    // ---- English-SRT ladder (Bazarr trigger + Whisper fallback). Default
+    // OFF; see subLadderEnabled/subLadderWhisperEnabled below.
+    val subLadderEnabled: Boolean = false,
+    val subLadderWhisperEnabled: Boolean = false,
+    val subLadderWhisperMaxPriority: Int = 2,
+    /** Bazarr's API root, including its base path. */
+    val bazarrUrl: String = "http://bazarr:6767/bazarr",
+    val bazarrApiKey: String? = null,
+    val whisperUrl: String = "http://whisper:9000",
 
     // Sonarr command-queue watchdog. When enabled, detects commands wedged
     // in "started" state and restarts Sonarr (app-restart, then a scoped
@@ -419,6 +449,12 @@ data class EditableSettings(
     val subExtractPaths: List<String>? = null,
     val subExtractLangs: List<String>? = null,
     val subExtractMaxPerRun: Int? = null,
+
+    // ---- English-SRT ladder cadence knobs (see [Intervals]). Null = use
+    // baseline (env/YAML).
+    val subLadderIntervalMinutes: Int? = null,
+    val subLadderMaxPerSweep: Int? = null,
+    val subLadderMaxSeriesPerSweep: Int? = null,
 )
 
 /** Apply [override] on top of [base], returning a new [Settings]. */
@@ -485,6 +521,9 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
         sonarrWatchdogCooldownMinutes = override.sonarrWatchdogCooldownMinutes ?: base.intervals.sonarrWatchdogCooldownMinutes,
         searchCongestionThreshold = override.searchCongestionThreshold ?: base.intervals.searchCongestionThreshold,
         subExtractIntervalMinutes = override.subExtractIntervalMinutes ?: base.intervals.subExtractIntervalMinutes,
+        subLadderIntervalMinutes = override.subLadderIntervalMinutes ?: base.intervals.subLadderIntervalMinutes,
+        subLadderMaxPerSweep = override.subLadderMaxPerSweep ?: base.intervals.subLadderMaxPerSweep,
+        subLadderMaxSeriesPerSweep = override.subLadderMaxSeriesPerSweep ?: base.intervals.subLadderMaxSeriesPerSweep,
     ),
     orphanReaperIntervalMinutes = override.orphanReaperIntervalMinutes ?: base.orphanReaperIntervalMinutes,
     orphanReaperPaths = override.orphanReaperPaths ?: base.orphanReaperPaths,
@@ -571,6 +610,9 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 sonarrWatchdogCooldownMinutes = o.num("sonarr_watchdog_cooldown_minutes") { it.toInt() } ?: intervals.sonarrWatchdogCooldownMinutes,
                 searchCongestionThreshold = o.num("search_congestion_threshold") { it.toInt() } ?: intervals.searchCongestionThreshold,
                 subExtractIntervalMinutes = o.num("sub_extract_interval_minutes") { it.toInt() } ?: intervals.subExtractIntervalMinutes,
+                subLadderIntervalMinutes = o.num("sub_ladder_interval_minutes") { it.toInt() } ?: intervals.subLadderIntervalMinutes,
+                subLadderMaxPerSweep = o.num("sub_ladder_max_per_sweep") { it.toInt() } ?: intervals.subLadderMaxPerSweep,
+                subLadderMaxSeriesPerSweep = o.num("sub_ladder_max_series_per_sweep") { it.toInt() } ?: intervals.subLadderMaxSeriesPerSweep,
             )
         }
         (root["cache"] as? Map<*, *>)?.let { o ->
@@ -640,6 +682,12 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         tdarrUrl = env("TDARR_URL"),
         tdarrApiKey = env("TDARR_API_KEY"),
         tdarrPauseEnabled = (env("TDARR_PAUSE_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
+        subLadderEnabled = (env("SUB_LADDER_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
+        subLadderWhisperEnabled = (env("SUB_LADDER_WHISPER_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
+        subLadderWhisperMaxPriority = env("SUB_LADDER_WHISPER_MAX_PRIORITY", "2")?.toIntOrNull() ?: 2,
+        bazarrUrl = env("BAZARR_URL", "http://bazarr:6767/bazarr") ?: "http://bazarr:6767/bazarr",
+        bazarrApiKey = env("BAZARR_API_KEY")?.takeIf { it.isNotBlank() },
+        whisperUrl = env("WHISPER_URL", "http://whisper:9000") ?: "http://whisper:9000",
         sonarrWatchdogEnabled = (env("SONARR_WATCHDOG_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
         dockerProxyUrl = env("DOCKER_PROXY_URL")?.takeIf { it.isNotBlank() },
         sonarrContainerName = env("SONARR_CONTAINER_NAME", "sonarr") ?: "sonarr",

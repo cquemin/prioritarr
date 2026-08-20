@@ -48,6 +48,7 @@ object JobId {
     const val TDARR_PLEX_PAUSE = "tdarr-plex-pause"
     const val SONARR_WATCHDOG = "sonarr-watchdog"
     const val SUB_EXTRACT = "sub-extract"
+    const val SUB_LADDER = "sub-ladder"
 }
 
 /**

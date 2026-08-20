@@ -1,12 +1,11 @@
 package org.yoshiz.app.prioritarr.backend.clients
 
 import io.ktor.client.HttpClient
-import io.ktor.client.call.body
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.request.patch
 import io.ktor.http.HttpMethod
-import kotlinx.serialization.json.JsonElement
+import io.ktor.http.isSuccess
 
 /**
  * Thin Bazarr REST client. Surface is intentionally tiny — prioritarr
@@ -31,8 +30,12 @@ class BazarrClient(
 
     /**
      * Ask Bazarr to immediately search providers for a single
-     * episode-language pair. Bazarr returns 204 on accept; the actual
-     * search runs asynchronously inside Bazarr.
+     * episode-language pair. Bazarr returns 204 with NO body on accept
+     * (see class KDoc) — the actual search runs asynchronously inside
+     * Bazarr, so there is nothing to deserialize. Judge success purely
+     * on HTTP status; calling `.body<JsonElement?>()` on an empty 204
+     * either throws or yields a false negative, which previously made
+     * every successful trigger look like a failure.
      *
      * Idempotent from Bazarr's side — calling twice in quick succession
      * just re-queues the search.
@@ -41,7 +44,7 @@ class BazarrClient(
         sonarrSeriesId: Long,
         sonarrEpisodeId: Long,
         language: String,
-    ): JsonElement? = patch(
+    ): Boolean = patch(
         "/api/episodes/subtitles",
         mapOf(
             "seriesid" to sonarrSeriesId.toString(),
@@ -61,7 +64,7 @@ class BazarrClient(
      * one HTTP round-trip covers en+fr+anything else without prioritarr
      * needing to know about Bazarr's profile config.
      */
-    suspend fun triggerMovieSearch(radarrId: Long): JsonElement? = patch(
+    suspend fun triggerMovieSearch(radarrId: Long): Boolean = patch(
         "/api/movies",
         mapOf(
             "radarrid" to radarrId.toString(),
@@ -69,10 +72,11 @@ class BazarrClient(
         ),
     )
 
-    private suspend fun patch(path: String, params: Map<String, String>): JsonElement? =
+    /** Fires the PATCH and reports success by HTTP status alone — see [triggerEpisodeSearch]. */
+    private suspend fun patch(path: String, params: Map<String, String>): Boolean =
         http.patch("$root$path") {
             method = HttpMethod.Patch
             header("X-API-KEY", apiKey)
             for ((k, v) in params) parameter(k, v)
-        }.body()
+        }.status.isSuccess()
 }

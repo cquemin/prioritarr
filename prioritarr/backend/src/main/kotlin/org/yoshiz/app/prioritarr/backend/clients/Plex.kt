@@ -119,6 +119,24 @@ class PlexClient(
         return doc.getElementsByTagName("Video").length + doc.getElementsByTagName("Track").length
     }
 
+    /**
+     * Like [activeSessionCount], but returns **null** when the probe
+     * itself failed, rather than collapsing that into 0.
+     *
+     * The subtitle ladder needs the distinction: 0 means "safe to burn
+     * CPU", whereas a failed probe means "unknown", and unknown must
+     * behave like busy.
+     */
+    suspend fun activeSessionCountOrNull(): Int? {
+        val doc = try {
+            getXml("/status/sessions") ?: return null
+        } catch (_: Exception) {
+            return null
+        }
+        doc.getAttribute("size").toIntOrNull()?.let { return it }
+        return doc.getElementsByTagName("Video").length + doc.getElementsByTagName("Track").length
+    }
+
     private suspend fun getXml(path: String): Element? {
         val body: String = http.get("$root$path") {
             header("X-Plex-Token", token)
