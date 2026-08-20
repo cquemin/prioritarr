@@ -396,24 +396,85 @@ class SubtitleExtractorTest {
         assertNull(selectSubStream(emptyList()))
     }
 
-    @Test fun select_prefers_default_first() {
+    /**
+     * A signs/songs track carries typesetting and karaoke, never
+     * dialogue, so it must lose to a real dialogue track even when the
+     * release flags it `default`. 52 files in the library were extracted
+     * from a `default`-flagged signs track before this was enforced.
+     */
+    @Test fun select_skips_signs_even_when_flagged_default() {
+        val s = selectSubStream(
+            listOf(
+                SubStream(0, "ass", "eng", "Full Subtitles"),
+                SubStream(1, "ass", "eng", "[FFF] Signs", default = true),
+            ),
+        )
+        assertEquals(0, s?.index)
+    }
+
+    @Test fun select_prefers_default_among_dialogue_tracks() {
         val s = selectSubStream(
             listOf(
                 SubStream(0, "ass", "eng", "Dialogue"),
-                SubStream(1, "ass", "eng", "Signs", default = true),
+                SubStream(1, "ass", "eng", "Full Subtitles", default = true),
             ),
         )
         assertEquals(1, s?.index)
     }
 
-    @Test fun select_falls_back_to_first_when_all_forced_signs() {
-        val s = selectSubStream(
-            listOf(
-                SubStream(0, "ass", "eng", "Signs", forced = true),
-                SubStream(1, "ass", "eng", "Songs", forced = true),
+    /**
+     * When the file only ships signs/songs there is no dialogue to
+     * extract. Returning one anyway wrote a junk sidecar that also
+     * satisfied the ladder's "has .en.srt" check, so the episode never
+     * climbed to Bazarr or Whisper. Skip instead.
+     */
+    @Test fun select_returns_null_when_only_signs_tracks_exist() {
+        assertNull(
+            selectSubStream(
+                listOf(
+                    SubStream(0, "ass", "eng", "Signs & Songs"),
+                    SubStream(1, "ass", "eng", "Signs/Songs [GJM]", forced = true),
+                ),
             ),
         )
+    }
+
+    @Test fun select_falls_back_to_forced_dialogue_when_thats_all_there_is() {
+        val s = selectSubStream(
+            listOf(
+                SubStream(0, "ass", "eng", "Signs", default = true),
+                SubStream(1, "ass", "eng", "Full Subtitles", forced = true),
+            ),
+        )
+        assertEquals(1, s?.index)
+    }
+
+    @Test fun select_keeps_untitled_tracks_which_are_usually_dialogue() {
+        val s = selectSubStream(listOf(SubStream(0, "ass", "eng", null)))
         assertEquals(0, s?.index)
+    }
+
+    // --- typesetting-dump guard (defence in depth behind selection) ---
+
+    @Test fun dump_guard_flags_ass_drawing_commands() {
+        val srt = (1..10).joinToString("\n\n") {
+            "$it\n00:00:01,000 --> 00:00:02,000\nm 50 0 b 22 0 0 22 0 50 0 78 22 100 50 100"
+        }
+        assertTrue(looksLikeTypesettingDump(srt))
+    }
+
+    @Test fun dump_guard_flags_absurd_cue_counts() {
+        val srt = (1..6000).joinToString("\n\n") {
+            "$it\n00:00:01,000 --> 00:00:02,000\na"
+        }
+        assertTrue(looksLikeTypesettingDump(srt))
+    }
+
+    @Test fun dump_guard_passes_ordinary_dialogue() {
+        val srt = (1..400).joinToString("\n\n") {
+            "$it\n00:12:01,000 --> 00:12:02,000\nWhy did Kyo put this in my head?"
+        }
+        assertFalse(looksLikeTypesettingDump(srt))
     }
 
     // ffprobe JSON parsing → SubStream mapping (relative index assignment).

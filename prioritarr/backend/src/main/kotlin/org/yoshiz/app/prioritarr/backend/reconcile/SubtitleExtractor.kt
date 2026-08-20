@@ -257,7 +257,29 @@ class SubtitleExtractor(
             return
         }
         try {
-            val cleaned = stripFontTags(Files.readString(tmp))
+            // Size gate before readString: a mask-layer dump reached
+            // 142 MB on disk, and decoding that to a String would cost
+            // ~2x that in heap. Real sidecars are a few hundred KB.
+            if (Files.size(tmp) > MAX_SIDECAR_BYTES) {
+                logger.warn(
+                    "sub-extract: discarding {} — {} bytes from s:{} ({}), too large to be dialogue",
+                    target, Files.size(tmp), stream.index, stream.title,
+                )
+                deleteQuiet(tmp)
+                report.skippedNoTextTrack++
+                return
+            }
+            val raw = Files.readString(tmp)
+            if (looksLikeTypesettingDump(raw)) {
+                logger.warn(
+                    "sub-extract: discarding {} — s:{} ({}) looks like typesetting/karaoke, not dialogue",
+                    target, stream.index, stream.title,
+                )
+                deleteQuiet(tmp)
+                report.skippedNoTextTrack++
+                return
+            }
+            val cleaned = stripFontTags(raw)
             Files.writeString(tmp, cleaned)
             try {
                 Files.setPosixFilePermissions(tmp, PosixFilePermissions.fromString("rw-r--r--"))
@@ -352,6 +374,14 @@ class SubtitleExtractor(
     companion object {
         val VIDEO_EXTS = setOf("mkv", "mp4")
 
+        /**
+         * Hard ceiling for a sidecar. A 24-min episode lands near 30 KB
+         * and a long film under ~300 KB; the typesetting dumps found in
+         * the library ran 200 KB to 142 MB, so 4 MB separates them
+         * without threatening any real subtitle.
+         */
+        const val MAX_SIDECAR_BYTES = 4L * 1024 * 1024
+
         /** SRT-convertible text codecs. */
         val TEXT_CODECS = setOf("ass", "ssa", "subrip", "srt", "mov_text", "webvtt", "text")
 
@@ -431,18 +461,68 @@ data class SubExtractReport(
 )
 
 /**
- * Pick the best dialogue track out of already-filtered [candidates]:
- *   1. a `default`-disposition track, else
- *   2. a non-forced track whose title isn't a signs/songs track, else
- *   3. the first candidate.
- * Returns null when there's nothing to pick.
+ * Pick the best dialogue track out of already-filtered [candidates].
+ *
+ * Signs/songs tracks are discarded FIRST, before any disposition is
+ * consulted, and are never used as a last resort:
+ *
+ *  - They hold typesetting and karaoke, not dialogue. Converted to SRT
+ *    they yield tens of thousands of junk cues -- ASS vector drawing
+ *    commands (`m 50 0 b 22 0 ...`) and per-syllable karaoke -- one
+ *    library file reached 726,939 lines / 142 MB.
+ *  - Releases DO flag them `default`. Checking `default` first (as this
+ *    did originally) picked `[FFF] Signs` over `[FFF] Full Subtitles`
+ *    in 52 of 302 bad sidecars found in the library on 2026-08-20.
+ *  - Falling back to `candidates.first()` picked a signs track for files
+ *    that ship nothing else. That junk sidecar then satisfied the
+ *    ladder's "has .en.srt" check, so the episode never climbed to
+ *    Bazarr or Whisper. Returning null lets the ladder do its job.
+ *
+ * Among the surviving dialogue tracks: prefer `default`, then non-forced,
+ * else the first. An untitled track is assumed to be dialogue.
  */
 internal fun selectSubStream(candidates: List<SubStream>): SubStream? {
-    if (candidates.isEmpty()) return null
-    candidates.firstOrNull { it.default }?.let { return it }
-    candidates.firstOrNull { !it.forced && !isSignsSongs(it.title) }?.let { return it }
-    return candidates.first()
+    val dialogue = candidates.filterNot { isSignsSongs(it.title) }
+    if (dialogue.isEmpty()) return null
+    dialogue.firstOrNull { it.default }?.let { return it }
+    dialogue.firstOrNull { !it.forced }?.let { return it }
+    return dialogue.first()
 }
+
+/**
+ * Defence in depth behind [selectSubStream]: does this SRT look like a
+ * typesetting/karaoke dump rather than dialogue?
+ *
+ * Selection is title-based, and titles lie. This catches the output
+ * itself on two signals no real subtitle track produces:
+ *
+ *  - ASS vector drawing commands surviving as cue text (`m 12 34 l ...`,
+ *    `m 12 34 b ...`). Five or more means we extracted a mask layer.
+ *  - An absurd cue count. A 2-hour film sits near 2,000; the junk files
+ *    ranged from 88,000 to 181,000. 5,000 clears any real subtitle by a
+ *    wide margin.
+ */
+internal fun looksLikeTypesettingDump(srt: String): Boolean {
+    if (DRAW_CMD_REGEX.findAll(srt).take(DRAW_CMD_LIMIT).count() >= DRAW_CMD_LIMIT) return true
+    return countCues(srt) > MAX_PLAUSIBLE_CUES
+}
+
+private fun countCues(srt: String): Int {
+    var n = 0
+    var i = srt.indexOf(CUE_ARROW)
+    while (i >= 0) {
+        n++
+        i = srt.indexOf(CUE_ARROW, i + CUE_ARROW.length)
+    }
+    return n
+}
+
+private const val CUE_ARROW = "-->"
+private const val DRAW_CMD_LIMIT = 5
+private const val MAX_PLAUSIBLE_CUES = 5_000
+
+/** An ASS drawing command at the start of a cue line: `m 50 0 b 22 0 ...`. */
+private val DRAW_CMD_REGEX = Regex("""^m -?\d+ -?\d+ [lbm] """, RegexOption.MULTILINE)
 
 private fun isSignsSongs(title: String?): Boolean {
     val t = title?.lowercase() ?: return false
