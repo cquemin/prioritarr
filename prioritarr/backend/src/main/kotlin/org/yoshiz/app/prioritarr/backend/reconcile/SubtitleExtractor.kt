@@ -257,20 +257,29 @@ class SubtitleExtractor(
             return
         }
         try {
-            // Size gate before readString: a mask-layer dump reached
-            // 142 MB on disk, and decoding that to a String would cost
-            // ~2x that in heap. Real sidecars are a few hundred KB.
-            if (Files.size(tmp) > MAX_SIDECAR_BYTES) {
+            // Heap guard only: a mask-layer dump reached 142 MB on
+            // disk and decoding that to a String costs ~2x in heap.
+            // Deliberately generous — a mixed dialogue+typesetting
+            // track can be megabytes raw yet clean up to a few hundred
+            // KB, and sanitizeSrt below is what rescues it.
+            if (Files.size(tmp) > RAW_READ_LIMIT_BYTES) {
                 logger.warn(
-                    "sub-extract: discarding {} — {} bytes from s:{} ({}), too large to be dialogue",
+                    "sub-extract: discarding {} — {} bytes raw from s:{} ({}), too large to decode",
                     target, Files.size(tmp), stream.index, stream.title,
                 )
                 deleteQuiet(tmp)
                 report.skippedNoTextTrack++
                 return
             }
-            val raw = Files.readString(tmp)
-            if (looksLikeTypesettingDump(raw)) {
+            // Sanitise first: a mixed dialogue+typesetting track only
+            // trips the dump guard because of drawing cues, and those
+            // are exactly what sanitizeSrt removes. Guarding the raw
+            // text would discard tracks that clean up fine.
+            val cleaned = sanitizeSrt(Files.readString(tmp))
+            if (cleaned.isBlank() ||
+                cleaned.length > MAX_SIDECAR_BYTES ||
+                looksLikeTypesettingDump(cleaned)
+            ) {
                 logger.warn(
                     "sub-extract: discarding {} — s:{} ({}) looks like typesetting/karaoke, not dialogue",
                     target, stream.index, stream.title,
@@ -279,7 +288,6 @@ class SubtitleExtractor(
                 report.skippedNoTextTrack++
                 return
             }
-            val cleaned = stripFontTags(raw)
             Files.writeString(tmp, cleaned)
             try {
                 Files.setPosixFilePermissions(tmp, PosixFilePermissions.fromString("rw-r--r--"))
@@ -375,12 +383,18 @@ class SubtitleExtractor(
         val VIDEO_EXTS = setOf("mkv", "mp4")
 
         /**
-         * Hard ceiling for a sidecar. A 24-min episode lands near 30 KB
-         * and a long film under ~300 KB; the typesetting dumps found in
-         * the library ran 200 KB to 142 MB, so 4 MB separates them
-         * without threatening any real subtitle.
+         * Ceiling on the SANITISED sidecar. A 24-min episode lands near
+         * 30 KB and a long film under ~300 KB; 4 MB clears any real
+         * subtitle while still catching a dump that survived filtering.
          */
-        const val MAX_SIDECAR_BYTES = 4L * 1024 * 1024
+        const val MAX_SIDECAR_BYTES = 4 * 1024 * 1024
+
+        /**
+         * Ceiling on the RAW ffmpeg output we are willing to decode.
+         * Purely a heap guard, applied before [sanitizeSrt] gets a
+         * chance to clean the file up.
+         */
+        const val RAW_READ_LIMIT_BYTES = 32L * 1024 * 1024
 
         /** SRT-convertible text codecs. */
         val TEXT_CODECS = setOf("ass", "ssa", "subrip", "srt", "mov_text", "webvtt", "text")
@@ -488,6 +502,60 @@ internal fun selectSubStream(candidates: List<SubStream>): SubStream? {
     dialogue.firstOrNull { !it.forced }?.let { return it }
     return dialogue.first()
 }
+
+/**
+ * Clean an ffmpeg-converted SRT: strip styling, drop cues that aren't
+ * dialogue, renumber what survives.
+ *
+ * Track selection alone can't fix this. Many fansub "Full Subtitles"
+ * tracks carry dialogue AND typesetting in one stream -- Assassination
+ * Classroom S02E05 has 354 dialogue events against 12,886 `\p1` vector
+ * drawing events. ffmpeg has no notion of an ASS drawing block, so it
+ * emits the raw drawing commands as cue text:
+ *
+ *     m 50 0 b 22 0 0 22 0 50 0 78 22 100 50 100
+ *
+ * Dropping those took that episode from 15,943 cues / 2.7 MB to 3,098,
+ * with every line of dialogue intact.
+ *
+ * A cue is dropped when, after tag stripping, it is blank or is a pure
+ * drawing command. The drawing test deliberately requires a leading
+ * `m <x> <y>` move AND a body of nothing but drawing tokens, so ordinary
+ * numeric dialogue survives: `555-0199 555-0123` and `1997, 1998, 1999`
+ * are kept.
+ */
+internal fun sanitizeSrt(raw: String): String {
+    val blocks = raw.replace("\r\n", "\n").trim().split(BLANK_LINE_REGEX)
+    val kept = ArrayList<String>(blocks.size)
+    for (block in blocks) {
+        val lines = block.split("\n").filter { it.isNotBlank() }
+        val timingAt = lines.indexOfFirst { it.contains(CUE_ARROW) }
+        if (timingAt < 0) continue
+        val timing = lines[timingAt]
+        val text = stripFontTags(lines.drop(timingAt + 1).joinToString("\n")).trim()
+        if (text.isEmpty() || isDrawingCue(text)) continue
+        kept += "${kept.size + 1}\n$timing\n$text"
+    }
+    return if (kept.isEmpty()) "" else kept.joinToString("\n\n") + "\n"
+}
+
+/**
+ * Is this cue text an ASS vector drawing rather than dialogue? Requires
+ * both a leading move command and a body containing only drawing tokens.
+ */
+internal fun isDrawingCue(text: String): Boolean =
+    text.length >= MIN_DRAWING_LEN &&
+        DRAW_START_REGEX.containsMatchIn(text) &&
+        DRAW_BODY_REGEX.matches(text)
+
+private const val MIN_DRAWING_LEN = 12
+private val BLANK_LINE_REGEX = Regex("""\n\s*\n""")
+
+/** A leading ASS move command: `m 50 0 ` or `m -12.5 8,`. */
+private val DRAW_START_REGEX = Regex("""^m -?\d+(\.\d+)? -?\d+(\.\d+)?[ ,]""")
+
+/** Drawing verbs, coordinates and separators — nothing else. */
+private val DRAW_BODY_REGEX = Regex("""^[mlbspcn\d\s.,-]+$""")
 
 /**
  * Defence in depth behind [selectSubStream]: does this SRT look like a

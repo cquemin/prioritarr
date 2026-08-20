@@ -454,6 +454,80 @@ class SubtitleExtractorTest {
         assertEquals(0, s?.index)
     }
 
+    // --- sanitizeSrt: drop ASS drawing cues that ffmpeg flattens into text ---
+
+    /**
+     * A fansub "Full Subtitles" track carries dialogue AND typesetting in
+     * one stream: Assassination Classroom S02E05 has 354 dialogue events
+     * and 12,886 `\p1` vector-drawing events. ffmpeg renders the drawing
+     * commands as cue text, so they must be dropped after conversion --
+     * picking a better track cannot help here.
+     */
+    @Test fun sanitize_drops_drawing_cues_and_renumbers() {
+        val raw = """
+            1
+            00:00:01,000 --> 00:00:02,000
+            Having obtained certain information,
+
+            2
+            00:00:02,000 --> 00:00:03,000
+            m 50 0 b 22 0 0 22 0 50 0 78 22 100 50
+
+            3
+            00:00:03,000 --> 00:00:04,000
+            Or so our cover story went.
+        """.trimIndent()
+        val out = sanitizeSrt(raw)
+        assertFalse(out.contains("m 50 0 b"))
+        assertTrue(out.contains("Having obtained certain information,"))
+        assertTrue(out.contains("Or so our cover story went."))
+        // surviving cues are renumbered 1..n with no gap
+        assertEquals(listOf("1", "2"), Regex("""(?m)^\d+$""").findAll(out).map { it.value }.toList())
+    }
+
+    /** Numbers and punctuation are not drawing commands. */
+    @Test fun sanitize_keeps_numeric_dialogue() {
+        val raw = """
+            1
+            00:00:01,000 --> 00:00:02,000
+            555-0199 555-0123
+
+            2
+            00:00:02,000 --> 00:00:03,000
+            1997, 1998, 1999, 2000
+        """.trimIndent()
+        val out = sanitizeSrt(raw)
+        assertTrue(out.contains("555-0199 555-0123"))
+        assertTrue(out.contains("1997, 1998, 1999, 2000"))
+    }
+
+    @Test fun sanitize_drops_cues_left_empty_by_tag_stripping() {
+        val raw = """
+            1
+            00:00:01,000 --> 00:00:02,000
+            {\p1}
+
+            2
+            00:00:02,000 --> 00:00:03,000
+            Real line.
+        """.trimIndent()
+        val out = sanitizeSrt(raw)
+        assertEquals(1, Regex("-->").findAll(out).count())
+        assertTrue(out.contains("Real line."))
+    }
+
+    @Test fun sanitize_preserves_multi_line_cue_text() {
+        val raw = """
+            1
+            00:00:01,000 --> 00:00:02,000
+            we were here on a secret
+            investigation into the truth.
+        """.trimIndent()
+        val out = sanitizeSrt(raw)
+        assertTrue(out.contains("we were here on a secret"))
+        assertTrue(out.contains("investigation into the truth."))
+    }
+
     // --- typesetting-dump guard (defence in depth behind selection) ---
 
     @Test fun dump_guard_flags_ass_drawing_commands() {
