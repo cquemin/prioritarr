@@ -572,8 +572,40 @@ private val DRAW_BODY_REGEX = Regex("""^[mlbspcn\d\s.,-]+$""")
  */
 internal fun looksLikeTypesettingDump(srt: String): Boolean {
     if (DRAW_CMD_REGEX.findAll(srt).take(DRAW_CMD_LIMIT).count() >= DRAW_CMD_LIMIT) return true
-    return countCues(srt) > MAX_PLAUSIBLE_CUES
+    if (countCues(srt) > MAX_PLAUSIBLE_CUES) return true
+    return isPerCharacterKaraoke(srt)
 }
+
+/**
+ * Per-character karaoke emits one cue per syllable-letter, filling the
+ * file with one- and two-character cues. Real dialogue has occasional
+ * short lines ("No", "Yeah!") but never in this proportion. This is what
+ * finally caught 86 - Eighty Six S01E14, which had no drawing commands
+ * and sat under the cue ceiling at 4,463.
+ */
+private fun isPerCharacterKaraoke(srt: String): Boolean {
+    val texts = cueTexts(srt)
+    if (texts.size < MIN_CUES_FOR_KARAOKE_CHECK) return false
+    val tiny = texts.count { it.length <= TINY_CUE_LEN }
+    return tiny.toDouble() / texts.size >= TINY_CUE_RATIO
+}
+
+/** Cue text bodies, tags stripped, blanks dropped. */
+private fun cueTexts(srt: String): List<String> {
+    val out = ArrayList<String>()
+    for (block in srt.trim().split(BLANK_LINE_REGEX)) {
+        val lines = block.split("\n").filter { it.isNotBlank() }
+        val at = lines.indexOfFirst { it.contains(CUE_ARROW) }
+        if (at < 0) continue
+        val text = stripFontTags(lines.drop(at + 1).joinToString(" ")).trim()
+        if (text.isNotEmpty()) out += text
+    }
+    return out
+}
+
+private const val MIN_CUES_FOR_KARAOKE_CHECK = 200
+private const val TINY_CUE_LEN = 2
+private const val TINY_CUE_RATIO = 0.30
 
 private fun countCues(srt: String): Int {
     var n = 0
@@ -609,10 +641,13 @@ private val FONT_TAG_REGEX = Regex("</?font[^>]*>", RegexOption.IGNORE_CASE)
 
 /**
  * ASS inline override blocks that leak into ffmpeg's SRT output, e.g.
- * `{\an8}` (position), `{\i1}`, `{\pos(1,2)}`. Only blocks that start with
+ * `{\an8}` (position), `{\i1}`, `{\pos(1,2)}`, and ASS drawing/clip
+ * markers like `{=146}`. The `{=` form was missed originally, letting
+ * 86 - Eighty Six S01E14 through as 4,463 cues of `{=146}d`, `o`, `n`.
+ * Only blocks that start with
  * `{\` are stripped, so ordinary text containing braces is preserved.
  */
-private val ASS_OVERRIDE_REGEX = Regex("""\{\\[^}]*}""")
+private val ASS_OVERRIDE_REGEX = Regex("""\{[\\=][^}]*}""")
 
 /**
  * Real ffprobe/ffmpeg seams. Kept out of [SubtitleExtractor] so the

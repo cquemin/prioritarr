@@ -528,7 +528,40 @@ class SubtitleExtractorTest {
         assertTrue(out.contains("investigation into the truth."))
     }
 
+    /**
+     * ASS drawing/clip markers open with `{=` rather than `{\`, so the
+     * override stripper missed them: 86 - Eighty Six S01E14 was written
+     * with 4,463 cues reading `{=146}d`, `o`, `n` -- per-character
+     * karaoke that passed every other check.
+     */
+    @Test fun sanitize_strips_ass_equals_markers() {
+        val raw = """
+            1
+            00:00:01,000 --> 00:00:02,000
+            {=146}Real dialogue here.
+        """.trimIndent()
+        val out = sanitizeSrt(raw)
+        assertFalse(out.contains("{=146}"))
+        assertTrue(out.contains("Real dialogue here."))
+    }
+
     // --- typesetting-dump guard (defence in depth behind selection) ---
+
+    /** Per-character karaoke: thousands of one-letter cues. */
+    @Test fun dump_guard_flags_per_character_karaoke() {
+        val srt = (1..900).joinToString("\n\n") {
+            "$it\n00:00:01,000 --> 00:00:02,000\n${('a' + (it % 26))}"
+        }
+        assertTrue(looksLikeTypesettingDump(srt))
+    }
+
+    @Test fun dump_guard_allows_occasional_short_lines() {
+        val srt = (1..400).joinToString("\n\n") {
+            val text = if (it % 10 == 0) "No" else "That is a perfectly ordinary line of dialogue."
+            "$it\n00:0$it:01,000 --> 00:0$it:02,000\n$text"
+        }
+        assertFalse(looksLikeTypesettingDump(srt))
+    }
 
     @Test fun dump_guard_flags_ass_drawing_commands() {
         val srt = (1..10).joinToString("\n\n") {
