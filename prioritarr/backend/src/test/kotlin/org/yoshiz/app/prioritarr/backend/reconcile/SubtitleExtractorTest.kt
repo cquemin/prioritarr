@@ -699,6 +699,84 @@ class SubtitleExtractorTest {
         assertEquals("""C:\Users\me""", stripFontTags("""C:\Users\me"""))
     }
 
+    // --- filterAssDialogue: drop non-dialogue events using ASS style names ---
+
+    private val assHeader = """
+        [Script Info]
+        ScriptType: v4.00+
+
+        [V4+ Styles]
+        Format: Name, Fontname
+        Style: Default,Arial
+        Style: OP-AJIN-Romaji,Arial
+        Style: Sign #7,Arial
+
+        [Events]
+        Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+    """.trimIndent()
+
+    private fun ev(style: String, text: String) =
+        "Dialogue: 0,0:00:01.00,0:00:02.00,$style,,0,0,0,,$text"
+
+    /**
+     * The real fix for karaoke and signs. Style names survive in ASS and
+     * are destroyed by conversion to SRT, so text heuristics downstream
+     * could only guess: Ajin S01E01 hides 171 `Main Dialog` events under
+     * 20,925 `OP-AJIN-Romaji` karaoke events.
+     */
+    @Test fun ass_filter_drops_karaoke_and_sign_styles_keeps_dialogue() {
+        val ass = assHeader + "\n" +
+            ev("Default", "Kill him!") + "\n" +
+            ev("OP-AJIN-Romaji", "wa") + "\n" +
+            ev("Sign #7", "m 0 1 l 1 2") + "\n" +
+            ev("Main Dialog", "Do you know someone named Nagai Kei?")
+        val out = filterAssDialogue(ass)
+        assertTrue(out.contains("Kill him!"))
+        assertTrue(out.contains("Nagai Kei"))
+        assertFalse(out.contains("OP-AJIN-Romaji,,"))
+        assertFalse(out.contains("Sign #7,,"))
+    }
+
+    /** Drawing blocks are dropped whatever the style is called. */
+    @Test fun ass_filter_drops_drawing_events_regardless_of_style() {
+        val ass = assHeader + "\n" +
+            ev("Default", "{\\p1}m 0 1 l 1 2 l 2 1{\\p0}") + "\n" +
+            ev("Default", "Real line.")
+        val out = filterAssDialogue(ass)
+        assertFalse(out.contains("\\p1"))
+        assertTrue(out.contains("Real line."))
+    }
+
+    /** Style names that merely start with the same letters are kept. */
+    @Test fun ass_filter_keeps_lookalike_style_names() {
+        val ass = assHeader + "\n" +
+            ev("Editor", "An editor's note that is dialogue.") + "\n" +
+            ev("Operator", "Operator speaking.") + "\n" +
+            ev("Cellphone", "Text message on screen.")
+        val out = filterAssDialogue(ass)
+        assertTrue(out.contains("An editor's note"))
+        assertTrue(out.contains("Operator speaking."))
+        assertTrue(out.contains("Text message on screen."))
+    }
+
+    /**
+     * Fail safe: if the rules would strip every event, the track is not
+     * what we assumed. Hand back the original rather than an empty file.
+     */
+    @Test fun ass_filter_returns_input_when_everything_would_be_dropped() {
+        val ass = assHeader + "\n" + ev("OP1-Romaji", "wa") + "\n" + ev("Sign #7", "Shop")
+        assertEquals(ass, filterAssDialogue(ass))
+    }
+
+    @Test fun ass_filter_preserves_headers_and_styles_section() {
+        val ass = assHeader + "\n" + ev("Default", "Hello") + "\n" + ev("Song ED2", "la la")
+        val out = filterAssDialogue(ass)
+        assertTrue(out.contains("[Script Info]"))
+        assertTrue(out.contains("[V4+ Styles]"))
+        assertTrue(out.contains("[Events]"))
+        assertTrue(out.contains("Format: Layer, Start"))
+    }
+
     // --- typesetting-dump guard (defence in depth behind selection) ---
 
     /** Per-character karaoke: thousands of one-letter cues. */

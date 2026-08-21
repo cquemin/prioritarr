@@ -504,6 +504,70 @@ internal fun selectSubStream(candidates: List<SubStream>): SubStream? {
 }
 
 /**
+ * Drop non-dialogue events from an ASS track, using the style names.
+ *
+ * This is the layer where signs and karaoke can be identified exactly.
+ * ASS carries a style per event -- Ajin S01E01 hides 171 `Main Dialog`
+ * events under 20,925 `OP-AJIN-Romaji` karaoke events -- and conversion
+ * to SRT destroys that, leaving only text heuristics that cannot tell a
+ * karaoke syllable ("wa", "yo") from short dialogue ("No", "Ah").
+ *
+ * Two rules, both conservative:
+ *
+ *  - Style names that are unambiguously not dialogue: signs, songs,
+ *    karaoke, romaji, drawings, masks. `OP`/`ED` prefixes count only
+ *    when followed by a separator or digit, so `Editor` and `Operator`
+ *    survive.
+ *  - Any event carrying an ASS drawing block (`\p1`), whatever its style.
+ *
+ * If the rules would strip every event the track is not what we assumed,
+ * so the input is returned untouched rather than an empty file.
+ */
+internal fun filterAssDialogue(ass: String): String {
+    val lines = ass.split("\n")
+    var dialogue = 0
+    var kept = 0
+    val out = ArrayList<String>(lines.size)
+    for (line in lines) {
+        if (!line.startsWith(ASS_EVENT_PREFIX)) {
+            out += line
+            continue
+        }
+        dialogue++
+        val fields = line.removePrefix(ASS_EVENT_PREFIX).split(",", limit = ASS_TEXT_FIELD + 1)
+        val style = fields.getOrNull(ASS_STYLE_FIELD)?.trim().orEmpty()
+        val text = fields.getOrNull(ASS_TEXT_FIELD).orEmpty()
+        if (isNonDialogueStyle(style) || ASS_DRAW_BLOCK_REGEX.containsMatchIn(text)) continue
+        out += line
+        kept++
+    }
+    if (dialogue > 0 && kept == 0) return ass
+    return out.joinToString("\n")
+}
+
+private fun isNonDialogueStyle(style: String): Boolean {
+    val s = style.lowercase()
+    if (NON_DIALOGUE_WORDS.any { it in s }) return true
+    return SONG_PREFIX_REGEX.containsMatchIn(s)
+}
+
+private const val ASS_EVENT_PREFIX = "Dialogue:"
+
+/** `Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text` */
+private const val ASS_STYLE_FIELD = 3
+private const val ASS_TEXT_FIELD = 9
+
+private val NON_DIALOGUE_WORDS = listOf(
+    "sign", "song", "karaoke", "romaji", "romanji", "drawing", "mask", "typeset",
+)
+
+/** `OP-R`, `ED1-English`, `op_kara` — but never `Operator` or `Editor`. */
+private val SONG_PREFIX_REGEX = Regex("""^(op|ed)([\s\-_#]|\d)""")
+
+/** An ASS drawing block: `{\p1}` through `{\p9}`. */
+private val ASS_DRAW_BLOCK_REGEX = Regex("""\\p[1-9]""")
+
+/**
  * Clean an ffmpeg-converted SRT: strip styling, drop cues that aren't
  * dialogue, renumber what survives.
  *
@@ -791,33 +855,74 @@ object FfmpegSubtitleIo {
     }
 
     /** Extract subtitle stream `0:s:[streamIndex]` from [file] into [target] as SRT. */
+    /**
+     * Extract subtitle stream `0:s:[streamIndex]` from [file] to SRT at
+     * [target], by way of ASS so the style names can be used.
+     *
+     * Going through ASS is the point. Style names are the only exact
+     * signal for what is dialogue and what is a sign or karaoke line --
+     * Ajin S01E01 hides 171 `Main Dialog` events under 20,925
+     * `OP-AJIN-Romaji` ones -- and converting straight to SRT throws
+     * that away, leaving downstream text heuristics unable to tell a
+     * karaoke syllable ("wa") from short dialogue ("No"). Seven
+     * successive SRT-level filters failed to close that gap.
+     *
+     * `-c:s ass` rather than `-c copy`, so a subrip source converts too
+     * and takes the same path (it simply lands in one Default style).
+     */
     suspend fun extract(file: Path, streamIndex: Int, target: Path): Boolean = withContext(Dispatchers.IO) {
-        val cmd = listOf(
-            "ffmpeg", "-v", "error", "-y",
-            "-i", file.toString(),
-            "-map", "0:s:$streamIndex",
-            "-c:s", "srt",
-            // Force the SRT muxer explicitly: the temp target ends in
-            // ".srt.tmp", and ffmpeg would otherwise try to infer the format
-            // from the ".tmp" extension and fail ("Unable to choose an output
-            // format").
-            "-f", "srt",
-            target.toString(),
-        )
+        val rawAss = Files.createTempFile("sub-extract-raw-", ".ass")
+        val cleanAss = Files.createTempFile("sub-extract-clean-", ".ass")
         try {
-            val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
-            val log = proc.inputStream.bufferedReader().readText()
-            val code = proc.waitFor()
-            if (code != 0) {
-                logger.warn("sub-extract: ffmpeg exit {} for {} (s:{}): {}", code, file, streamIndex, log.take(300))
-                false
-            } else {
-                Files.exists(target)
+            if (!run(
+                    listOf(
+                        "ffmpeg", "-v", "error", "-y",
+                        "-i", file.toString(),
+                        "-map", "0:s:$streamIndex",
+                        "-c:s", "ass",
+                        "-f", "ass",
+                        rawAss.toString(),
+                    ),
+                    file, streamIndex,
+                )
+            ) {
+                return@withContext false
             }
+            Files.writeString(cleanAss, filterAssDialogue(Files.readString(rawAss)))
+            // Force the SRT muxer explicitly: the temp target ends in
+            // ".srt.tmp", and ffmpeg would otherwise try to infer the
+            // format from the ".tmp" extension and fail ("Unable to
+            // choose an output format").
+            if (!run(
+                    listOf("ffmpeg", "-v", "error", "-y", "-i", cleanAss.toString(), "-f", "srt", target.toString()),
+                    file, streamIndex,
+                )
+            ) {
+                return@withContext false
+            }
+            Files.exists(target)
         } catch (e: Exception) {
-            logger.warn("sub-extract: ffmpeg launch failed for {}: {}", file, e.message)
+            logger.warn("sub-extract: extraction failed for {} (s:{}): {}", file, streamIndex, e.message)
             false
+        } finally {
+            runCatching { Files.deleteIfExists(rawAss) }
+            runCatching { Files.deleteIfExists(cleanAss) }
         }
+    }
+
+    private fun run(cmd: List<String>, file: Path, streamIndex: Int): Boolean = try {
+        val proc = ProcessBuilder(cmd).redirectErrorStream(true).start()
+        val log = proc.inputStream.bufferedReader().readText()
+        val code = proc.waitFor()
+        if (code != 0) {
+            logger.warn("sub-extract: ffmpeg exit {} for {} (s:{}): {}", code, file, streamIndex, log.take(300))
+            false
+        } else {
+            true
+        }
+    } catch (e: Exception) {
+        logger.warn("sub-extract: ffmpeg launch failed for {}: {}", file, e.message)
+        false
     }
 
     /**
