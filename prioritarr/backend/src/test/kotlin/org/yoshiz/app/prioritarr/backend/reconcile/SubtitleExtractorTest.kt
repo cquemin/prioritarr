@@ -747,6 +747,54 @@ class SubtitleExtractorTest {
         assertTrue(out.contains("Real line."))
     }
 
+    /**
+     * Short song-style codes: Alya S01E02 names its karaoke `OPR` and
+     * `OPE`, which a separator-or-digit rule misses entirely -- 1,756
+     * karaoke events survived the first ASS filter because of it. Only
+     * 33 of them carried a drawing block, so the drawing rule could not
+     * catch them either.
+     */
+    @Test fun ass_filter_drops_short_song_style_codes() {
+        val ass = assHeader + "\n" +
+            ev("OPR", "hikari no naka") + "\n" +
+            ev("OPE", "in the light") + "\n" +
+            ev("ED2", "la la la") + "\n" +
+            ev("Dialogue", "Yuki, you here?")
+        val out = filterAssDialogue(ass)
+        assertTrue(out.contains("Yuki, you here?"))
+        assertFalse(out.contains("hikari no naka"))
+        assertFalse(out.contains("in the light"))
+        assertFalse(out.contains("la la la"))
+    }
+
+    /**
+     * Long song styles with a separator: dropping the separator rule in
+     * favour of a length bound let 1,468 `OP-AJIN-English` events back
+     * through. Both shapes must be handled.
+     */
+    @Test fun ass_filter_drops_long_song_styles_with_separators() {
+        val ass = assHeader + "\n" +
+            ev("OP-AJIN-English", "song lyrics in english") + "\n" +
+            ev("ED1-English", "ending lyrics") + "\n" +
+            ev("ED-AJIN- tl", "tl note") + "\n" +
+            ev("Main Dialog", "Do you know someone named Nagai Kei?")
+        val out = filterAssDialogue(ass)
+        assertTrue(out.contains("Nagai Kei"))
+        assertFalse(out.contains("song lyrics in english"))
+        assertFalse(out.contains("ending lyrics"))
+        assertFalse(out.contains("tl note"))
+    }
+
+    @Test fun ass_filter_drops_named_song_styles() {
+        val ass = assHeader + "\n" +
+            ev("Opening", "lyrics") + "\n" +
+            ev("Ending", "more lyrics") + "\n" +
+            ev("Dialogue", "Real speech.")
+        val out = filterAssDialogue(ass)
+        assertTrue(out.contains("Real speech."))
+        assertFalse(out.contains("lyrics"))
+    }
+
     /** Style names that merely start with the same letters are kept. */
     @Test fun ass_filter_keeps_lookalike_style_names() {
         val ass = assHeader + "\n" +

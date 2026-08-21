@@ -546,10 +546,30 @@ internal fun filterAssDialogue(ass: String): String {
 }
 
 private fun isNonDialogueStyle(style: String): Boolean {
-    val s = style.lowercase()
+    val s = style.lowercase().trim()
     if (NON_DIALOGUE_WORDS.any { it in s }) return true
-    return SONG_PREFIX_REGEX.containsMatchIn(s)
+    return isSongStyleCode(s)
 }
+
+/**
+ * An `OP`/`ED` song style, by either of the two shapes seen in the
+ * library: a bare short code (`OPR`, `OPE`, `ED2` — Alya S01E02) or a
+ * longer name whose third character is a separator or digit
+ * (`OP-AJIN-English`, `ED1-English`, `OP-R`).
+ *
+ * Both are needed. Requiring the separator alone let 1,756 karaoke
+ * events through as `OPR`/`OPE`; the length bound alone let 1,468
+ * through as `OP-AJIN-English`. A third character that is a letter
+ * means an ordinary word, so `editor` and `operator` are safe.
+ */
+private fun isSongStyleCode(s: String): Boolean {
+    if (!s.startsWith("op") && !s.startsWith("ed")) return false
+    if (s.length <= MAX_SONG_CODE_LEN) return true
+    return !s[2].isLetter()
+}
+
+/** `OPR`, `OPE`, `ED2`, `OP-R` are song codes; `Editor` is not. */
+private const val MAX_SONG_CODE_LEN = 4
 
 private const val ASS_EVENT_PREFIX = "Dialogue:"
 
@@ -559,10 +579,9 @@ private const val ASS_TEXT_FIELD = 9
 
 private val NON_DIALOGUE_WORDS = listOf(
     "sign", "song", "karaoke", "romaji", "romanji", "drawing", "mask", "typeset",
+    "opening", "ending", "lyric",
 )
 
-/** `OP-R`, `ED1-English`, `op_kara` — but never `Operator` or `Editor`. */
-private val SONG_PREFIX_REGEX = Regex("""^(op|ed)([\s\-_#]|\d)""")
 
 /** An ASS drawing block: `{\p1}` through `{\p9}`. */
 private val ASS_DRAW_BLOCK_REGEX = Regex("""\\p[1-9]""")
