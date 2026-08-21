@@ -715,14 +715,16 @@ internal fun stripFontTags(input: String): String =
 private val FONT_TAG_REGEX = Regex("</?font[^>]*>", RegexOption.IGNORE_CASE)
 
 /**
- * ASS inline override blocks that leak into ffmpeg's SRT output, e.g.
- * `{\an8}` (position), `{\i1}`, `{\pos(1,2)}`, and ASS drawing/clip
- * markers like `{=146}`. The `{=` form was missed originally, letting
- * 86 - Eighty Six S01E14 through as 4,463 cues of `{=146}d`, `o`, `n`.
- * Only blocks that start with
- * `{\` are stripped, so ordinary text containing braces is preserved.
+ * Every `{...}` block in ASS is markup or a typesetter comment, and no
+ * ASS renderer ever displays one -- so all of them are stripped.
+ *
+ * Matching only `{\` and `{=` was not enough: one sweep left 28,845
+ * tags across 24 of 25 files. Per-letter karaoke colour runs are written
+ * `{*\c&H424649&}` (note the `*`), and fansubs leave editorial notes
+ * like `{Preview}`, `{eyecatch}` and `{volume: extend sub a bit}` inline.
+ * Bold/italic/underline markup is HTML, not braces, so it survives.
  */
-private val ASS_OVERRIDE_REGEX = Regex("""\{[\\=][^}]*}""")
+private val ASS_OVERRIDE_REGEX = Regex("""\{[^}]*}""")
 
 /**
  * Real ffprobe/ffmpeg seams. Kept out of [SubtitleExtractor] so the

@@ -377,10 +377,17 @@ class SubtitleExtractorTest {
         assertTrue(out.contains("<u>under</u>"))
     }
 
-    @Test fun strip_removes_ass_override_blocks_keeps_plain_braces() {
+    /**
+     * Originally this asserted that braces without a leading backslash
+     * were preserved as ordinary text. That premise was wrong for
+     * ASS-derived SRT: a sweep of the library found fansub comments
+     * written exactly that way -- `{overlap}`, `{Preview}`, `{eyecatch}`,
+     * `{volume: extend sub a bit}` -- all of which an ASS renderer hides
+     * and which were being shown to the viewer.
+     */
+    @Test fun strip_removes_every_ass_brace_block() {
         assertEquals("Top text styled end", stripFontTags("{\\an8}Top text {\\i1}styled{\\i0} end"))
-        // Braces that aren't ASS overrides (no leading backslash) are preserved.
-        assertEquals("{not an override}", stripFontTags("{not an override}"))
+        assertEquals("", stripFontTags("{not an override}"))
     }
 
     @Test fun strip_font_tags_multiline_and_uppercase() {
@@ -644,6 +651,28 @@ class SubtitleExtractorTest {
         val out = sanitizeSrt(raw)
         assertFalse(out.contains("l 1 2 l 2 1"))
         assertTrue(out.contains("Satou's gonna kill a whole bunch of people."))
+    }
+
+    /**
+     * Every `{...}` block in ASS is markup or a typesetter comment and
+     * is never rendered. Matching only `{\` and `{=` left 28,845 tags
+     * across 24 of 25 files in one sweep: per-letter karaoke colour runs
+     * written `{*\c&H...}`, plus editorial notes like `{Preview}` and
+     * `{volume: extend sub a bit}`.
+     */
+    @Test fun strip_removes_asterisk_override_blocks() {
+        val out = stripFontTags("""S{*\fax1.294\c&H424649&}t{*\fs15.267}u""")
+        assertEquals("Stu", out)
+    }
+
+    @Test fun strip_removes_typesetter_comment_blocks() {
+        assertEquals("Grab the cable", stripFontTags("{overlap}Grab the cable"))
+        assertEquals("Nagai Kei", stripFontTags("Nag{}ai Kei"))
+        assertEquals("Run!", stripFontTags("{volume: extend sub a bit}Run!"))
+    }
+
+    @Test fun strip_keeps_bold_and_italic() {
+        assertEquals("<b><i>Run!</i></b>", stripFontTags("""<b><i>{\an8}Run!</i></b>"""))
     }
 
     // --- typesetting-dump guard (defence in depth behind selection) ---
