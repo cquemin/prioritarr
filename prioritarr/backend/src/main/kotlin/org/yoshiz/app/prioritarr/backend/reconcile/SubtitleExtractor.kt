@@ -526,18 +526,78 @@ internal fun selectSubStream(candidates: List<SubStream>): SubStream? {
  */
 internal fun sanitizeSrt(raw: String): String {
     val blocks = raw.replace("\r\n", "\n").trim().split(BLANK_LINE_REGEX)
-    val kept = ArrayList<String>(blocks.size)
+    val cues = ArrayList<Cue>(blocks.size)
     for (block in blocks) {
         val lines = block.split("\n").filter { it.isNotBlank() }
         val timingAt = lines.indexOfFirst { it.contains(CUE_ARROW) }
         if (timingAt < 0) continue
-        val timing = lines[timingAt]
+        val span = parseTiming(lines[timingAt]) ?: continue
         val text = stripFontTags(lines.drop(timingAt + 1).joinToString("\n")).trim()
         if (text.isEmpty() || isDrawingCue(text)) continue
-        kept += "${kept.size + 1}\n$timing\n$text"
+        cues += Cue(span.first, span.second, text)
     }
-    return if (kept.isEmpty()) "" else kept.joinToString("\n\n") + "\n"
+    val merged = mergeRepeats(cues).sortedWith(compareBy({ it.startMs }, { it.endMs }))
+    if (merged.isEmpty()) return ""
+    return merged.mapIndexed { i, c ->
+        "${i + 1}\n${fmtTime(c.startMs)} --> ${fmtTime(c.endMs)}\n${c.text}"
+    }.joinToString("\n\n") + "\n"
 }
+
+private data class Cue(val startMs: Int, val endMs: Int, val text: String)
+
+/**
+ * Collapse cues repeating the same text over a contiguous stretch.
+ *
+ * An animated ASS sign emits one cue per frame: Akame ga Kill S01E06
+ * carried "Congratulations" 226 times in 40 ms slices across 4.7 s,
+ * interleaved with two other phrases -- 678 cues for three lines of
+ * on-screen text, which Plex renders as a flicker.
+ *
+ * Grouping by text rather than walking adjacent cues is deliberate: the
+ * phrases interleave, so consecutive cues are rarely equal. Only spans
+ * separated by at most [MERGE_GAP_MS] merge, so a line genuinely said
+ * again later stays its own cue.
+ */
+private fun mergeRepeats(cues: List<Cue>): List<Cue> {
+    val out = ArrayList<Cue>()
+    for ((text, group) in cues.groupBy { it.text }) {
+        val sorted = group.sortedBy { it.startMs }
+        var start = sorted[0].startMs
+        var end = sorted[0].endMs
+        for (c in sorted.drop(1)) {
+            if (c.startMs <= end + MERGE_GAP_MS) {
+                if (c.endMs > end) end = c.endMs
+            } else {
+                out += Cue(start, end, text)
+                start = c.startMs
+                end = c.endMs
+            }
+        }
+        out += Cue(start, end, text)
+    }
+    return out
+}
+
+/** `00:16:45,770 --> 00:16:50,480` to a millisecond pair. */
+private fun parseTiming(line: String): Pair<Int, Int>? {
+    val m = TIMING_REGEX.find(line) ?: return null
+    val g = m.groupValues
+    return toMs(g[1], g[2], g[3], g[4]) to toMs(g[5], g[6], g[7], g[8])
+}
+
+private fun toMs(h: String, m: String, sec: String, milli: String): Int =
+    h.toInt() * 3_600_000 + m.toInt() * 60_000 + sec.toInt() * 1_000 + milli.toInt()
+
+private fun fmtTime(total: Int): String = "%02d:%02d:%02d,%03d".format(
+    total / 3_600_000, (total / 60_000) % 60, (total / 1_000) % 60, total % 1_000,
+)
+
+/** Longest silent gap still treated as one continuous on-screen line. */
+private const val MERGE_GAP_MS = 500
+
+private val TIMING_REGEX = Regex(
+    """(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})""",
+)
 
 /**
  * Is this cue text an ASS vector drawing rather than dialogue? Requires

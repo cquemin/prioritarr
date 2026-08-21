@@ -545,6 +545,73 @@ class SubtitleExtractorTest {
         assertTrue(out.contains("Real dialogue here."))
     }
 
+    /**
+     * An animated ASS sign emits one cue per frame. Akame ga Kill S01E06
+     * carried "Congratulations" 226 times in 40 ms slices across 4.7 s,
+     * interleaved with two other phrases -- 678 cues for three lines of
+     * on-screen text, which Plex renders as a flicker. Cues sharing text
+     * and contiguous timing collapse into one.
+     */
+    @Test fun sanitize_merges_frame_by_frame_animated_signs() {
+        val cues = (0 until 60).joinToString("\n\n") { i ->
+            val a = 1000 + i * 40
+            val b = a + 40
+            "${i + 1}\n${ms(a)} --> ${ms(b)}\nCongratulations"
+        }
+        val out = sanitizeSrt(cues)
+        assertEquals(1, Regex("-->").findAll(out).count())
+        assertTrue(out.contains("00:00:01,000 --> 00:00:03,400"))
+    }
+
+    /** Interleaved animated phrases each collapse to one cue. */
+    @Test fun sanitize_merges_interleaved_animated_signs() {
+        val sb = StringBuilder()
+        var n = 0
+        for (i in 0 until 30) {
+            val a = 1000 + i * 40
+            for (t in listOf("Congratulations", "on Getting Your Own", "Imperial Relic")) {
+                sb.append("${++n}\n${ms(a)} --> ${ms(a + 40)}\n$t\n\n")
+            }
+        }
+        val out = sanitizeSrt(sb.toString())
+        assertEquals(3, Regex("-->").findAll(out).count())
+    }
+
+    /** The same line said again much later stays a separate cue. */
+    @Test fun sanitize_keeps_distant_repeats_separate() {
+        val raw = """
+            1
+            00:00:01,000 --> 00:00:02,000
+            Yeah!
+
+            2
+            00:05:00,000 --> 00:05:01,000
+            Yeah!
+        """.trimIndent()
+        assertEquals(2, Regex("-->").findAll(sanitizeSrt(raw)).count())
+    }
+
+    /** Ordinary dialogue is left alone and stays in time order. */
+    @Test fun sanitize_leaves_dialogue_order_intact() {
+        val raw = """
+            1
+            00:00:12,740 --> 00:00:15,070
+            So this is the capital's red-light district?
+
+            2
+            00:00:15,070 --> 00:00:16,370
+            It makes me a bit nervous.
+
+            3
+            00:00:16,370 --> 00:00:19,370
+            I like your honesty.
+        """.trimIndent()
+        val out = sanitizeSrt(raw)
+        assertEquals(3, Regex("-->").findAll(out).count())
+        assertTrue(out.indexOf("red-light") < out.indexOf("nervous"))
+        assertTrue(out.indexOf("nervous") < out.indexOf("honesty"))
+    }
+
     // --- typesetting-dump guard (defence in depth behind selection) ---
 
     /** Per-character karaoke: thousands of one-letter cues. */
@@ -817,4 +884,13 @@ class SubtitleExtractorTest {
         const val SAMPLE_SRT =
             "1\n00:00:01,000 --> 00:00:02,000\n<font color=\"#fff\">Hello</font> <i>world</i>\n"
     }
+
+    private fun ms(total: Int): String {
+        val h = total / 3_600_000
+        val m = (total / 60_000) % 60
+        val sec = (total / 1000) % 60
+        val milli = total % 1000
+        return "%02d:%02d:%02d,%03d".format(h, m, sec, milli)
+    }
+
 }
