@@ -675,6 +675,30 @@ class SubtitleExtractorTest {
         assertEquals("<b><i>Run!</i></b>", stripFontTags("""<b><i>{\an8}Run!</i></b>"""))
     }
 
+    /**
+     * ASS escapes have no meaning in SRT and were reaching the viewer
+     * as literal text -- 58 of them across 12 of 25 files in one sweep,
+     * including "I might have \h\h\h...\h\hdifferent interests."
+     * `\N` and `\n` are line breaks; `\h` is a hard space.
+     */
+    @Test fun strip_converts_ass_escapes() {
+        assertEquals("Storage Room", stripFontTags("""Storage\h\h\h\hRoom"""))
+        assertEquals("Alya Hides Her", stripFontTags("""Alya Hides Her\h\h"""))
+        assertEquals("line one\nline two", stripFontTags("""line one\Nline two"""))
+    }
+
+    @Test fun strip_collapses_runs_of_spaces() {
+        assertEquals(
+            "I might have different interests.",
+            stripFontTags("""I might have \h\h\h\h\h\h\h\h\h\h\h\hdifferent interests."""),
+        )
+    }
+
+    /** A lone backslash in ordinary text is left alone. */
+    @Test fun strip_keeps_unrelated_backslashes() {
+        assertEquals("""C:\Users\me""", stripFontTags("""C:\Users\me"""))
+    }
+
     // --- typesetting-dump guard (defence in depth behind selection) ---
 
     /** Per-character karaoke: thousands of one-letter cues. */
