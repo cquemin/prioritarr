@@ -612,6 +612,40 @@ class SubtitleExtractorTest {
         assertTrue(out.indexOf("nervous") < out.indexOf("honesty"))
     }
 
+    /**
+     * A karaoke highlight shape is emitted glued to its syllable:
+     * `<b>m 0 1 l 1 2 l 2 1 l 1 0Fu</b>`. Whole-cue matching missed
+     * these -- 844 of them across 22 of 25 files in one sweep. Real
+     * dialogue never begins with an ASS drawing path.
+     */
+    @Test fun drawing_cue_detects_a_leading_run_glued_to_text() {
+        assertTrue(isDrawingCue("m 0 1 l 1 2 l 2 1 l 1 0Fu"))
+        assertTrue(isDrawingCue("<b>m 0 1 l 1 2 l 2 1 l 1 0ka</b>"))
+        assertTrue(isDrawingCue("m 0 -481 l 1920 -481 1920 -457 0 -457sono kyara mo"))
+    }
+
+    @Test fun drawing_cue_ignores_numeric_dialogue() {
+        assertFalse(isDrawingCue("555-0199 555-0123"))
+        assertFalse(isDrawingCue("1997, 1998, 1999, 2000"))
+        assertFalse(isDrawingCue("Meet me at 5, 10 blocks north."))
+        assertFalse(isDrawingCue("<b>My name is Mira, 17 years old.</b>"))
+    }
+
+    @Test fun sanitize_removes_karaoke_shape_cues() {
+        val raw = """
+            1
+            00:00:01,000 --> 00:00:02,000
+            <b>m 0 1 l 1 2 l 2 1 l 1 0Fu</b>
+
+            2
+            00:00:02,000 --> 00:00:03,000
+            <b>Satou's gonna kill a whole bunch of people.</b>
+        """.trimIndent()
+        val out = sanitizeSrt(raw)
+        assertFalse(out.contains("l 1 2 l 2 1"))
+        assertTrue(out.contains("Satou's gonna kill a whole bunch of people."))
+    }
+
     // --- typesetting-dump guard (defence in depth behind selection) ---
 
     /** Per-character karaoke: thousands of one-letter cues. */

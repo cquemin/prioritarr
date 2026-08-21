@@ -600,13 +600,30 @@ private val TIMING_REGEX = Regex(
 )
 
 /**
- * Is this cue text an ASS vector drawing rather than dialogue? Requires
- * both a leading move command and a body containing only drawing tokens.
+ * Is this cue an ASS vector drawing rather than dialogue?
+ *
+ * Matches a LEADING drawing run, not the whole cue. A karaoke highlight
+ * shape is emitted glued to its syllable -- `<b>m 0 1 l 1 2 l 2 1 l 1
+ * 0Fu</b>` -- and whole-cue matching walked past 844 of those across 22
+ * of 25 files in a single sweep. Real dialogue never begins with an ASS
+ * drawing path, so a long leading run of drawing tokens is decisive.
+ *
+ * Requiring the leading `m <x> <y>` move is what keeps numeric dialogue
+ * safe: "555-0199 555-0123" and "1997, 1998, 1999, 2000" never match.
  */
-internal fun isDrawingCue(text: String): Boolean =
-    text.length >= MIN_DRAWING_LEN &&
-        DRAW_START_REGEX.containsMatchIn(text) &&
-        DRAW_BODY_REGEX.matches(text)
+internal fun isDrawingCue(text: String): Boolean {
+    val body = text.replace(INLINE_TAG_REGEX, "").trimStart()
+    if (!DRAW_START_REGEX.containsMatchIn(body)) return false
+    var i = 0
+    while (i < body.length && body[i] in DRAW_TOKEN_CHARS) i++
+    return i >= MIN_DRAWING_LEN
+}
+
+/** Bold/italic/underline markup, stripped only to test the text beneath. */
+private val INLINE_TAG_REGEX = Regex("</?[biu]>", RegexOption.IGNORE_CASE)
+
+/** Drawing verbs, coordinates and separators. */
+private const val DRAW_TOKEN_CHARS = "mlbspcn0123456789 .,-"
 
 private const val MIN_DRAWING_LEN = 12
 private val BLANK_LINE_REGEX = Regex("""\n\s*\n""")
@@ -614,8 +631,6 @@ private val BLANK_LINE_REGEX = Regex("""\n\s*\n""")
 /** A leading ASS move command: `m 50 0 ` or `m -12.5 8,`. */
 private val DRAW_START_REGEX = Regex("""^m -?\d+(\.\d+)? -?\d+(\.\d+)?[ ,]""")
 
-/** Drawing verbs, coordinates and separators — nothing else. */
-private val DRAW_BODY_REGEX = Regex("""^[mlbspcn\d\s.,-]+$""")
 
 /**
  * Defence in depth behind [selectSubStream]: does this SRT look like a
