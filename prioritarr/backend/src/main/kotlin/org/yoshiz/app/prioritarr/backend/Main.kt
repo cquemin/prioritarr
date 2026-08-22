@@ -920,7 +920,23 @@ fun main() {
     scheduler.start(scope)
 
     embeddedServer(Netty, port = 8000, host = "0.0.0.0") {
-        prioritarrModule(state)
+        prioritarrModule(state) { _, episodeIds ->
+            // One episode at a time: rung 3 shells out to Whisper for
+            // minutes at a stretch, and a multi-episode season pack
+            // would otherwise start them all at once.
+            for (episodeId in episodeIds) {
+                val candidate = resolveLadderCandidateById(sonarr, state.priorityService, episodeId)
+                if (candidate == null) {
+                    logger.info("on-import ladder: episode {} has no file yet, skipping", episodeId)
+                    continue
+                }
+                val outcome = subtitleLadder.runOne(candidate)
+                logger.info(
+                    "on-import ladder: episode {} (P{}) -> {}",
+                    episodeId, candidate.priority, outcome,
+                )
+            }
+        }
         subtitleLadderRoutes(
             // "Ships disabled" has to hold for the HTTP surface too: this
             // route deliberately bypasses the Plex/congestion gate, so while
@@ -928,7 +944,8 @@ fun main() {
             // multi-minute Whisper run on a box serving live transcodes.
             enabled = { liveSettings(db, settings).subLadderEnabled },
         ) { episodeId ->
-            resolveLadderCandidateById(sonarr, db, episodeId)?.let { subtitleLadder.runOne(it).name }
+            resolveLadderCandidateById(sonarr, state.priorityService, episodeId)
+                ?.let { subtitleLadder.runOne(it).name }
         }
     }.start(wait = true)
 }
@@ -952,7 +969,7 @@ fun main() {
  */
 private suspend fun resolveLadderCandidateById(
     sonarr: SonarrClient,
-    db: Database,
+    priorityService: org.yoshiz.app.prioritarr.backend.priority.PriorityService,
     episodeId: Long,
 ): org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate? {
     val episode = sonarr.getEpisodeById(episodeId, includeEpisodeFile = true) ?: return null
@@ -960,7 +977,12 @@ private suspend fun resolveLadderCandidateById(
     val seriesId = episode["seriesId"]?.jsonPrimitive?.longOrNull ?: return null
     val filePath = (episode["episodeFile"] as? JsonObject)
         ?.get("path")?.jsonPrimitive?.contentOrNull ?: return null
-    val priority = db.getPriorityCache(seriesId)?.priority?.toInt() ?: 5
+    // Subtitle priority, NOT the cached download priority. The cached
+    // value short-circuits to P5 for any series with nothing left to
+    // grab, which is every series whose episode is already on disk —
+    // so gating the Whisper rung on it could never fire. See
+    // PriorityService.subtitlePriorityForSeries.
+    val priority = priorityService.subtitlePriorityForSeries(seriesId)
 
     return org.yoshiz.app.prioritarr.backend.reconcile.LadderCandidate(
         videoPath = java.nio.file.Paths.get(filePath),

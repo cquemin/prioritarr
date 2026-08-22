@@ -135,6 +135,36 @@ class PriorityService(
         }
     }
 
+    /**
+     * Priority for SUBTITLE decisions, which is not the same question
+     * as priority for downloads.
+     *
+     * [priorityForSeries] short-circuits to P5 whenever a series has
+     * nothing left to grab. That is correct for scheduling downloads
+     * and actively wrong here: an episode only reaches the subtitle
+     * ladder once it is ON DISK, which is precisely when its series
+     * tends to have `missing == 0`. Re:Zero on 2026-08-21 -- 29 of 29
+     * aired watched, actively followed, a new episode two days old --
+     * computed as P5 for exactly that reason, so gating the Whisper
+     * rung on P1 could never fire for the episodes that needed it.
+     *
+     * Same computation, same thresholds, with only that one gate
+     * disabled, so "engaged" still means what it means everywhere
+     * else: a dormant series stays P4/P5 and is not dragged in.
+     *
+     * Deliberately uncached: it answers a different question from the
+     * cached value, and the callers are event-driven (a handful of
+     * imports a day), not a sweep.
+     *
+     * Returns 5 when the snapshot can't be built, so an unreachable
+     * Sonarr or watch provider fails CLOSED — no expensive Whisper run
+     * on a series we could not evaluate.
+     */
+    suspend fun subtitlePriorityForSeries(seriesId: Long): Int {
+        val overrides = thresholdsSource.current().copy(p5WhenNothingToDownload = false)
+        return preview(seriesId, overrides)?.result?.priority ?: 5
+    }
+
     suspend fun preview(seriesId: Long, overrides: PriorityThresholds): PriorityPreview? {
         val snap = try { buildSnapshot(seriesId) } catch (_: Exception) { null } ?: return null
         val result = computePriority(snap, overrides)

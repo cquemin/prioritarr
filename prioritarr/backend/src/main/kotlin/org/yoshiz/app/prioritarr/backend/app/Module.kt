@@ -67,7 +67,23 @@ val appJson = Json {
 
 private val logger = LoggerFactory.getLogger("org.yoshiz.app.prioritarr.backend.app")
 
-fun Application.prioritarrModule(state: AppState) {
+fun Application.prioritarrModule(
+    state: AppState,
+    /**
+     * Run the English-SRT ladder for episodes Sonarr has just imported.
+     *
+     * An import is the one moment we know both that the file exists and
+     * that the series is one the viewer follows, and it is naturally
+     * bounded — this box sees ~3 imports a day, versus the ~1,750
+     * episodes a library sweep would consider. That is what makes the
+     * expensive Whisper rung affordable here.
+     *
+     * Injected rather than read off [AppState] because the ladder is
+     * built after the state object in Main.kt. Defaults to a no-op so
+     * the module can be installed in tests without one.
+     */
+    runLadderForImport: suspend (seriesId: Long, episodeIds: List<Long>) -> Unit = { _, _ -> },
+) {
     install(ContentNegotiation) { json(appJson) }
 
     // Spec C §10 — CORS for /api/v2/*. Allow localhost for dev + the
@@ -277,6 +293,35 @@ fun Application.prioritarrModule(state: AppState) {
                                     )
                                 }
                             }
+                        }
+                    }
+                    // Then the rest of the ladder. Extraction above only
+                    // covers rung 1 (embedded English track); an episode
+                    // whose release ships no English subs at all — the
+                    // case that started this — still has nothing, and
+                    // needs Bazarr and then Whisper. Fire-and-forget,
+                    // after the extraction above so a sidecar it just
+                    // wrote is seen and the ladder stops at SATISFIED.
+                    //
+                    // Deliberately NOT behind the Plex-idle gate the
+                    // sweep uses. That gate protects a 1,750-episode
+                    // backfill; this path is ~3 episodes a day, and it
+                    // is the ONLY path that can reach Whisper — the
+                    // sweep orders candidates by the cached download
+                    // priority, which is P5 for anything already on
+                    // disk, so deferring here would mean the episode
+                    // simply never gets subtitles. Whisper is capped at
+                    // 8 CPUs in compose, which leaves room for a live
+                    // transcode alongside it.
+                    if (s.subLadderEnabled && seriesId != null && episodes.isNotEmpty()) {
+                        application.launch {
+                            runCatching { runLadderForImport(seriesId, episodes) }
+                                .onFailure {
+                                    logger.warn(
+                                        "[sonarr-webhook] on-import sub-ladder failed for series {}: {}",
+                                        seriesId, it.message,
+                                    )
+                                }
                         }
                     }
                     call.respond(OnGrabIgnored(eventType = eventType))

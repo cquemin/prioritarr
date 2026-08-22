@@ -251,4 +251,45 @@ class ComputeTest {
             t, now
         ).priority)
     }
+
+    // --- subtitle-decision priority (gate 0 disabled) ---
+
+    /**
+     * The "nothing to download" shortcut answers *"does Sonarr need to
+     * grab anything?"*, which is the wrong question for subtitles. An
+     * episode only reaches the subtitle ladder once it is ON DISK,
+     * which is exactly when its series tends to have `missing == 0`.
+     *
+     * Re:Zero on 2026-08-21 -- 29 of 29 aired watched, actively
+     * followed, new episode two days old -- computed as P5 purely
+     * because nothing was left to grab. Gating the Whisper rung on
+     * P1 therefore could never fire for the episodes that need it.
+     */
+    @Test fun fully_downloaded_but_actively_watched_is_p5_for_downloads() {
+        val s = snap(aired = 29, watched = 29, missing = 0, lastWatchDaysAgo = 1, releaseDaysAgo = 2)
+        assertEquals(5, computePriority(s, t, now).priority)
+    }
+
+    @Test fun same_series_is_p1_for_subtitle_decisions() {
+        val s = snap(aired = 29, watched = 29, missing = 0, lastWatchDaysAgo = 1, releaseDaysAgo = 2)
+        val forSubs = t.copy(p5WhenNothingToDownload = false)
+        assertEquals(1, computePriority(s, forSubs, now).priority)
+    }
+
+    /** A dormant series stays low even with the gate disabled. */
+    @Test fun never_watched_series_stays_low_for_subtitle_decisions() {
+        val s = snap(aired = 30, watched = 0, missing = 0, lastWatchDaysAgo = null, releaseDaysAgo = 400)
+        val forSubs = t.copy(p5WhenNothingToDownload = false)
+        assertTrue(computePriority(s, forSubs, now).priority >= 4)
+    }
+
+    /** Disabling the gate must not disturb series that still have gaps. */
+    @Test fun disabling_gate_does_not_change_series_with_missing_episodes() {
+        val s = snap(aired = 20, watched = 20, missing = 3, lastWatchDaysAgo = 2, releaseDaysAgo = 1)
+        assertEquals(
+            computePriority(s, t, now).priority,
+            computePriority(s, t.copy(p5WhenNothingToDownload = false), now).priority,
+        )
+    }
+
 }
