@@ -19,6 +19,16 @@ private data class SavedState(
 
 class SubtitleLadderTest {
 
+    /**
+     * A sidecar with enough cues to read as a real episode. The ladder
+     * judges content, not just the filename — a one-cue file is how a
+     * signs-only track from Bazarr slipped through as SATISFIED.
+     */
+    private fun plausibleSrt(): String =
+        (1..40).joinToString("\n\n") { i ->
+            "$i\n00:0${i % 10}:01,000 --> 00:0${i % 10}:02,000\nline $i"
+        }
+
     private fun candidate(dir: Path, name: String, priority: Int = 1) =
         LadderCandidate(
             videoPath = dir.resolve("$name.mkv"),
@@ -66,7 +76,7 @@ class SubtitleLadderTest {
     fun existing_en_srt_short_circuits_without_touching_any_rung() = runBlocking {
         val dir = Files.createTempDirectory("ladder-satisfied")
         Files.writeString(dir.resolve("Ep.mkv"), "x")
-        Files.writeString(dir.resolve("Ep.en.srt"), "1\n")
+        Files.writeString(dir.resolve("Ep.en.srt"), plausibleSrt())
 
         val l = ladder(
             hasEmbedded = { error("must not probe a satisfied file") },
@@ -85,7 +95,7 @@ class SubtitleLadderTest {
         // single sweep, forever, ahead of episodes that actually need work.
         val dir = Files.createTempDirectory("ladder-satisfied-retry")
         Files.writeString(dir.resolve("Ep.mkv"), "x")
-        Files.writeString(dir.resolve("Ep.en.srt"), "1\n")
+        Files.writeString(dir.resolve("Ep.en.srt"), plausibleSrt())
 
         val state = mutableMapOf<Long, SavedState>()
         val l = ladder(state = state)
@@ -184,14 +194,14 @@ class SubtitleLadderTest {
             hasEmbedded = { false },
             // Bazarr lands a sidecar while whisper is still running.
             whisper = { _, _ ->
-                Files.writeString(dir.resolve("Ep.en.srt"), "FROM BAZARR\n")
+                Files.writeString(dir.resolve("Ep.en.srt"), "FROM BAZARR" + plausibleSrt())
                 "FROM WHISPER\n"
             },
             state = state,
         )
 
         l.runOne(candidate(dir, "Ep"))
-        assertEquals("FROM BAZARR\n", Files.readString(dir.resolve("Ep.en.srt")))
+        assertTrue(Files.readString(dir.resolve("Ep.en.srt")).startsWith("FROM BAZARR"))
 
         val leftoverTmp = Files.list(dir).use { s -> s.toList() }
             .filter { it.fileName.toString().endsWith(".tmp") }
@@ -226,9 +236,9 @@ class SubtitleLadderTest {
         // a stream starting mid-sweep must stop the remaining work.
         val dir = Files.createTempDirectory("ladder-gate-midsweep")
         Files.writeString(dir.resolve("A.mkv"), "x")
-        Files.writeString(dir.resolve("A.en.srt"), "1\n")
+        Files.writeString(dir.resolve("A.en.srt"), plausibleSrt())
         Files.writeString(dir.resolve("B.mkv"), "x")
-        Files.writeString(dir.resolve("B.en.srt"), "1\n")
+        Files.writeString(dir.resolve("B.en.srt"), plausibleSrt())
 
         // Idle for the opening gate and the first candidate, streaming by
         // the time the second candidate is up.
@@ -284,7 +294,7 @@ class SubtitleLadderTest {
     fun a_recovery_resets_the_outage_streak() = runBlocking {
         val dir = Files.createTempDirectory("ladder-upstream-reset")
         Files.writeString(dir.resolve("Ep.mkv"), "x")
-        Files.writeString(dir.resolve("Ep.en.srt"), "1\n")
+        Files.writeString(dir.resolve("Ep.en.srt"), plausibleSrt())
 
         val state = mutableMapOf(25749L to SavedState("R3_WHISPER", 1L, null, 4L))
         val l = ladder(state = state)
@@ -415,7 +425,7 @@ class SubtitleLadderTest {
             whisper = { path, _ ->
                 whisperCalls++
                 val out = path.parent.resolve("ep.en.srt")
-                Files.writeString(out, "1")
+                Files.writeString(out, plausibleSrt())
                 out.toString()
             },
         )

@@ -2,6 +2,8 @@ package org.yoshiz.app.prioritarr.backend.reconcile
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class SubtitleLadderModelTest {
 
@@ -221,4 +223,35 @@ class SubtitleLadderModelTest {
         val t3 = decideLadderGate(0, congested = false, idleTicks = t2.idleTicks, resumeAfterIdleTicks = 3)
         assertEquals(true, t3.open); assertEquals(3, t3.idleTicks)
     }
+
+    // --- content plausibility: a filename is not a subtitle ---
+
+    /**
+     * Re:Zero S02E10, 2026-08-22: Bazarr downloaded an "English"
+     * subtitle from AnimeTosho, scored it 87.22% and synced it. It was
+     * a signs-only track — 45 bytes, one cue reading "I Know Hell", the
+     * episode title card. Nothing upstream could tell: to Bazarr it was
+     * a well-matched English subtitle. The ladder called it SATISFIED,
+     * so Whisper never ran and Plex would have shown one line of text
+     * for a 24-minute episode.
+     */
+    @Test
+    fun single_cue_title_card_is_not_a_plausible_subtitle() {
+        val titleCard = "1\n00:23:28,280 --> 00:23:31,290\nI Know Hell\n"
+        assertFalse(isPlausibleSubtitle(titleCard))
+    }
+
+    @Test
+    fun empty_content_is_not_plausible() {
+        assertFalse(isPlausibleSubtitle(""))
+    }
+
+    @Test
+    fun a_real_episode_subtitle_is_plausible() {
+        val srt = (1..300).joinToString("\n\n") { i ->
+            "$i\n00:00:01,000 --> 00:00:02,000\nline $i"
+        }
+        assertTrue(isPlausibleSubtitle(srt))
+    }
+
 }

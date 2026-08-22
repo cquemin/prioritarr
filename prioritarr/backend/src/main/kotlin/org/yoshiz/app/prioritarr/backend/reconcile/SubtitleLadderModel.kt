@@ -39,6 +39,41 @@ fun classifySidecars(siblingNames: Set<String>, base: String): SidecarState = wh
     else -> SidecarState.NONE
 }
 
+/**
+ * Does this sidecar's content look like an actual episode of dialogue?
+ *
+ * The existence of `<base>.en.srt` is not enough. Re:Zero S02E10 on
+ * 2026-08-22: Bazarr found an "English" subtitle on AnimeTosho, scored
+ * it 87.22%, synced it — and it was a signs-only track, 45 bytes and a
+ * single cue reading "I Know Hell", the episode title card. Nothing
+ * upstream can tell that apart: to Bazarr it is a well-matched English
+ * subtitle, and to the ladder it was SATISFIED, so Whisper never ran and
+ * Plex would have shown one line of text for a 24-minute episode.
+ *
+ * The bar is deliberately low. A real episode subtitle runs to hundreds
+ * of cues; anything under [MIN_PLAUSIBLE_CUES] is a signs track, a title
+ * card, or a truncated download, and none of those is worth blocking
+ * the rest of the ladder for.
+ */
+fun isPlausibleSubtitle(content: String): Boolean =
+    countCueArrows(content) >= MIN_PLAUSIBLE_CUES
+
+private fun countCueArrows(text: String): Int {
+    var n = 0
+    var i = text.indexOf("-->")
+    while (i >= 0) {
+        n++
+        i = text.indexOf("-->", i + 3)
+    }
+    return n
+}
+
+/**
+ * Fewest cues a full-episode subtitle can plausibly have. A 24-minute
+ * anime episode runs 250-600; even a near-silent one clears 20.
+ */
+const val MIN_PLAUSIBLE_CUES = 20
+
 /** Where an episode is in the ladder. Ordered cheapest-first. */
 enum class Rung {
     /** Nothing to do. */

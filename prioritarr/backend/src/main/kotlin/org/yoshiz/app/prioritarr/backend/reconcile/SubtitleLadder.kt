@@ -100,6 +100,14 @@ class SubtitleLadder(
      * falls through to Whisper. Injected so tests don't sleep.
      */
     private val awaitBazarr: suspend () -> Unit = { kotlinx.coroutines.delay(90_000) },
+    /**
+     * Read a sidecar's text so its content can be judged, not just its
+     * name. Injected like the rest of the I/O so the decision logic
+     * stays testable without a filesystem.
+     */
+    private val readSidecar: (Path) -> String? = { p ->
+        runCatching { java.nio.file.Files.readString(p) }.getOrNull()
+    },
     private val loadState: (Long) -> LadderState?,
     private val saveState: (
         episodeId: Long,
@@ -266,7 +274,21 @@ class SubtitleLadder(
         val file = candidate.videoPath
         val dir = file.parent ?: return record(candidate, Rung.R4_EXHAUSTED, LadderOutcome.UNREADABLE, prior)
         val base = baseNameOf(file)
-        val sidecar = classifySidecars(siblingNames(dir), base)
+        // Name first, then content. A file called <base>.en.srt is not
+        // proof of a subtitle: Bazarr delivered a 45-byte signs-only
+        // track for Re:Zero S02E10 — one cue reading "I Know Hell", the
+        // episode title card — scored 87% and synced. Accepting it as
+        // SATISFIED stopped the ladder for good and left Plex showing a
+        // single line for a 24-minute episode. An implausible sidecar is
+        // downgraded to NONE so the remaining rungs run and overwrite it.
+        val named = classifySidecars(siblingNames(dir), base)
+        val sidecar = if (named == SidecarState.SATISFIED &&
+            !isPlausibleSubtitle(readSidecar(dir.resolve("$base.en.srt")).orEmpty())
+        ) {
+            SidecarState.NONE
+        } else {
+            named
+        }
 
         if (sidecar == SidecarState.SATISFIED) {
             return record(candidate, Rung.R0_SATISFIED, LadderOutcome.SATISFIED, prior)
