@@ -404,6 +404,40 @@ class SubtitleLadderTest {
         assertTrue(state.isEmpty(), "gate-closed sweep must not persist any state")
     }
 
+    /**
+     * The end of the Re:Zero S02E10 chain. The ladder rejected Bazarr's
+     * 45-byte signs-only sidecar, ran Whisper for ten minutes, then
+     * declined to write because a file existed — the very file it had
+     * just rejected — and recorded SATISFIED. Whisper must replace a
+     * sidecar that failed the plausibility bar.
+     */
+    @Test
+    fun whisper_replaces_an_implausible_sidecar() = runBlocking {
+        val dir = Files.createTempDirectory("ladder-replace")
+        Files.writeString(dir.resolve("Ep.mkv"), "x")
+        Files.writeString(dir.resolve("Ep.en.srt"), "1\n00:23:28,280 --> 00:23:31,290\nI Know Hell\n")
+        val l = ladder(bazarr = { _, _ -> true }, whisper = { _, _ -> plausibleSrt() })
+        val outcome = l.runUntilSettled(candidate(dir, "Ep"))
+        assertEquals(LadderOutcome.SATISFIED, outcome)
+        val written = Files.readString(dir.resolve("Ep.en.srt"))
+        assertTrue(written.count { it == 0.toChar() } == 0)
+        assertTrue(isPlausibleSubtitle(written), "whisper output must have replaced the title card")
+        Unit
+    }
+
+    /** A real sidecar landing mid-run still wins over machine translation. */
+    @Test
+    fun whisper_does_not_clobber_a_plausible_sidecar() = runBlocking {
+        val dir = Files.createTempDirectory("ladder-keep")
+        Files.writeString(dir.resolve("Ep.mkv"), "x")
+        val good = "REAL PROVIDER SUB\n" + plausibleSrt()
+        Files.writeString(dir.resolve("Ep.en.srt"), good)
+        val l = ladder(bazarr = { _, _ -> true }, whisper = { _, _ -> plausibleSrt() })
+        l.runUntilSettled(candidate(dir, "Ep"))
+        assertTrue(Files.readString(dir.resolve("Ep.en.srt")).startsWith("REAL PROVIDER SUB"))
+        Unit
+    }
+
     // --- runUntilSettled: cascade rungs within one import ---
 
     /**

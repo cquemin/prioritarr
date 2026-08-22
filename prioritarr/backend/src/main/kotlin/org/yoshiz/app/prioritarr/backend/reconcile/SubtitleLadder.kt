@@ -361,7 +361,7 @@ class SubtitleLadder(
                     report?.let { it.whispered++ }
                     // Either we wrote it, or Bazarr beat us to it mid-run.
                     // Both mean the episode now has its .en.srt.
-                    writeSidecarIfAbsent(dir, base, srt)
+                    writeSidecarOverImplausible(dir, base, srt)
                     record(candidate, rung, LadderOutcome.SATISFIED, prior)
                 }
             }
@@ -382,21 +382,36 @@ class SubtitleLadder(
      * window where Bazarr lands a sidecar during a long Whisper run.
      * Returns false when we deliberately kept the existing file.
      */
-    private fun writeSidecarIfAbsent(dir: Path, base: String, content: String): Boolean {
+    /**
+     * Write Whisper's output unless a sidecar worth keeping is already
+     * there.
+     *
+     * "Absent" was the wrong test. Re:Zero S02E10: the ladder rejected
+     * Bazarr's 45-byte signs-only sidecar, ran Whisper for ten minutes,
+     * then declined to write because a file existed — the very file it
+     * had just rejected — and recorded SATISFIED. The episode kept its
+     * title card, the CPU was spent for nothing, and the log said the
+     * pipeline had succeeded.
+     *
+     * A plausible sidecar still wins: if Bazarr landed a real subtitle
+     * mid-run, that is a better result than a machine translation and
+     * must not be clobbered.
+     */
+    private fun writeSidecarOverImplausible(dir: Path, base: String, content: String): Boolean {
         val target = dir.resolve("$base.en.srt")
-        if (Files.exists(target)) return false
+        if (Files.exists(target) && isPlausibleSubtitle(readSidecar(target).orEmpty())) return false
         // Unique tmp name: the deterministic one already races.
         val tmp = dir.resolve("$base.en.srt.${UUID.randomUUID()}.tmp")
         return try {
             Files.writeString(tmp, content)
-            if (Files.exists(target)) {
+            if (Files.exists(target) && isPlausibleSubtitle(readSidecar(target).orEmpty())) {
                 Files.deleteIfExists(tmp)
                 false
             } else {
                 try {
-                    Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE)
+                    Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
                 } catch (_: Exception) {
-                    Files.move(tmp, target)
+                    Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING)
                 }
                 true
             }
