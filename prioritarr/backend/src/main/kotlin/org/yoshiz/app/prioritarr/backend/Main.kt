@@ -930,7 +930,11 @@ fun main() {
                     logger.info("on-import ladder: episode {} has no file yet, skipping", episodeId)
                     continue
                 }
-                val outcome = subtitleLadder.runOne(candidate)
+                // Cascading, not a single rung: a fresh import that lands
+                // on Bazarr and finds nothing must fall through to
+                // Whisper in the same pass, because nothing comes back
+                // for it afterwards. See runUntilSettled.
+                val outcome = subtitleLadder.runUntilSettled(candidate)
                 logger.info(
                     "on-import ladder: episode {} (P{}) -> {}",
                     episodeId, candidate.priority, outcome,

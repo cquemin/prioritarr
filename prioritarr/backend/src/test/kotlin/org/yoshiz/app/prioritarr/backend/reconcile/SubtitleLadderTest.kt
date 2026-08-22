@@ -50,6 +50,7 @@ class SubtitleLadderTest {
         whisperEnabled = { whisperEnabled },
         whisperMaxPriority = { 2 },
         resumeAfterIdleTicks = { 1 },
+        awaitBazarr = {},
         loadState = { id -> state[id]?.let { LadderState(it.rung, it.attempts, it.upstreamDowns) } },
         saveState = { id, rung, _, attempts, nextRetryAt, upstreamDowns ->
             state[id] = SavedState(rung, attempts, nextRetryAt, upstreamDowns)
@@ -392,4 +393,71 @@ class SubtitleLadderTest {
         assertTrue(report.skippedGate > 0)
         assertTrue(state.isEmpty(), "gate-closed sweep must not persist any state")
     }
+
+    // --- runUntilSettled: cascade rungs within one import ---
+
+    /**
+     * The bug this exists for: a freshly imported episode with no English
+     * track lands on R2, Bazarr has nothing for a release hours old, and
+     * runOne records NO_SOURCE and stops. Nothing comes back for it — the
+     * sweep orders by the cached download priority, which is P5 for
+     * anything already on disk, so R3 is never reached and the episode
+     * never gets subtitles. Re:Zero S02E10 reproduced this exactly:
+     * "episode 22338 (P3) -> NO_SOURCE" with Whisper idle at 0.12% CPU.
+     */
+    @Test
+    fun run_until_settled_falls_through_bazarr_to_whisper() = runBlocking {
+        val dir = Files.createTempDirectory("ladder-cascade")
+        Files.writeString(dir.resolve("ep.mkv"), "x")
+        var whisperCalls = 0
+        val l = ladder(
+            bazarr = { _, _ -> true },
+            whisper = { path, _ ->
+                whisperCalls++
+                val out = path.parent.resolve("ep.en.srt")
+                Files.writeString(out, "1")
+                out.toString()
+            },
+        )
+        val outcome = l.runUntilSettled(candidate(dir, "ep"))
+        assertEquals(1, whisperCalls, "whisper should be reached after bazarr comes up empty")
+        assertEquals(LadderOutcome.SATISFIED, outcome)
+        Unit
+    }
+
+    /** A single runOne still advances one rung — the sweep relies on it. */
+    @Test
+    fun run_one_still_advances_a_single_rung() = runBlocking {
+        val dir = Files.createTempDirectory("ladder-single")
+        Files.writeString(dir.resolve("ep.mkv"), "x")
+        var whisperCalls = 0
+        val l = ladder(
+            bazarr = { _, _ -> true },
+            whisper = { _, _ -> whisperCalls++; null },
+        )
+        l.runOne(candidate(dir, "ep"))
+        assertEquals(0, whisperCalls, "runOne must not cascade past bazarr")
+        Unit
+    }
+
+    /**
+     * The walk terminates rather than spinning. Whisper returning null
+     * means Whisper itself failed, which is UPSTREAM_DOWN, not
+     * NO_SOURCE — so the loop exits on the first non-NO_SOURCE result.
+     */
+    @Test
+    fun run_until_settled_terminates_when_nothing_works() = runBlocking {
+        val dir = Files.createTempDirectory("ladder-exhaust")
+        Files.writeString(dir.resolve("ep.mkv"), "x")
+        var whisperCalls = 0
+        val l = ladder(
+            bazarr = { _, _ -> true },
+            whisper = { _, _ -> whisperCalls++; null },
+        )
+        val outcome = l.runUntilSettled(candidate(dir, "ep"))
+        assertEquals(LadderOutcome.UPSTREAM_DOWN, outcome)
+        assertEquals(1, whisperCalls, "whisper tried exactly once per walk")
+        Unit
+    }
+
 }

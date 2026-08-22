@@ -34,6 +34,13 @@ data class LadderCandidate(
 data class LadderState(val lastRung: String, val attempts: Long, val upstreamDowns: Long = 0)
 
 /**
+ * Backstop on [SubtitleLadder.runUntilSettled]. The walk normally ends
+ * on SATISFIED or a persisted R4_EXHAUSTED; four hops covers
+ * R1 -> R2 -> R3 -> R4 with a spare.
+ */
+private const val MAX_RUNG_HOPS = 4
+
+/**
  * Per-sweep aggregate surfaced in the job summary.
  *
  * Plain [Int]s: every counter is only ever mutated from within the single
@@ -88,6 +95,11 @@ class SubtitleLadder(
     private val whisperEnabled: () -> Boolean,
     private val whisperMaxPriority: () -> Int,
     private val resumeAfterIdleTicks: () -> Int,
+    /**
+     * Grace period after triggering Bazarr, before [runUntilSettled]
+     * falls through to Whisper. Injected so tests don't sleep.
+     */
+    private val awaitBazarr: suspend () -> Unit = { kotlinx.coroutines.delay(90_000) },
     private val loadState: (Long) -> LadderState?,
     private val saveState: (
         episodeId: Long,
@@ -208,6 +220,43 @@ class SubtitleLadder(
      * sweep) and overlapping sweeps can never misattribute each other's
      * counters.
      */
+    /**
+     * Walk the ladder for one episode until it either succeeds or runs
+     * out of rungs, rather than advancing a single rung per call.
+     *
+     * [runOne] deliberately takes one step: the sweep wants to spread
+     * work over many episodes, and a rung that failed gets a backoff
+     * before the next is tried. The import path wants the opposite. A
+     * freshly imported episode with no English track lands on R2, Bazarr
+     * has nothing for a release that is hours old, and the run records
+     * NO_SOURCE with a one-day backoff — and nothing ever comes back for
+     * it, because the sweep orders candidates by the cached download
+     * priority, which is P5 for anything already on disk, so it never
+     * reaches R3. The episode simply never gets subtitles.
+     *
+     * Bounded by [MAX_RUNG_HOPS] and by the persisted rung: each call
+     * records where it got to, so the next call's [nextRung] advances,
+     * and R4_EXHAUSTED stops the walk. The bound is a backstop against a
+     * rung that somehow fails to advance, not the normal exit.
+     */
+    suspend fun runUntilSettled(candidate: LadderCandidate, report: LadderReport? = null): LadderOutcome {
+        var outcome = runOne(candidate, report)
+        var hops = 0
+        while (outcome == LadderOutcome.NO_SOURCE && hops++ < MAX_RUNG_HOPS) {
+            val rung = loadState(candidate.episodeId)?.lastRung
+            if (rung == Rung.R4_EXHAUSTED.name) break
+            // Bazarr searches asynchronously: a successful trigger only
+            // means "queued", which is why R2 records NO_SOURCE rather
+            // than waiting. Falling straight through would spend ten
+            // minutes of Whisper on an episode Bazarr is about to
+            // deliver, so give it a moment and let the next hop re-read
+            // the sidecars.
+            if (rung == Rung.R2_BAZARR.name) awaitBazarr()
+            outcome = runOne(candidate, report)
+        }
+        return outcome
+    }
+
     suspend fun runOne(candidate: LadderCandidate, report: LadderReport? = null): LadderOutcome {
         // Loaded once up front (rather than again inside record()) since
         // both the bazarrAlreadyTried check and every record() call need
