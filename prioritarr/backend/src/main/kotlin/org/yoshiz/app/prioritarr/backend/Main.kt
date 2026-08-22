@@ -529,9 +529,19 @@ fun main() {
             // would be recorded SATISFIED with no .en.srt on disk at all -
             // and then not looked at again for 7 days. The ladder's entire
             // contract is the English file, so assert exactly that file.
+            // Existence is not success. A signs-only sidecar from a
+            // provider leaves a file called <stem>.en.srt on disk, and
+            // checking only for the name made R1 report success for
+            // Captain Tsubasa S02E16 — 5 cues of sign text — which the
+            // ladder then recorded SATISFIED. Assert the same content
+            // bar the rest of the ladder uses.
             val name = path.fileName.toString()
             val stem = name.substringBeforeLast('.', name)
-            path.parent?.resolve("$stem.en.srt")?.let { java.nio.file.Files.exists(it) } == true
+            val en = path.parent?.resolve("$stem.en.srt")
+            en != null && java.nio.file.Files.exists(en) &&
+                org.yoshiz.app.prioritarr.backend.reconcile.isPlausibleSubtitle(
+                    runCatching { java.nio.file.Files.readString(en) }.getOrDefault(""),
+                )
         },
         triggerBazarr = { seriesId, episodeId ->
             bazarrClient.triggerEpisodeSearch(seriesId, episodeId, "en")

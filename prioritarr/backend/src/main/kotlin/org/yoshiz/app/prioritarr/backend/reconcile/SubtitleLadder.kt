@@ -33,6 +33,9 @@ data class LadderCandidate(
  */
 data class LadderState(val lastRung: String, val attempts: Long, val upstreamDowns: Long = 0)
 
+/** Sidecar names [classifySidecars] treats as variants, in its order. */
+private val VARIANT_SUFFIXES = listOf(".en.hi.srt", ".srt")
+
 /**
  * Backstop on [SubtitleLadder.runUntilSettled]. The walk normally ends
  * on SATISFIED or a persisted R4_EXHAUSTED; four hops covers
@@ -282,12 +285,24 @@ class SubtitleLadder(
         // single line for a 24-minute episode. An implausible sidecar is
         // downgraded to NONE so the remaining rungs run and overwrite it.
         val named = classifySidecars(siblingNames(dir), base)
-        val sidecar = if (named == SidecarState.SATISFIED &&
-            !isPlausibleSubtitle(readSidecar(dir.resolve("$base.en.srt")).orEmpty())
-        ) {
-            SidecarState.NONE
-        } else {
-            named
+        val sidecar = when (named) {
+            SidecarState.SATISFIED ->
+                if (isPlausibleSubtitle(readSidecar(dir.resolve("$base.en.srt")).orEmpty())) {
+                    SidecarState.SATISFIED
+                } else {
+                    SidecarState.NONE
+                }
+            // A variant blocks the expensive rungs because it means SOME
+            // English exists. A 5-cue signs track is not English content,
+            // and letting it block left Tower of God S02E22 stuck on
+            // BLOCKED_VARIANT with nothing but "Episode 22" on screen.
+            SidecarState.VARIANT_ONLY ->
+                if (VARIANT_SUFFIXES.any { isPlausibleSubtitle(readSidecar(dir.resolve("$base$it")).orEmpty()) }) {
+                    SidecarState.VARIANT_ONLY
+                } else {
+                    SidecarState.NONE
+                }
+            SidecarState.NONE -> SidecarState.NONE
         }
 
         if (sidecar == SidecarState.SATISFIED) {

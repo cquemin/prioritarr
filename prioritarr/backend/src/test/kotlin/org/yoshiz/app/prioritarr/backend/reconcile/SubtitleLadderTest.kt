@@ -119,7 +119,7 @@ class SubtitleLadderTest {
     fun variant_takes_the_free_rung_but_never_whisper() = runBlocking {
         val dir = Files.createTempDirectory("ladder-variant")
         Files.writeString(dir.resolve("Ep.mkv"), "x")
-        Files.writeString(dir.resolve("Ep.en.hi.srt"), "1\n")
+        Files.writeString(dir.resolve("Ep.en.hi.srt"), plausibleSrt())
 
         var extracted = false
         val l = ladder(
@@ -136,7 +136,7 @@ class SubtitleLadderTest {
     fun variant_with_no_embedded_track_is_blocked_not_whispered() = runBlocking {
         val dir = Files.createTempDirectory("ladder-variant-blocked")
         Files.writeString(dir.resolve("Ep.mkv"), "x")
-        Files.writeString(dir.resolve("Ep.srt"), "1\n")
+        Files.writeString(dir.resolve("Ep.srt"), plausibleSrt())
 
         val l = ladder(
             hasEmbedded = { false },
@@ -435,6 +435,29 @@ class SubtitleLadderTest {
         val l = ladder(bazarr = { _, _ -> true }, whisper = { _, _ -> plausibleSrt() })
         l.runUntilSettled(candidate(dir, "Ep"))
         assertTrue(Files.readString(dir.resolve("Ep.en.srt")).startsWith("REAL PROVIDER SUB"))
+        Unit
+    }
+
+    /**
+     * A variant blocks the expensive rungs because it means SOME
+     * English exists. A 5-cue signs track is not English content:
+     * Tower of God S02E22 sat on BLOCKED_VARIANT with nothing but
+     * "Episode 22" on screen, because the block tested the filename.
+     */
+    @Test
+    fun implausible_variant_does_not_block_the_ladder() = runBlocking {
+        val dir = Files.createTempDirectory("ladder-bad-variant")
+        Files.writeString(dir.resolve("Ep.mkv"), "x")
+        Files.writeString(dir.resolve("Ep.en.hi.srt"), "1\n00:00:01,000 --> 00:00:02,000\nEpisode 22\n")
+        var whispered = false
+        val l = ladder(
+            hasEmbedded = { false },
+            bazarr = { _, _ -> true },
+            whisper = { _, _ -> whispered = true; plausibleSrt() },
+        )
+        val outcome = l.runUntilSettled(candidate(dir, "Ep"))
+        assertTrue(whispered, "a signs-only variant must not block whisper")
+        assertEquals(LadderOutcome.SATISFIED, outcome)
         Unit
     }
 
