@@ -137,10 +137,69 @@ class PlexClient(
         return doc.getElementsByTagName("Video").length + doc.getElementsByTagName("Track").length
     }
 
+    /**
+     * Newest-first leaf items (episodes for `show` sections, movies for
+     * `movie` sections) in [sectionId], capped at [limit]. Each entry:
+     * {rating_key, title, added_at (Long epoch seconds)}.
+     *
+     * Paging is done via the `X-Plex-Container-Size` **header** — Plex
+     * ignores the same name as a query parameter for this endpoint and
+     * returns the whole library.
+     */
+    suspend fun getRecentlyAdded(sectionId: String, sectionType: String, limit: Int): List<Map<String, Any?>> {
+        val leafType = if (sectionType == "movie") 1 else 4
+        val body: String = http.get("$root/library/sections/$sectionId/all?type=$leafType&sort=addedAt:desc") {
+            header("X-Plex-Token", token)
+            header("X-Plex-Container-Start", "0")
+            header("X-Plex-Container-Size", limit.toString())
+        }.bodyAsText()
+        val doc = parseXml(body) ?: return emptyList()
+        return doc.getElementsByTagName("Video").toList().mapNotNull { v ->
+            val ratingKey = v.getAttribute("ratingKey").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            val addedAt = v.getAttribute("addedAt").toLongOrNull() ?: return@mapNotNull null
+            val show = v.getAttribute("grandparentTitle")
+            val title = if (show.isNotEmpty()) {
+                "$show S${v.getAttribute("parentIndex")}E${v.getAttribute("index")}"
+            } else {
+                v.getAttribute("title")
+            }
+            mapOf("rating_key" to ratingKey, "title" to title, "added_at" to addedAt)
+        }
+    }
+
+    /**
+     * Number of `<Stream>` elements (video + audio + subtitle) across the
+     * media parts of one item. A healthy analyzed item always has ≥ 1;
+     * 0 means the Plex Media Scanner never analyzed the file (or the
+     * analysis died), in which case Plex can't build a play decision.
+     */
+    suspend fun getStreamCount(ratingKey: String): Int {
+        val doc = getXml("/library/metadata/$ratingKey") ?: return 0
+        return doc.getElementsByTagName("Stream").length
+    }
+
+    /** `PUT /library/metadata/{key}/analyze` — re-run media analysis (stream discovery). */
+    suspend fun analyzeItem(ratingKey: String) {
+        http.put("$root/library/metadata/$ratingKey/analyze") {
+            header("X-Plex-Token", token)
+        }.bodyAsText()
+    }
+
+    /** `PUT /library/metadata/{key}/refresh` — metadata refresh; also registers sidecar subtitle files. */
+    suspend fun refreshItem(ratingKey: String) {
+        http.put("$root/library/metadata/$ratingKey/refresh") {
+            header("X-Plex-Token", token)
+        }.bodyAsText()
+    }
+
     private suspend fun getXml(path: String): Element? {
         val body: String = http.get("$root$path") {
             header("X-Plex-Token", token)
         }.bodyAsText()
+        return parseXml(body)
+    }
+
+    private fun parseXml(body: String): Element? {
         val factory = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = false }
         val builder = factory.newDocumentBuilder()
         val doc = builder.parse(ByteArrayInputStream(body.toByteArray(StandardCharsets.UTF_8)))

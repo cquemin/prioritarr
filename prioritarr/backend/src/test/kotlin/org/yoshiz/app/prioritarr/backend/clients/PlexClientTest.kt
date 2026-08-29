@@ -11,6 +11,66 @@ import kotlin.test.assertEquals
 
 class PlexClientTest {
 
+    @Test
+    fun `getRecentlyAdded pages via container-size header and names episodes by show`() = runTest {
+        val xml = """
+            <MediaContainer size="2">
+              <Video ratingKey="94048" grandparentTitle="Bleach" parentIndex="17" index="46" title="THE END" addedAt="1788015001"/>
+              <Video ratingKey="94050" title="Some Movie" addedAt="1788016927"/>
+              <Video title="no key" addedAt="1"/>
+            </MediaContainer>
+        """.trimIndent()
+        var url = ""
+        var size = ""
+        val engine = MockEngine { req ->
+            url = req.url.toString()
+            size = req.headers["X-Plex-Container-Size"] ?: ""
+            respond(ByteReadChannel(xml), HttpStatusCode.OK)
+        }
+        val client = PlexClient("http://plex:32400", "tok", HttpClient(engine))
+        val items = client.getRecentlyAdded("5", "show", 20)
+        assertEquals("http://plex:32400/library/sections/5/all?type=4&sort=addedAt:desc", url)
+        assertEquals("20", size)
+        assertEquals(2, items.size)
+        assertEquals("Bleach S17E46", items[0]["title"])
+        assertEquals(1788015001L, items[0]["added_at"])
+        assertEquals("Some Movie", items[1]["title"])
+    }
+
+    @Test
+    fun `getStreamCount counts Stream elements across parts`() = runTest {
+        val xml = """
+            <MediaContainer size="1">
+              <Video ratingKey="1"><Media><Part>
+                <Stream streamType="1"/><Stream streamType="2"/><Stream streamType="3"/>
+              </Part></Media></Video>
+            </MediaContainer>
+        """.trimIndent()
+        val (http, _) = clientReturning(xml)
+        assertEquals(3, PlexClient("http://plex:32400", "tok", http).getStreamCount("1"))
+        val (empty, _) = clientReturning("""<MediaContainer size="1"><Video ratingKey="1"><Media><Part/></Media></Video></MediaContainer>""")
+        assertEquals(0, PlexClient("http://plex:32400", "tok", empty).getStreamCount("1"))
+    }
+
+    @Test
+    fun `analyzeItem and refreshItem PUT the plex endpoints with the token`() = runTest {
+        val seen = mutableListOf<String>()
+        val engine = MockEngine { req ->
+            seen += "${req.method.value} ${req.url} ${req.headers["X-Plex-Token"]}"
+            respond(ByteReadChannel(""), HttpStatusCode.OK)
+        }
+        val client = PlexClient("http://plex:32400", "tok", HttpClient(engine))
+        client.analyzeItem("94048")
+        client.refreshItem("94048")
+        assertEquals(
+            listOf(
+                "PUT http://plex:32400/library/metadata/94048/analyze tok",
+                "PUT http://plex:32400/library/metadata/94048/refresh tok",
+            ),
+            seen,
+        )
+    }
+
     private fun clientReturning(body: String): Pair<HttpClient, MutableList<String>> {
         val headers = mutableListOf<String>()
         val engine = MockEngine { req ->

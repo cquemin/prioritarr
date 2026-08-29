@@ -1231,7 +1231,10 @@ function JobDetail({ job }: { job: JobMeta }) {
 
 function JobSettingInput({ setting, data }: { setting: JobSetting; data: any }) {
   const save = useSaveSettings()
-  const live = data?.[setting.key]
+  // Keys may be nested GET paths (`intervals.foo`); the EditableSettings
+  // patch is flat, so save under the last segment — same rule as cadence.
+  const live = readPath(data, setting.key)
+  const patchKey = setting.key.split('.').pop()!
   const [draft, setDraft] = useState<any>(live ?? '')
   useEffect(() => { if (live !== undefined) setDraft(live) }, [live])
   const dirty = draft !== live && draft !== ''
@@ -1243,7 +1246,7 @@ function JobSettingInput({ setting, data }: { setting: JobSetting; data: any }) 
           type="checkbox"
           checked={Boolean(live)}
           disabled={save.isPending}
-          onChange={(e) => save.mutate({ [setting.key]: e.target.checked })}
+          onChange={(e) => save.mutate({ [patchKey]:e.target.checked })}
           className="mt-1"
         />
         <span className="flex-1">
@@ -1272,7 +1275,7 @@ function JobSettingInput({ setting, data }: { setting: JobSetting; data: any }) 
           loading={save.isPending}
           disabled={!dirty}
           loadingLabel="…"
-          onClick={() => save.mutate({ [setting.key]: draft })}
+          onClick={() => save.mutate({ [patchKey]:draft })}
           className="whitespace-nowrap"
         >
           Save

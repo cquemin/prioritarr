@@ -94,6 +94,12 @@ data class Intervals(
     val sonarrWatchdogStallMinutes: Int = 30,
     val sonarrWatchdogRestartGraceMinutes: Int = 10,
     val sonarrWatchdogCooldownMinutes: Int = 120,
+    /** Plex analysis watchdog: poll cadence, item grace, analyze wait, cooldown, items probed per tick. */
+    val plexWatchdogIntervalMinutes: Int = 5,
+    val plexWatchdogGraceMinutes: Int = 10,
+    val plexWatchdogAnalyzeWaitMinutes: Int = 5,
+    val plexWatchdogCooldownMinutes: Int = 120,
+    val plexWatchdogRecentItems: Int = 20,
     /** Sonarr command-queue is "congested" at/above this many pending searches; backfill defers. */
     val searchCongestionThreshold: Int = 3,
     /** Cadence of the embedded-subtitle → SRT-sidecar extraction sweep. */
@@ -281,6 +287,13 @@ data class Settings(
     val dockerProxyUrl: String? = null,
     val sonarrContainerName: String = "sonarr",
 
+    // Plex analysis watchdog. When enabled, detects recently-added Plex
+    // items with zero media streams (dead Plex Media Scanner) and recovers
+    // them: analyze+refresh, then a container restart via [dockerProxyUrl]
+    // when Plex is idle. Requires plexUrl + plexToken.
+    val plexWatchdogEnabled: Boolean = false,
+    val plexContainerName: String = "plex",
+
     // When true, the P1-fast sweep cancels in-flight backfill searches
     // (SeriesSearch/SeasonSearch/CutoffUnmetSearch) before firing P1/P2 so
     // the urgent episode searches run first.
@@ -387,6 +400,12 @@ data class EditableSettings(
     val sonarrWatchdogStallMinutes: Int? = null,
     val sonarrWatchdogRestartGraceMinutes: Int? = null,
     val sonarrWatchdogCooldownMinutes: Int? = null,
+    val plexWatchdogEnabled: Boolean? = null,
+    val plexWatchdogIntervalMinutes: Int? = null,
+    val plexWatchdogGraceMinutes: Int? = null,
+    val plexWatchdogAnalyzeWaitMinutes: Int? = null,
+    val plexWatchdogCooldownMinutes: Int? = null,
+    val plexWatchdogRecentItems: Int? = null,
     val searchCongestionThreshold: Int? = null,
     val cancelBackfillForPriority: Boolean? = null,
     val traktClientId: String? = null,
@@ -474,6 +493,7 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
     tdarrApiKey = override.tdarrApiKey ?: base.tdarrApiKey,
     tdarrPauseEnabled = override.tdarrPauseEnabled ?: base.tdarrPauseEnabled,
     sonarrWatchdogEnabled = override.sonarrWatchdogEnabled ?: base.sonarrWatchdogEnabled,
+    plexWatchdogEnabled = override.plexWatchdogEnabled ?: base.plexWatchdogEnabled,
     cancelBackfillForPriority = override.cancelBackfillForPriority ?: base.cancelBackfillForPriority,
     traktClientId = override.traktClientId ?: base.traktClientId,
     traktClientSecret = override.traktClientSecret ?: base.traktClientSecret,
@@ -519,6 +539,11 @@ fun applySettingsOverride(base: Settings, override: EditableSettings): Settings 
         sonarrWatchdogStallMinutes = override.sonarrWatchdogStallMinutes ?: base.intervals.sonarrWatchdogStallMinutes,
         sonarrWatchdogRestartGraceMinutes = override.sonarrWatchdogRestartGraceMinutes ?: base.intervals.sonarrWatchdogRestartGraceMinutes,
         sonarrWatchdogCooldownMinutes = override.sonarrWatchdogCooldownMinutes ?: base.intervals.sonarrWatchdogCooldownMinutes,
+        plexWatchdogIntervalMinutes = override.plexWatchdogIntervalMinutes ?: base.intervals.plexWatchdogIntervalMinutes,
+        plexWatchdogGraceMinutes = override.plexWatchdogGraceMinutes ?: base.intervals.plexWatchdogGraceMinutes,
+        plexWatchdogAnalyzeWaitMinutes = override.plexWatchdogAnalyzeWaitMinutes ?: base.intervals.plexWatchdogAnalyzeWaitMinutes,
+        plexWatchdogCooldownMinutes = override.plexWatchdogCooldownMinutes ?: base.intervals.plexWatchdogCooldownMinutes,
+        plexWatchdogRecentItems = override.plexWatchdogRecentItems ?: base.intervals.plexWatchdogRecentItems,
         searchCongestionThreshold = override.searchCongestionThreshold ?: base.intervals.searchCongestionThreshold,
         subExtractIntervalMinutes = override.subExtractIntervalMinutes ?: base.intervals.subExtractIntervalMinutes,
         subLadderIntervalMinutes = override.subLadderIntervalMinutes ?: base.intervals.subLadderIntervalMinutes,
@@ -608,6 +633,11 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
                 sonarrWatchdogStallMinutes = o.num("sonarr_watchdog_stall_minutes") { it.toInt() } ?: intervals.sonarrWatchdogStallMinutes,
                 sonarrWatchdogRestartGraceMinutes = o.num("sonarr_watchdog_grace_minutes") { it.toInt() } ?: intervals.sonarrWatchdogRestartGraceMinutes,
                 sonarrWatchdogCooldownMinutes = o.num("sonarr_watchdog_cooldown_minutes") { it.toInt() } ?: intervals.sonarrWatchdogCooldownMinutes,
+                plexWatchdogIntervalMinutes = o.num("plex_watchdog_interval_minutes") { it.toInt() } ?: intervals.plexWatchdogIntervalMinutes,
+                plexWatchdogGraceMinutes = o.num("plex_watchdog_grace_minutes") { it.toInt() } ?: intervals.plexWatchdogGraceMinutes,
+                plexWatchdogAnalyzeWaitMinutes = o.num("plex_watchdog_analyze_wait_minutes") { it.toInt() } ?: intervals.plexWatchdogAnalyzeWaitMinutes,
+                plexWatchdogCooldownMinutes = o.num("plex_watchdog_cooldown_minutes") { it.toInt() } ?: intervals.plexWatchdogCooldownMinutes,
+                plexWatchdogRecentItems = o.num("plex_watchdog_recent_items") { it.toInt() } ?: intervals.plexWatchdogRecentItems,
                 searchCongestionThreshold = o.num("search_congestion_threshold") { it.toInt() } ?: intervals.searchCongestionThreshold,
                 subExtractIntervalMinutes = o.num("sub_extract_interval_minutes") { it.toInt() } ?: intervals.subExtractIntervalMinutes,
                 subLadderIntervalMinutes = o.num("sub_ladder_interval_minutes") { it.toInt() } ?: intervals.subLadderIntervalMinutes,
@@ -691,6 +721,8 @@ fun loadSettingsFrom(envMap: Map<String, String>): Settings {
         sonarrWatchdogEnabled = (env("SONARR_WATCHDOG_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
         dockerProxyUrl = env("DOCKER_PROXY_URL")?.takeIf { it.isNotBlank() },
         sonarrContainerName = env("SONARR_CONTAINER_NAME", "sonarr") ?: "sonarr",
+        plexWatchdogEnabled = (env("PLEX_WATCHDOG_ENABLED", "false") ?: "false").lowercase() in TRUTHY,
+        plexContainerName = env("PLEX_CONTAINER_NAME", "plex") ?: "plex",
         cancelBackfillForPriority = (env("CANCEL_BACKFILL_FOR_PRIORITY", "true") ?: "true").lowercase() in TRUTHY,
         traktClientId = env("TRAKT_CLIENT_ID"),
         traktClientSecret = env("TRAKT_CLIENT_SECRET"),

@@ -152,6 +152,9 @@ data class SettingsRedacted(
     val tdarrUrl: String?,
     val tdarrApiKey: String?,
     val tdarrPauseEnabled: Boolean?,
+    // Watchdog toggles — live-editable; the scheduler prereqs re-read them every tick.
+    val sonarrWatchdogEnabled: Boolean = false,
+    val plexWatchdogEnabled: Boolean = false,
     val traktClientId: String?,
     val traktClientSecret: String?,
     val traktAccessToken: String?,
@@ -202,6 +205,17 @@ data class IntervalsWire(
     val unmonitoredReaperMinutes: Int = 30,
     val traktTokenRefreshHours: Int = 24,
     val tdarrPauseMinutes: Int = 1,
+    // Sonarr command-queue watchdog (see docs/specs/2026-06-14-sonarr-watchdog-design.md)
+    val sonarrWatchdogIntervalMinutes: Int = 5,
+    val sonarrWatchdogStallMinutes: Int = 30,
+    val sonarrWatchdogRestartGraceMinutes: Int = 10,
+    val sonarrWatchdogCooldownMinutes: Int = 120,
+    // Plex analysis watchdog (see docs/specs/2026-08-29-plex-watchdog-design.md)
+    val plexWatchdogIntervalMinutes: Int = 5,
+    val plexWatchdogGraceMinutes: Int = 10,
+    val plexWatchdogAnalyzeWaitMinutes: Int = 5,
+    val plexWatchdogCooldownMinutes: Int = 120,
+    val plexWatchdogRecentItems: Int = 20,
 )
 
 /**

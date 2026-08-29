@@ -477,6 +477,50 @@ fun main() {
         dryRun = { liveSettings(db, settings).dryRun },
     )
 
+    // Plex analysis watchdog: items Plex added with zero media streams mean
+    // the Plex Media Scanner child process is dying (seen when the library
+    // DB's -wal/-shm sidecars vanished from the 9p-mounted /config). Ladder:
+    // analyze+refresh → container restart when idle → cooldown. Stateful,
+    // so built once; null when Plex isn't configured (job prereq guards it).
+    val plexWatchdog: org.yoshiz.app.prioritarr.backend.orchestration.PlexWatchdog? =
+        plexClient?.let { plex ->
+            org.yoshiz.app.prioritarr.backend.orchestration.PlexWatchdog(
+                listRecentItems = {
+                    val limit = liveSettings(db, settings).intervals.plexWatchdogRecentItems
+                    plex.getLibrarySections()
+                        .filter { it["type"] == "show" || it["type"] == "movie" }
+                        .flatMap { section ->
+                            plex.getRecentlyAdded(section["id"]!!, section["type"]!!, limit).map { item ->
+                                org.yoshiz.app.prioritarr.backend.orchestration.PlexRecentItem(
+                                    ratingKey = item["rating_key"] as String,
+                                    title = item["title"] as String,
+                                    addedAt = java.time.Instant.ofEpochSecond(item["added_at"] as Long),
+                                )
+                            }
+                        }
+                        .sortedByDescending { it.addedAt }
+                        .take(limit)
+                },
+                streamCount = { key -> plex.getStreamCount(key) },
+                analyze = { key -> plex.analyzeItem(key) },
+                refresh = { key -> plex.refreshItem(key) },
+                activeSessions = { plex.activeSessionCountOrNull() },
+                containerRestart = dockerRestartClient?.let { dc ->
+                    { dc.restartContainer(liveSettings(db, settings).plexContainerName) }
+                },
+                now = { java.time.Instant.now() },
+                cfg = {
+                    val i = liveSettings(db, settings).intervals
+                    org.yoshiz.app.prioritarr.backend.orchestration.PlexWatchdogConfig(
+                        graceMinutes = i.plexWatchdogGraceMinutes,
+                        analyzeWaitMinutes = i.plexWatchdogAnalyzeWaitMinutes,
+                        cooldownMinutes = i.plexWatchdogCooldownMinutes,
+                    )
+                },
+                dryRun = { liveSettings(db, settings).dryRun },
+            )
+        }
+
     // Throttles the backfill search flood and cancels in-flight backfill
     // searches so P1/P2 episode searches run first. Reads Sonarr's command
     // queue; threshold + dryRun are live.
@@ -684,6 +728,21 @@ fun main() {
                 weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
                 run = {
                     sonarrWatchdog.reconcile()
+                },
+            ))
+            add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(
+                id = JobId.PLEX_WATCHDOG,
+                // Detect Plex items added with zero media streams (dead
+                // scanner) and recover via analyze → container restart.
+                // Reactive prereq — flipping plexWatchdogEnabled takes
+                // effect within ~1 tick; also needs a Plex client.
+                cadenceMinutes = { liveSettings(db, settings).intervals.plexWatchdogIntervalMinutes.toLong() },
+                prerequisites = {
+                    plexWatchdog != null && liveSettings(db, settings).plexWatchdogEnabled
+                },
+                weight = org.yoshiz.app.prioritarr.backend.scheduler.JobWeight.LIGHT,
+                run = {
+                    plexWatchdog!!.reconcile()
                 },
             ))
             add(org.yoshiz.app.prioritarr.backend.scheduler.JobDefinition(

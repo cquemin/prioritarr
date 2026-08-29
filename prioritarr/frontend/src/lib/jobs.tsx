@@ -17,7 +17,7 @@
 
 import {
   RefreshCw, Database, Search, Activity, Trash2, ListChecks, KeyRound, Cog,
-  Webhook, ArrowLeftRight, Box, FileSearch, Pause, Captions,
+  Webhook, ArrowLeftRight, Box, FileSearch, Pause, Captions, HeartPulse, MonitorCheck,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 
@@ -161,6 +161,50 @@ export const JOBS: ReadonlyArray<JobMeta> = [
     ],
     relatedSettings: [
       { section: 'connections', sectionLabel: 'Connections', field: 'Tdarr' },
+    ],
+  },
+  {
+    id: 'sonarr-watchdog',
+    name: 'Sonarr watchdog',
+    icon: <HeartPulse size={18} />,
+    trigger: 'auto',
+    short: 'Restart Sonarr when its command queue wedges.',
+    description:
+      'Polls Sonarr’s command queue and looks for commands stuck in the "started" state longer than the stall threshold. A wedge seen on two consecutive ticks triggers an escalating ladder: app-restart (up to 3×, with a grace period between), then a container restart through the docker-socket-proxy when one is configured, then a cooldown before trying again. Healthy ticks reset the ladder.',
+    why:
+      'Sonarr’s executor occasionally hangs on an unresponsive indexer call that ignores cancellation; a few wedged tasks gridlock the whole queue so imports, RSS sync and searches silently stop. The command API stays responsive, so nothing else notices — only a restart clears it. See docs/specs/2026-06-14-sonarr-watchdog-design.md.',
+    cadence: { key: 'intervals.sonarrWatchdogIntervalMinutes', unit: 'minutes', min: 1 },
+    settings: [
+      { key: 'sonarrWatchdogEnabled', label: 'Enabled', type: 'boolean', hint: 'Off by default. Container-restart rung needs DOCKER_PROXY_URL (env only).' },
+      { key: 'intervals.sonarrWatchdogStallMinutes', label: 'Stall threshold (min)', type: 'number', min: 5, step: 1, hint: 'A command "started" longer than this counts as wedged.' },
+      { key: 'intervals.sonarrWatchdogRestartGraceMinutes', label: 'Grace after restart (min)', type: 'number', min: 1, step: 1, hint: 'Wait this long for a restart to take effect before escalating.' },
+      { key: 'intervals.sonarrWatchdogCooldownMinutes', label: 'Cooldown after ladder exhausted (min)', type: 'number', min: 5, step: 1 },
+    ],
+    relatedSettings: [
+      { section: 'general', sectionLabel: 'General', field: 'dryRun' },
+    ],
+  },
+  {
+    id: 'plex-watchdog',
+    name: 'Plex watchdog',
+    icon: <MonitorCheck size={18} />,
+    trigger: 'auto',
+    short: 'Recover Plex items added with zero media streams.',
+    description:
+      'Probes the newest items in every Plex show/movie library and flags any that, past a short grace window, still report zero media streams — Plex never analyzed the file, so it has no video/audio/subtitle info and refuses to play. Ladder: ask Plex to analyze + refresh the item; if that changes nothing after the wait period, restart the Plex container through the docker-socket-proxy (only once per incident and only when nobody is streaming); if it is still broken afterwards, back off for the cooldown.',
+    why:
+      'On 2026-08-29 the Plex library database lost its SQLite -wal/-shm sidecars on the 9p-mounted /config. The server carried on, but every child "Plex Media Scanner" process died at startup, so every new episode for a day had no streams, showed no subtitles and would not play — invisible until someone tried to watch. See docs/specs/2026-08-29-plex-watchdog-design.md.',
+    cadence: { key: 'intervals.plexWatchdogIntervalMinutes', unit: 'minutes', min: 1 },
+    settings: [
+      { key: 'plexWatchdogEnabled', label: 'Enabled', type: 'boolean', hint: 'Off by default. Requires Plex in Connections; container-restart rung needs DOCKER_PROXY_URL (env only).' },
+      { key: 'intervals.plexWatchdogGraceMinutes', label: 'Item grace (min)', type: 'number', min: 1, step: 1, hint: 'Items younger than this are ignored — the file may still be copying.' },
+      { key: 'intervals.plexWatchdogAnalyzeWaitMinutes', label: 'Wait after analyze (min)', type: 'number', min: 1, step: 1, hint: 'How long an analyze gets before it is judged to have failed.' },
+      { key: 'intervals.plexWatchdogCooldownMinutes', label: 'Cooldown after ladder exhausted (min)', type: 'number', min: 5, step: 1 },
+      { key: 'intervals.plexWatchdogRecentItems', label: 'Items probed per tick', type: 'number', min: 1, step: 1, hint: 'Newest N items across all video libraries.' },
+    ],
+    relatedSettings: [
+      { section: 'connections', sectionLabel: 'Connections', field: 'Plex' },
+      { section: 'general', sectionLabel: 'General', field: 'dryRun' },
     ],
   },
   {
