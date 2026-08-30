@@ -91,6 +91,16 @@ Torrents paused by prioritarr are tracked (`paused_by_us` flag); user-paused tor
 
 ## Background jobs
 
+Every job below has its own card under **Settings → Background jobs**: what it does and why, its cadence, the parameters specific to that job (toggle, budgets, thresholds), its recent runs, and a "run now" button where a manual trigger makes sense. Edits on a card apply on the next scheduler tick — no restart.
+
+Configuration is layered, lowest precedence first:
+
+1. **Docker environment** (`PRIORITARR_*`) — connections/credentials and the feature toggles (`TDARR_PAUSE_ENABLED`, `SONARR_WATCHDOG_ENABLED`, `PLEX_WATCHDOG_ENABLED`, `SUB_EXTRACT_ENABLED`, `SUB_LADDER_ENABLED`, …). Cadences and per-job knobs are deliberately *not* env vars.
+2. **YAML seed file** mounted into the container and pointed at by `PRIORITARR_CONFIG_PATH` — cadences and per-job knobs (see [Job intervals](#job-intervals)).
+3. **UI card** — the same knobs plus the toggles, stored as a DB override that wins over both of the above.
+
+Cadences in the table are the code defaults.
+
 | Job | Cadence | What it does |
 |-----|---------|--------------|
 | **Priority refresh** | 30 min | Walks every monitored series, recomputes priority, updates cache. |
@@ -103,16 +113,16 @@ Torrents paused by prioritarr are tracked (`paused_by_us` flag); user-paused tor
 | **Mapping refresh** | 60 min | Refreshes Sonarr ↔ Plex series mapping (TVDB id / folder path / title fallback). |
 | **Series cache** | 5 min | Local read-model of Sonarr /series for fast UI queries. |
 | **Episode cache** | 60 min | Pulls every monitored episode title into a local table; feeds the global search box. |
-| **Unmonitored reaper** | 60 min | Unmonitors episodes that no longer warrant tracking. |
-| **Watched archiver** | 60 min | Archives fully-watched series so they stop consuming sweep budget. |
-| **Trakt unmonitor** | 60 min | Unmonitors series you've dropped on Trakt. Off by default. |
-| **Trakt token refresh** | 60 min | Proactively refreshes the OAuth token and hot-swaps it into the live client. |
-| **Health monitor** | 5 min | Probes every upstream; feeds the dashboard status banner. |
-| **Tdarr pause (Plex-aware)** | 1 min | Pauses Tdarr's global transcoding while any Plex session is active; resumes when idle. Configure under Connections → Tdarr and enable in Background jobs. Off by default. |
-| **Sonarr watchdog** | 5 min | Detects a wedged Sonarr command queue and escalates app-restart ×3 → container restart via a scoped docker-socket-proxy. `SONARR_WATCHDOG_ENABLED=true`. |
-| **Plex watchdog** | 5 min | Probes the newest items in every Plex video library for entries with **zero media streams** (the signature of a dead Plex Media Scanner — new episodes then won't play and show no subtitles). Ladder: analyze+refresh → container restart via the docker-socket-proxy once Plex is idle → 2 h cooldown. `PLEX_WATCHDOG_ENABLED=true`; needs `PLEX_URL` + `PLEX_TOKEN`. |
-| **Sub-extract** | 30 min | Turns embedded ASS/SSA tracks into external `.srt` sidecars so Plex soft-serves anime instead of burning subs into a transcode. Walks P1-first, skips files that already have a sidecar. `SUB_EXTRACT_ENABLED=true`. Also fires per-file on Sonarr import. |
-| **Sub-ladder** | 30 min | Guarantees every anime episode a plain `.en.srt`. Climbs: embedded extract → Bazarr provider search → Whisper JP→EN. Priority-ordered; pauses while Plex is streaming or Sonarr's search queue is congested. Requires `SUB_LADDER_ENABLED=true`, a non-blank `PRIORITARR_BAZARR_API_KEY`, a non-empty `SUB_EXTRACT_PATHS` (the ladder scans the same roots), and `PLEX_URL` + `PLEX_TOKEN` — without Plex the streaming gate fails closed on every tick, so the job would never do anything. Missing any of them shows as "prerequisites not met" rather than a green no-op. |
+| **Unmonitored reaper** | 30 min | Unmonitors episodes that no longer warrant tracking. |
+| **Watched archiver** | 168 h | Archives fully-watched series so they stop consuming sweep budget. Off by default. |
+| **Trakt unmonitor** | 6 h | Unmonitors series you've dropped on Trakt. Off by default. |
+| **Trakt token refresh** | 24 h | Proactively refreshes the OAuth token and hot-swaps it into the live client. |
+| **Health monitor** | 5 min | Probes every upstream; feeds the dashboard status banner. Cadence is fixed. |
+| **Tdarr pause (Plex-aware)** | 1 min | Pauses Tdarr's global transcoding while any Plex session is active; resumes when idle. Off by default; needs a Tdarr connection. |
+| **Sonarr watchdog** | 5 min | Detects a wedged Sonarr command queue and escalates app-restart ×3 → container restart via a scoped docker-socket-proxy. Off by default. |
+| **Plex watchdog** | 5 min | Probes the newest items in every Plex video library for entries with **zero media streams** (the signature of a dead Plex Media Scanner — new episodes then won't play and show no subtitles). Ladder: analyze+refresh → container restart via the docker-socket-proxy once Plex is idle → cooldown. Off by default; needs a Plex connection. |
+| **Sub-extract** | 30 min | Turns embedded ASS/SSA tracks into external `.srt` sidecars so Plex soft-serves anime instead of burning subs into a transcode. Walks P1-first, skips files that already have a sidecar. Also fires per-file on Sonarr import. Off by default. |
+| **Sub-ladder** | 30 min | Guarantees every anime episode a plain `.en.srt`. Climbs: embedded extract → Bazarr provider search → Whisper JP→EN. Priority-ordered; pauses while Plex is streaming or Sonarr's search queue is congested. Off by default; needs Bazarr, the sub-extract paths and a Plex connection — missing any of them shows as "prerequisites not met" on the card rather than a green no-op. |
 
 Every job is wrapped in a supervisor coroutine — a crash in one doesn't kill the others — and is a **singleton**: the scheduler never starts a second run of a job while the first is still in flight, and a job's cadence is measured from when it *finishes*. Long jobs therefore stretch their own interval instead of piling up.
 
@@ -298,10 +308,12 @@ Optional: `API_KEY` (locks `/api/v2/*`), `CONFIG_PATH` (YAML seed), `PLEX_URL` +
 - **Trakt** — `TRAKT_CLIENT_ID`, `TRAKT_CLIENT_SECRET`, `TRAKT_ACCESS_TOKEN`, `TRAKT_REFRESH_TOKEN`, `TRAKT_TOKEN_ISSUED_AT`, `TRAKT_TOKEN_EXPIRES_AT`.
 - **Tdarr pause** — `TDARR_URL`, `TDARR_API_KEY`, `TDARR_PAUSE_ENABLED`.
 - **Sonarr watchdog** — `SONARR_WATCHDOG_ENABLED`, `DOCKER_PROXY_URL`, `SONARR_CONTAINER_NAME` (default `sonarr`).
-- **Plex watchdog** — `PLEX_WATCHDOG_ENABLED`, `PLEX_CONTAINER_NAME` (default `plex`); shares `DOCKER_PROXY_URL`. Cadence/grace/wait/cooldown/probe-depth are YAML/DB-only: `plex_watchdog_interval_minutes`, `plex_watchdog_grace_minutes`, `plex_watchdog_analyze_wait_minutes`, `plex_watchdog_cooldown_minutes`, `plex_watchdog_recent_items`.
-- **Sub-extract** — `SUB_EXTRACT_ENABLED`, `SUB_EXTRACT_PATHS`, `SUB_EXTRACT_LANGS`, `SUB_EXTRACT_MAX_PER_RUN`. Cadence is YAML/DB-only (see below), not an env var.
-- **Sub-ladder** — `SUB_LADDER_ENABLED`, `SUB_LADDER_WHISPER_ENABLED`, `SUB_LADDER_WHISPER_MAX_PRIORITY` (default 2 = P1/P2). Cadence and per-sweep caps are YAML/DB-only: `sub_ladder_interval_minutes`, `sub_ladder_max_per_sweep`, `sub_ladder_max_series_per_sweep`.
+- **Plex watchdog** — `PLEX_WATCHDOG_ENABLED`, `PLEX_CONTAINER_NAME` (default `plex`); shares `DOCKER_PROXY_URL`.
+- **Sub-extract** — `SUB_EXTRACT_ENABLED`, `SUB_EXTRACT_PATHS`, `SUB_EXTRACT_LANGS`, `SUB_EXTRACT_MAX_PER_RUN`.
+- **Sub-ladder** — `SUB_LADDER_ENABLED`, `SUB_LADDER_WHISPER_ENABLED`, `SUB_LADDER_WHISPER_MAX_PRIORITY` (default 2 = P1/P2).
 - **Search control** — `CANCEL_BACKFILL_FOR_PRIORITY` (default true).
+
+Cadences and per-job knobs are not env vars — set them in the YAML seed ([Job intervals](#job-intervals)) or on the job's card.
 
 ### Priority thresholds
 
@@ -326,6 +338,8 @@ priority_thresholds:
 
 ### Job intervals
 
+Seeded from YAML at `$PRIORITARR_CONFIG_PATH`; every key here is also editable on the corresponding job card. Values shown are the defaults.
+
 ```yaml
 intervals:
   reconcile_minutes: 15
@@ -348,7 +362,25 @@ intervals:
   p1_fast_max_per_sweep: 10                 # EpisodeSearch budget per fast-sweep tick
   p1_stall_minutes: 30                      # P1 download stuck threshold in the queue janitor (vs 48h default)
 
-  sub_extract_interval_minutes: 30          # sub-extract cadence (no env var for this one)
+  search_congestion_threshold: 3            # backfill defers while ≥ this many Sonarr searches are pending
+
+  tdarr_pause_minutes: 1                    # tdarr-plex-pause cadence
+
+  sonarr_watchdog_interval_minutes: 5       # sonarr-watchdog cadence
+  sonarr_watchdog_stall_minutes: 30         # a command "started" longer than this counts as wedged
+  sonarr_watchdog_grace_minutes: 10         # wait for a restart to take effect before escalating
+  sonarr_watchdog_cooldown_minutes: 120     # hold-off after the ladder is exhausted
+
+  plex_watchdog_interval_minutes: 5         # plex-watchdog cadence
+  plex_watchdog_grace_minutes: 10           # ignore items younger than this (file may still be copying)
+  plex_watchdog_analyze_wait_minutes: 5     # how long an analyze gets before it is judged failed
+  plex_watchdog_cooldown_minutes: 120       # hold-off after the ladder is exhausted
+  plex_watchdog_recent_items: 20            # newest N items probed per tick
+
+  sub_extract_interval_minutes: 30          # sub-extract cadence
+  sub_ladder_interval_minutes: 30           # sub-ladder cadence
+  sub_ladder_max_per_sweep: 5               # episode budget per ladder sweep
+  sub_ladder_max_series_per_sweep: 10       # series scanned per ladder sweep
 ```
 
 ---
